@@ -34,7 +34,7 @@ jobs:
       - name: Pack and install globally
         run: |
           npm pack
-          npm install -g ./load-lock-*.tgz
+          npm install -g ./*.tgz
       - name: Smoke test installed CLI
         env:
           LOAD_LOCK_STATE_DIR: ${{ runner.temp }}/ll-smoke
