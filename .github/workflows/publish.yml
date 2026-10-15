@@ -1,18 +1,23 @@
 name: Publish to npm
 
 # Publishes to npm when a GitHub Release is published, using npm Trusted
-# Publishing (OIDC; no tokens in secrets).
+# Publishing (OIDC; no tokens in secrets). Provenance is signed and
+# attached automatically.
 #
-# One-time bootstrap (npm has no pending-publisher flow for new packages,
-# see npm/documentation#1926):
-#   1. `npm login` + `npm publish` v0.1.0 manually from a dev machine.
-#   2. npmjs.com → package "@aron98/load-lock" → Settings → Trusted publishing →
-#      add GitHub Actions publisher: user "aron98", repo "load-lock",
-#      workflow "publish.yml" (first OIDC publish must happen within 2 days
-#      or the configuration expires).
-#   3. From then on, publishing a GitHub Release publishes to npm.
-#   4. Optional hardening: package Settings → Publishing access →
-#      "Require two-factor authentication and disallow tokens".
+# Bootstrap (DONE, verified 2026-10-15):
+#   1. v0.1.0 was published manually (npm has no pending-publisher flow
+#      for new packages, see npm/documentation#1926).
+#   2. Trusted publisher configured on npmjs.com for this workflow
+#      (environment "npm", allowed action: npm publish).
+#   3. v0.1.1 published via this workflow — OIDC + provenance verified.
+#   4. Remaining hardening (npmjs.com → package Settings → Publishing
+#      access): "Require two-factor authentication and disallow tokens".
+#
+# NOTE: the GitHub environment "npm" restricts deployment by ref. Tag
+# refs need a *tag*-type deployment policy (POST
+# /repos/{owner}/{repo}/environments/npm/deployment-branch-policies
+# with name "v*", type "tag"); a branch-type "v*" policy alone rejects
+# release builds.
 
 on:
   release:
