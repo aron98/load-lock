@@ -4,6 +4,25 @@
   "description": "Machine-wide counting semaphore coordinating resource-intensive work across parallel coding agents (OpenCode, Codex CLI, Claude Code, ...)",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aron98/load-lock.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aron98/load-lock/issues"
+  },
+  "homepage": "https://github.com/aron98/load-lock#readme",
+  "keywords": [
+    "coding-agent",
+    "agent-coordination",
+    "mcp",
+    "opencode",
+    "codex",
+    "claude-code",
+    "semaphore",
+    "resource-management",
+    "build"
+  ],
   "bin": {
     "load-lock": "dist/cli/main.js",
     "load-lock-mcp": "dist/mcp/main.js"
