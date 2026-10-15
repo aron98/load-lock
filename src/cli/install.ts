@@ -307,7 +307,10 @@ function installCodex(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): str
   const tomlFile = path.join(codexHome, "config.toml");
   fs.mkdirSync(codexHome, { recursive: true });
   const toml = fs.existsSync(tomlFile) ? fs.readFileSync(tomlFile, "utf8") : "";
-  if (!toml.includes("[mcp_servers.load-lock]")) {
+  // 2. MCP server in config.toml (append block only if absent).
+  // Match only a real table header at line start - a comment or docs text
+  // mentioning the section must not be treated as "already installed".
+  if (!/^\[mcp_servers\.load-lock\]\s*$/m.test(toml)) {
     fs.writeFileSync(
       tomlFile,
       toml +
