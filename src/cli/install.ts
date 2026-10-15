@@ -6,10 +6,10 @@
  * package) so uninstall removes exactly what install added.
  *
  * Harnesses:
- *  - opencode     : plugin dir ~/.config/opencode/plugins/load-lock/ (stub that
- *                   re-exports the compiled plugin from this package, with a
- *                   local package.json so `@opencode/plugin` + `load-lock`
- *                   resolve), plus a `plugins` entry in opencode.json.
+ *  - opencode     : registers the published npm package in the `plugins`
+ *                   array of ~/.config/opencode/opencode.json (opencode
+ *                   resolves/installs/updates the package itself; legacy
+ *                   local-stub installs are migrated away automatically).
  *  - claude-code  : user-scope MCP server in ~/.claude.json, SessionStart /
  *                   Stop hooks + background await-offer watcher in
  *                   ~/.claude/settings.json, CLAUDE.md section, skill.
@@ -18,7 +18,6 @@
  *                   ~/.codex/AGENTS.md pointer. Trust must be granted via /hooks.
  *  - generic      : prints an MCP stdio config snippet (any MCP-capable harness).
  */
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -38,6 +37,7 @@ export interface UninstallOptions {
 }
 
 const HOME = os.homedir();
+const PKG_NAME = "@aron98/load-lock";
 
 export function pkgRoot(binDir?: string): string {
   const d = binDir ?? path.join(import.meta.dirname ?? ".", ".."); // dist/cli -> dist
@@ -103,49 +103,25 @@ const LL_HOOK_TAG = "dist/cli/main.js hook"; // how we recognize our hook entrie
 function installOpenCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
   const actions: string[] = [];
   const pluginDir = path.join(HOME, ".config", "opencode", "plugins", "load-lock");
-  fs.mkdirSync(pluginDir, { recursive: true });
 
-  // Stub that re-exports the compiled plugin from this package.
-  fs.writeFileSync(
-    path.join(pluginDir, "index.js"),
-    `// installed by load-lock; re-exports the compiled plugin\n` +
-      `export { default } from "@aron98/load-lock/dist/adapters/opencode/plugin.js";\n`,
-  );
-  actions.push(`plugin stub: ${pluginDir}/index.js`);
-
-  fs.writeFileSync(
-    path.join(pluginDir, "package.json"),
-    JSON.stringify(
-      {
-        name: "load-lock-opencode-plugin",
-        version: "0.1.0",
-        type: "module",
-        main: "index.js",
-        dependencies: {
-          "@opencode/plugin": "^2.0.29",
-          "@aron98/load-lock": "file:" + P.root,
-        },
-      },
-      null,
-      2,
-    ) + "\n",
-  );
-  actions.push("plugin package.json (file: dep on this package)");
-
-  const npmInstall = spawnSync("npm", ["install", "--no-audit", "--no-fund"], { cwd: pluginDir, encoding: "utf8" });
-  if (npmInstall.status !== 0) {
-    actions.push("WARNING: npm install inside plugin dir failed — see errors above");
-  } else {
-    actions.push("plugin dependencies installed");
+  // Migrate away from the legacy stub dir (pre-publish installs used a
+  // local stub with a file: symlink dep, which bun does not resolve).
+  if (fs.existsSync(pluginDir)) {
+    fs.rmSync(pluginDir, { recursive: true, force: true });
+    actions.push(`removed legacy plugin stub ${pluginDir}`);
   }
 
-  // Register in ~/.config/opencode/opencode.json (merge, preserve).
+  // Register the published npm package; opencode resolves, installs and
+  // updates it itself (shows up in /plugins with the real version).
   const cfgFile = path.join(HOME, ".config", "opencode", "opencode.json");
   const cfg = readJson(cfgFile) ?? {};
   if (!Array.isArray(cfg.plugins)) cfg.plugins = [];
-  if (!cfg.plugins.includes(pluginDir)) cfg.plugins.push(pluginDir);
+  const before = cfg.plugins.length;
+  cfg.plugins = cfg.plugins.filter((p: unknown) => p !== pluginDir && p !== PKG_NAME);
+  cfg.plugins.push(PKG_NAME);
   writeJson(cfgFile, cfg);
-  actions.push(`plugins entry in ${cfgFile}`);
+  actions.push(`plugins entry "${PKG_NAME}" in ${cfgFile}`);
+  if (before !== cfg.plugins.length) actions.push("(replaced legacy plugins entry)");
 
   actions.push("restart or reload your opencode service to load the plugin");
   return actions;
@@ -154,14 +130,19 @@ function installOpenCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): 
 function uninstallOpenCode(): string[] {
   const actions: string[] = [];
   const pluginDir = path.join(HOME, ".config", "opencode", "plugins", "load-lock");
-  fs.rmSync(pluginDir, { recursive: true, force: true });
-  actions.push(`removed ${pluginDir}`);
+  if (fs.existsSync(pluginDir)) {
+    fs.rmSync(pluginDir, { recursive: true, force: true });
+    actions.push(`removed ${pluginDir}`);
+  }
   const cfgFile = path.join(HOME, ".config", "opencode", "opencode.json");
   const cfg = readJson(cfgFile);
   if (cfg && Array.isArray(cfg.plugins)) {
-    cfg.plugins = cfg.plugins.filter((p: unknown) => p !== pluginDir);
-    writeJson(cfgFile, cfg);
-    actions.push(`removed plugins entry from ${cfgFile}`);
+    const before = cfg.plugins.length;
+    cfg.plugins = cfg.plugins.filter((p: unknown) => p !== pluginDir && p !== PKG_NAME);
+    if (cfg.plugins.length !== before) {
+      writeJson(cfgFile, cfg);
+      actions.push(`removed plugins entry from ${cfgFile}`);
+    }
   }
   return actions;
 }
