@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm run build
+      - name: Test (daemon, MCP, hooks, run helpers)
+        run: node --test dist/test/
+
+  install-from-tarball:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - name: Pack and install globally
+        run: |
+          npm pack
+          npm install -g ./load-lock-*.tgz
+      - name: Smoke test installed CLI
+        env:
+          LOAD_LOCK_STATE_DIR: ${{ runner.temp }}/ll-smoke
+        run: |
+          mkdir -p "$LOAD_LOCK_STATE_DIR"
+          load-lock doctor
+          load-lock status
+          load-lock agent-guide > /dev/null && echo "agent-guide ok"
+          load-lock service stop

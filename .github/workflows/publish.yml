@@ -1,0 +1,35 @@
+name: Publish to npm
+
+# Publishes to npm when a GitHub Release is published, using npm Trusted
+# Publishing (OIDC). One-time setup:
+#   1. Create an npm account and enable 2FA.
+#   2. npmjs.com → Account → Publishing access → Trusted Publishers → Add:
+#        Repository:  aron98/load-lock
+#        Workflow:    publish.yml
+#        Environment: (leave empty unless you configure one)
+#   3. Create a GitHub Release (e.g. v0.2.0) — this workflow publishes it.
+#
+# Alternative (classic token): store an automation token in the NPM_TOKEN
+# secret and add `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` to the publish
+# step's env.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run build
+      - run: npm publish --provenance --access public
