@@ -6,7 +6,7 @@ name: Publish to npm
 # One-time bootstrap (npm has no pending-publisher flow for new packages,
 # see npm/documentation#1926):
 #   1. `npm login` + `npm publish` v0.1.0 manually from a dev machine.
-#   2. npmjs.com → package "load-lock" → Settings → Trusted publishing →
+#   2. npmjs.com → package "@aron98/load-lock" → Settings → Trusted publishing →
 #      add GitHub Actions publisher: user "aron98", repo "load-lock",
 #      workflow "publish.yml" (first OIDC publish must happen within 2 days
 #      or the configuration expires).

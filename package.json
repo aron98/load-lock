@@ -1,5 +1,5 @@
 {
-  "name": "load-lock",
+  "name": "@aron98/load-lock",
   "version": "0.1.0",
   "description": "Machine-wide counting semaphore coordinating resource-intensive work across parallel coding agents (OpenCode, Codex CLI, Claude Code, ...)",
   "type": "module",
@@ -28,10 +28,51 @@
     "load-lock-mcp": "dist/mcp/main.js"
   },
   "exports": {
-    ".": "./dist/adapters/opencode/plugin.js",
-    "./dist/*": "./dist/*",
-    "./shared/*": "./dist/shared/*",
-    "./policy/*": "./dist/policy/*"
+    ".": {
+      "types": "./dist/adapters/opencode/plugin.d.ts",
+      "default": "./dist/adapters/opencode/plugin.js"
+    },
+    "./shared/client": {
+      "types": "./dist/shared/client.d.ts",
+      "default": "./dist/shared/client.js"
+    },
+    "./shared/client.js": {
+      "types": "./dist/shared/client.d.ts",
+      "default": "./dist/shared/client.js"
+    },
+    "./shared/protocol": {
+      "types": "./dist/shared/protocol.d.ts",
+      "default": "./dist/shared/protocol.js"
+    },
+    "./shared/protocol.js": {
+      "types": "./dist/shared/protocol.d.ts",
+      "default": "./dist/shared/protocol.js"
+    },
+    "./policy/text": {
+      "types": "./dist/policy/text.d.ts",
+      "default": "./dist/policy/text.js"
+    },
+    "./policy/text.js": {
+      "types": "./dist/policy/text.d.ts",
+      "default": "./dist/policy/text.js"
+    },
+    "./mcp/server": {
+      "types": "./dist/mcp/server.d.ts",
+      "default": "./dist/mcp/server.js"
+    },
+    "./mcp/server.js": {
+      "types": "./dist/mcp/server.d.ts",
+      "default": "./dist/mcp/server.js"
+    },
+    "./core/daemon": {
+      "types": "./dist/core/daemon.d.ts",
+      "default": "./dist/core/daemon.js"
+    },
+    "./core/daemon.js": {
+      "types": "./dist/core/daemon.d.ts",
+      "default": "./dist/core/daemon.js"
+    },
+    "./dist/*": "./dist/*"
   },
   "files": [
     "dist",
@@ -47,6 +88,9 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.1",

@@ -54,7 +54,7 @@ agent A (OpenCode)        agent B (Codex)         agent C (Claude Code)
 ## Quickstart
 
 ```sh
-npm install -g load-lock
+npm install -g @aron98/load-lock
 load-lock install --harness opencode     # or claude-code | codex | generic
 load-lock doctor
 ```
@@ -94,6 +94,8 @@ skills/         packaged skill
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — install, config,
   troubleshooting, recovery, daemon lifecycle.
 - [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — the playbook for agents.
+- [docs/ADAPTERS.md](docs/ADAPTERS.md) — how to write an adapter for a new
+  harness, using the published library surface.
 
 ## Status
 

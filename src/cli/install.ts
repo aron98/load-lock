@@ -109,7 +109,7 @@ function installOpenCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): 
   fs.writeFileSync(
     path.join(pluginDir, "index.js"),
     `// installed by load-lock; re-exports the compiled plugin\n` +
-      `export { default } from "load-lock/dist/adapters/opencode/plugin.js";\n`,
+      `export { default } from "@aron98/load-lock/dist/adapters/opencode/plugin.js";\n`,
   );
   actions.push(`plugin stub: ${pluginDir}/index.js`);
 
@@ -123,7 +123,7 @@ function installOpenCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): 
         main: "index.js",
         dependencies: {
           "@opencode/plugin": "^2.0.29",
-          "load-lock": "file:" + P.root,
+          "@aron98/load-lock": "file:" + P.root,
         },
       },
       null,

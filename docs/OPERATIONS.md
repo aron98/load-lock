@@ -6,7 +6,7 @@ Requirements: Node 20+, Linux (macOS works with the limitations noted below;
 Windows would need a named-pipe adapter — not implemented).
 
 ```sh
-npm install -g load-lock        # or: npm install -g ./load-lock-<ver>.tgz
+npm install -g @aron98/load-lock    # or: npm install -g ./aron98-load-lock-<ver>.tgz
 load-lock install --harness opencode
 load-lock install --harness claude-code
 load-lock install --harness codex
