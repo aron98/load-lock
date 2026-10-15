@@ -27,8 +27,13 @@ exactly the entries it added):
   `Stop`), appends `[mcp_servers.load-lock]` to `~/.codex/config.toml` if
   absent, adds a marked section to `~/.codex/AGENTS.md`. **Then run `/hooks`
   inside Codex once to trust the hooks.**
-- **generic** — prints MCP stdio config snippets (Gemini CLI, Cursor,
-  Cline/Roo, Goose) plus a suggested instructions-file section.
+- **gemini-cli** — writes `mcpServers.load-lock` (stdio: `node` + absolute
+  path to `dist/mcp/main.js`) into `~/.gemini/settings.json`, adds a marked
+  section to `~/.gemini/GEMINI.md`. MCP-fallback tier: Gemini CLI has no
+  hooks and no async push, so there is no idle wakeup — offers surface at
+  tool boundaries.
+- **generic** — prints MCP stdio config snippets (Cursor, Cline/Roo, Goose)
+  plus a suggested instructions-file section.
 
 `load-lock uninstall --harness <harness>` reverses any of these.
 

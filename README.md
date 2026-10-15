@@ -99,7 +99,7 @@ skills/         packaged skill
 
 ## Status
 
-- Core daemon/protocol/CLI: implemented, 32 automated tests passing
+- Core daemon/protocol/CLI: implemented, 36 automated tests passing
   (multi-process daemons, real processes, restarts, races, expiry,
   PID-reuse, subprocess survival).
 - OpenCode adapter: implemented and **live-verified** (tools, policy
@@ -108,7 +108,10 @@ skills/         packaged skill
 - Claude Code + Codex CLI adapters: implemented, contract-tested against
   documented hook JSON; not yet live-verified (harnesses not installed on
   the verification machine).
-- Gemini CLI, Copilot CLI, Cursor, Cline, Roo Code, Goose, Aider:
+- Gemini CLI adapter: implemented installer (MCP `mcpServers` entry +
+  marked `GEMINI.md` section), config-tested via a temp-HOME round-trip;
+  fallback tier (no hooks, no async push — no idle wakeup).
+- Copilot CLI, Cursor, Cline, Roo Code, Goose, Aider:
   researched; MCP fallback tier (Aider: manual CLI tier). See
   COMPATIBILITY.md for the matrix.
 
