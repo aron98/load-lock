@@ -1,17 +1,18 @@
 name: Publish to npm
 
 # Publishes to npm when a GitHub Release is published, using npm Trusted
-# Publishing (OIDC). One-time setup:
-#   1. Create an npm account and enable 2FA.
-#   2. npmjs.com → Account → Publishing access → Trusted Publishers → Add:
-#        Repository:  aron98/load-lock
-#        Workflow:    publish.yml
-#        Environment: (leave empty unless you configure one)
-#   3. Create a GitHub Release (e.g. v0.2.0) — this workflow publishes it.
+# Publishing (OIDC; no tokens in secrets).
 #
-# Alternative (classic token): store an automation token in the NPM_TOKEN
-# secret and add `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` to the publish
-# step's env.
+# One-time bootstrap (npm has no pending-publisher flow for new packages,
+# see npm/documentation#1926):
+#   1. `npm login` + `npm publish` v0.1.0 manually from a dev machine.
+#   2. npmjs.com → package "load-lock" → Settings → Trusted publishing →
+#      add GitHub Actions publisher: user "aron98", repo "load-lock",
+#      workflow "publish.yml" (first OIDC publish must happen within 2 days
+#      or the configuration expires).
+#   3. From then on, publishing a GitHub Release publishes to npm.
+#   4. Optional hardening: package Settings → Publishing access →
+#      "Require two-factor authentication and disallow tokens".
 
 on:
   release:
@@ -19,7 +20,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write
+  id-token: write  # Required for OIDC
 
 jobs:
   publish:
@@ -28,8 +29,14 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 24          # OIDC needs npm >= 11.5.1 (bundled with Node 24)
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false  # never use caching in release builds
       - run: npm ci
       - run: npm run build
-      - run: npm publish --provenance --access public
+      # NODE_AUTH_TOKEN must be cleared: setup-node otherwise writes a
+      # default (GitHub) token into .npmrc that breaks OIDC auth
+      # (see actions/setup-node#1440).
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ""
