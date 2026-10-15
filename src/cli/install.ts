@@ -16,6 +16,10 @@
  *  - codex        : ~/.codex/hooks.json (SessionStart/SubagentStart/Stop),
  *                   [mcp_servers.load-lock] in ~/.codex/config.toml,
  *                   ~/.codex/AGENTS.md pointer. Trust must be granted via /hooks.
+ *  - gemini-cli   : mcpServers.load-lock in ~/.gemini/settings.json,
+ *                   marked section in ~/.gemini/GEMINI.md. MCP-fallback
+ *                   tier: Gemini CLI has no hooks and no async push (no
+ *                   idle wakeup) — offers surface at tool boundaries.
  *  - generic      : prints an MCP stdio config snippet (any MCP-capable harness).
  */
 import fs from "node:fs";
@@ -354,6 +358,67 @@ function uninstallCodex(): string[] {
   return actions;
 }
 
+// ---------------------------------------------------------------- gemini-cli
+
+function installGeminiCli(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
+  const actions: string[] = [];
+
+  // 1. mcpServers.load-lock in ~/.gemini/settings.json (merge; replace only
+  //    our own entry). Gemini CLI's stdio shape is { command, args } — the
+  //    presence of `command` selects the stdio transport.
+  const settingsFile = path.join(HOME, ".gemini", "settings.json");
+  const s = readJson(settingsFile) ?? {};
+  if (typeof s !== "object" || s === null || Array.isArray(s)) {
+    throw new Error(`${settingsFile} is not a JSON object; refusing to overwrite`);
+  }
+  if (!s.mcpServers || typeof s.mcpServers !== "object" || s.mcpServers === null) s.mcpServers = {};
+  s.mcpServers["load-lock"] = { command: P.node, args: [P.mcp] };
+  writeJson(settingsFile, s);
+  actions.push(`MCP server "load-lock" (stdio) in ${settingsFile}`);
+
+  // 2. marked policy section in ~/.gemini/GEMINI.md (global instructions file)
+  const geminiMd = path.join(HOME, ".gemini", "GEMINI.md");
+  const marker = "<!-- load-lock:begin -->";
+  if (
+    mdSection(
+      geminiMd,
+      marker,
+      `\n${marker}\n## load-lock: machine-wide heavy-work budget\n\n` +
+        `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine:\n\n` +
+        `1. Call the \`load-lock\` MCP \`acquire\` tool (reason + op_key) — it grants a permit or queues you. Pass \`wait_ms\` for a bounded blocking wait, or keep doing light work while queued.\n` +
+        `2. Offers surface in every tool result (tool-boundary delivery) — check \`pending\` and claim promptly via \`claim\` within the window (default 30s); expired offers pass capacity to the next waiter.\n` +
+        `3. Only start heavy work after acquire/claim succeeds. Prefer \`run_with_permit\` for full lifecycle ownership (auto-release), or \`attach_pid\` / \`mark_started\` for processes you already started.\n` +
+        `4. Release (or cancel queued work) promptly when done. Inspect the machine with \`inspect_machine\`; adjust capacity via \`configure\` when warranted.\n\n` +
+        `Note: Gemini CLI has no hooks and no async push — there is NO idle wakeup. You discover offers at your next tool call or via a bounded \`wait_ms\`.\n` +
+        `Full guide: \`load-lock agent-guide\`.\n<!-- load-lock:end -->\n`,
+    )
+  )
+    actions.push(`GEMINI.md section in ${geminiMd}`);
+
+  // 3. be honest about the tier
+  actions.push(
+    "tier: MCP fallback — offers arrive at tool boundaries (tool-result delivery + bounded wait_ms); " +
+      "Gemini CLI has no hooks and no async push, so there is no idle wakeup",
+  );
+  actions.push("restart Gemini CLI to pick up the MCP server");
+  return actions;
+}
+
+function uninstallGeminiCli(): string[] {
+  const actions: string[] = [];
+  const settingsFile = path.join(HOME, ".gemini", "settings.json");
+  const s = readJson(settingsFile);
+  if (s?.mcpServers && typeof s.mcpServers === "object" && "load-lock" in s.mcpServers) {
+    delete s.mcpServers["load-lock"];
+    writeJson(settingsFile, s);
+    actions.push(`removed MCP server from ${settingsFile}`);
+  }
+  const geminiMd = path.join(HOME, ".gemini", "GEMINI.md");
+  removeMdSection(geminiMd, "<!-- load-lock:begin -->");
+  actions.push("removed GEMINI.md section");
+  return actions;
+}
+
 // -------------------------------------------------------------------- public
 
 export async function installCommand(opts: InstallOptions): Promise<void> {
@@ -362,7 +427,7 @@ export async function installCommand(opts: InstallOptions): Promise<void> {
     throw new Error(`compiled entry not found at ${P.mcp} — run \`npm run build\` inside the load-lock package first`);
   }
   const harness = opts.harness;
-  if (!harness) throw new Error("install: --harness <opencode|claude-code|codex|generic> is required");
+  if (!harness) throw new Error("install: --harness <opencode|claude-code|codex|gemini-cli|generic> is required");
 
   let actions: string[];
   switch (harness) {
@@ -375,6 +440,10 @@ export async function installCommand(opts: InstallOptions): Promise<void> {
       break;
     case "codex":
       actions = installCodex(opts, P);
+      break;
+    case "gemini-cli":
+    case "gemini":
+      actions = installGeminiCli(opts, P);
       break;
     case "generic":
     case "all":
@@ -406,6 +475,10 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<void> {
       break;
     case "codex":
       actions = uninstallCodex();
+      break;
+    case "gemini-cli":
+    case "gemini":
+      actions = uninstallGeminiCli();
       break;
     default:
       throw new Error(`uninstall: unknown harness "${opts.harness}"`);
