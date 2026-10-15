@@ -193,3 +193,11 @@ capacity; admission is FIFO with head-of-line blocking) and multiple pools;
 the machine currently uses one pool by default but accepts arbitrary pool
 names through the same code paths. Adding a second budget (e.g. `network`)
 is configuration, not code.
+
+The read-only status surface also extends without protocol changes: the
+`status` + `events` (durable ids) + `watch` + `inspect` methods are enough
+to build live viewers. `load-lock top` and the OpenCode TUI panel
+(`src/dashboard/`) are exactly that — pure view-model shaping over the
+library client (`./shared/client`), never CLI-output scraping, and never
+acquiring a permit themselves. Any future harness UI can reuse the same
+`src/dashboard/` pipeline.
