@@ -1,0 +1,232 @@
+/**
+ * NDJSON-over-UDS client for the load-lock daemon, shared by the CLI, the
+ * MCP server, and harness hook scripts. The OpenCode plugin ships a
+ * self-contained copy of this logic (see adapters/opencode).
+ *
+ * Auto-spawn: if the daemon socket is absent, exactly one client becomes the
+ * spawner (serialized by a mkdir-based lock — atomic on POSIX) and starts a
+ * detached daemon; losers wait for the socket to appear. The freshly spawned
+ * daemon itself re-checks the socket before binding, so a double-spawn is
+ * harmless (the loser exits).
+ */
+import { connect, Socket } from "node:net";
+import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
+import { ProtocolError } from "./protocol.js";
+import { socketPath as defaultSocket, stateDir as defaultStateDir } from "../core/persist.js";
+
+export interface ClientOptions {
+  socket?: string;
+  stateDir?: string;
+  spawnDaemon?: boolean; // default true
+}
+
+export class LLClient {
+  private sock: Socket | null = null;
+  private nextId = 1;
+  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  private eventCb: ((ev: Record<string, unknown>) => void) | null = null;
+  private buf = "";
+  private opts: Required<Omit<ClientOptions, "stateDir">> & { stateDir?: string };
+
+  constructor(opts: ClientOptions = {}) {
+    this.opts = { spawnDaemon: opts.spawnDaemon ?? true, socket: opts.socket ?? "", stateDir: opts.stateDir };
+  }
+
+  private socketPath(): string {
+    return this.opts.socket || defaultSocket();
+  }
+
+  private stateDirPath(): string {
+    return this.opts.stateDir || defaultStateDir();
+  }
+
+  async connect(): Promise<void> {
+    try {
+      await this.tryConnect();
+      return;
+    } catch {
+      /* fall through to spawn */
+    }
+    if (!this.opts.spawnDaemon) {
+      throw new ProtocolError("unavailable", `load-lock daemon is not running on ${this.socketPath()}`);
+    }
+    await ensureDaemon(this.stateDirPath(), this.socketPath());
+    await this.tryConnect();
+  }
+
+  private tryConnect(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const sock = connect(this.socketPath());
+      sock.once("connect", () => {
+        this.attach(sock);
+        resolve();
+      });
+      sock.once("error", (err) => {
+        sock.destroy();
+        reject(err);
+      });
+    });
+  }
+
+  private attach(sock: Socket): void {
+    this.sock = sock;
+    sock.on("data", (chunk) => {
+      this.buf += chunk.toString("utf8");
+      let idx: number;
+      while ((idx = this.buf.indexOf("\n")) !== -1) {
+        const line = this.buf.slice(0, idx);
+        this.buf = this.buf.slice(idx + 1);
+        if (!line.trim()) continue;
+        let msg: any;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (msg.event === true) {
+          this.eventCb?.(msg);
+          continue;
+        }
+        const p = this.pending.get(msg.id);
+        if (p) {
+          this.pending.delete(msg.id);
+          if (msg.ok) p.resolve(msg.result);
+          else p.reject(new ProtocolError(msg.error?.code ?? "internal", msg.error?.message ?? "daemon error", msg.error?.details));
+        }
+      }
+    });
+    sock.on("error", () => {
+      this.failAll(new ProtocolError("unavailable", "daemon connection lost"));
+      this.sock = null;
+    });
+    sock.on("close", () => {
+      this.failAll(new ProtocolError("unavailable", "daemon connection closed"));
+      this.sock = null;
+    });
+  }
+
+  private failAll(err: ProtocolError): void {
+    for (const p of this.pending.values()) p.reject(err);
+    this.pending.clear();
+  }
+
+  private ensureSock(): Socket {
+    if (!this.sock || this.sock.destroyed) throw new ProtocolError("unavailable", "not connected");
+    return this.sock;
+  }
+
+  /** Issue one RPC. Reconnects once if the connection was lost. */
+  async request<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = 20_000): Promise<T> {
+    if (!this.sock || this.sock.destroyed) await this.connect();
+    const id = this.nextId++;
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new ProtocolError("unavailable", `timeout waiting for daemon response to ${method}`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
+      const sock = this.ensureSock();
+      sock.write(JSON.stringify({ id, method, params }) + "\n");
+    });
+  }
+
+  /** Subscribe to daemon events targeted at agentId (or "*" for all). */
+  async watch(agentId: string, onEvent: (ev: Record<string, unknown>) => void): Promise<void> {
+    this.eventCb = onEvent;
+    await this.request("watch", { agentId });
+  }
+
+  close(): void {
+    this.sock?.destroy();
+    this.sock = null;
+  }
+}
+
+// ------------------------------------------------------------------- spawning
+
+function daemonMainPath(): string {
+  if (process.env.LOAD_LOCK_DAEMON_BIN) return process.env.LOAD_LOCK_DAEMON_BIN;
+  const here = dirname(fileURLToPath(import.meta.url)); // .../dist/shared
+  return join(here, "..", "core", "daemon-main.js");
+}
+
+/** Idempotently ensure a daemon is running and listening on `sockPath`. */
+export async function ensureDaemon(stateDir: string, sockPath: string): Promise<void> {
+  if (await probe(sockPath)) return;
+  const lockDir = join(stateDir, "spawn.lock");
+  mkdirSync(stateDir, { recursive: true });
+  let holding = false;
+  for (let i = 0; i < 60; i++) {
+    try {
+      mkdirSync(lockDir); // atomic on POSIX
+      holding = true;
+      writeFileSync(join(lockDir, "info"), JSON.stringify({ pid: process.pid, ts: Date.now() }));
+      break;
+    } catch {
+      // Someone else is spawning. Clean up stale locks (older than 15s).
+      try {
+        const st = existsSync(join(lockDir, "info")) ? JSON.parse(readFileSync(join(lockDir, "info"), "utf8")) : null;
+        if (!st || Date.now() - st.ts > 15_000) rmSync(lockDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+      if (await probe(sockPath)) return;
+      await delay(250);
+    }
+  }
+  try {
+    if (holding) {
+      // Re-check: another spawn may have won the race while we waited.
+      if (!(await probe(sockPath))) {
+        const child = spawn(process.execPath, [daemonMainPath(), "--state-dir", stateDir, "--socket", sockPath], {
+          detached: true,
+          stdio: "ignore",
+          env: { ...process.env, LOAD_LOCK_DAEMON_SPAWNED: "1" },
+        });
+        child.unref();
+      }
+    }
+    for (let i = 0; i < 40; i++) {
+      if (await probe(sockPath)) return;
+      await delay(250);
+    }
+    throw new ProtocolError("unavailable", "load-lock daemon did not come up within 10s; run `load-lock doctor`");
+  } finally {
+    if (holding) rmSync(lockDir, { recursive: true, force: true });
+  }
+}
+
+function probe(sockPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = connect(sockPath);
+    s.once("connect", () => {
+      s.end();
+      resolve(true);
+    });
+    s.once("error", () => resolve(false));
+  });
+}
+
+/** One-shot helper: connect (auto-spawning), run fn, close. */
+export async function withClient<T>(fn: (c: LLClient) => Promise<T>, opts: ClientOptions = {}): Promise<T> {
+  const c = new LLClient(opts);
+  try {
+    await c.connect();
+    return await fn(c);
+  } finally {
+    c.close();
+  }
+}

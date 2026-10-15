@@ -1,0 +1,112 @@
+# load-lock
+
+**A machine-wide heavy-work budget for parallel coding agents.**
+
+When several agents work side by side on one machine — separate sessions,
+repos, git worktrees, or harnesses (OpenCode, Codex CLI, Claude Code, ...) —
+their builds and test suites stomp on each other, thrash the caches, and
+starve each other's cores. load-lock gives them one shared counting
+semaphore: acquire a permit before heavy work, keep doing light work while
+queued, receive a FIFO offer when capacity frees, claim it, run, release.
+It is cooperative and advisory — no command wrapping, no automatic shell
+classification, no approval interruptions.
+
+```
+agent A (OpenCode)        agent B (Codex)         agent C (Claude Code)
+  acquire "cargo test"      acquire "npm test"      acquire "build docs"
+  granted ✓ runs            queued → keeps coding   queued → keeps coding
+  ...                       offer → claim ✓ runs    (misses window → paused)
+  release ✓                 release ✓               rejoin → offer → claim ✓
+```
+
+## Features
+
+- **One budget for the whole machine** — every client of any harness shares
+  one capacity pool regardless of repo/worktree/cwd. Default: pool `heavy`,
+  capacity 1; fully runtime-configurable by any agent via versioned CAS
+  updates (persisted with author + rationale).
+- **Atomic acquire-or-queue** — single daemon event loop; a release can
+  never slip between a failed check and queue registration.
+- **FIFO offers with opaque claim tokens** — outstanding offers reserve
+  capacity; expired offers pass capacity to the next waiter and pause the
+  absent request until it explicitly rejoins (no endless recycling).
+- **Real process-lifecycle cleanup** — permits attach to actual processes
+  (pid + process group + `/proc` start time, PID-reuse-safe). Background
+  jobs outliving the shell keep their permit until the whole group exits.
+  Never auto-expired merely for being old. Untracked work uses an honest,
+  documented heartbeat-lease tradeoff. Explicit release is always
+  available and idempotent.
+- **Crash-safe** — agent crashes release tracked permits on confirmed
+  process death; daemon restarts reconcile a journal against real liveness
+  and auto-respawn transparently.
+- **Honest notifications** — tool-boundary offer delivery everywhere; real
+  idle wakeup where the harness supports it (live-verified on OpenCode;
+  hook-based on Claude Code and Codex CLI); durable event ids for
+  reconnects. A notification never authorizes work — only `claim` does.
+- **Policy that actually reaches the model** — installed per harness via
+  its real mechanism (plugin context hook, SessionStart hooks incl.
+  compact matchers, global instruction files), plus a detailed skill/guide.
+- **Resource-aware** — `inspect_machine` reports cgroup/container CPU and
+  memory limits and current pressure; never assumes cores = capacity.
+
+## Quickstart
+
+```sh
+npm install -g load-lock
+load-lock install --harness opencode     # or claude-code | codex | generic
+load-lock doctor
+```
+
+From then on, agents see the policy and tools automatically:
+OpenCode plugin (`load_lock_*` tools), Claude Code / Codex MCP tools
+(`mcp__load-lock__*`) plus session hooks. Any other MCP-capable harness can
+use the generic stdio server; plain shells use the CLI:
+
+```sh
+load-lock run --reason "nightly build" -- npm run build   # acquire→run→release
+load-lock status                                          # machine-wide view
+load-lock configure --capacity 2 --reason "16-core host" --author me
+```
+
+## Layout
+
+```
+src/core/       daemon + state machine + persistence + machine inspection
+src/mcp/        MCP stdio server (universal adapter)
+src/adapters/   OpenCode native plugin
+src/cli/        CLI incl. installer, hook handlers, run/wait helpers
+src/test/       32 tests: state machine, real multi-process daemon tests,
+                MCP integration, hook contracts, run helper
+demo/           reproducible 3-worktree demo (three agents, one pool)
+docs/           ARCHITECTURE / COMPATIBILITY / OPERATIONS / AGENT_GUIDE
+skills/         packaged skill
+```
+
+## Documentation
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — design, why a dedicated
+  service (vs WorkOS Airlock / mic-lock / flock wrappers), atomicity,
+  restart semantics, notification honesty, lifecycle tradeoffs.
+- [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — per-harness capability
+  matrix with implemented / contract-tested / proposed labels.
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — install, config,
+  troubleshooting, recovery, daemon lifecycle.
+- [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — the playbook for agents.
+
+## Status
+
+- Core daemon/protocol/CLI: implemented, 32 automated tests passing
+  (multi-process daemons, real processes, restarts, races, expiry,
+  PID-reuse, subprocess survival).
+- OpenCode adapter: implemented and **live-verified** (tools, policy
+  injection, compaction-proof context hook, execution-boundary wakeup
+  with tokens, skill).
+- Claude Code + Codex CLI adapters: implemented, contract-tested against
+  documented hook JSON; not yet live-verified (harnesses not installed on
+  the verification machine).
+- Gemini CLI, Copilot CLI, Cursor, Cline, Roo Code, Goose, Aider:
+  researched; MCP fallback tier (Aider: manual CLI tier). See
+  COMPATIBILITY.md for the matrix.
+
+Linux-first; macOS works with documented liveness-check limitations;
+Windows would need a named-pipe transport adapter (planned, not built).

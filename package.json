@@ -1,0 +1,41 @@
+{
+  "name": "load-lock",
+  "version": "0.1.0",
+  "description": "Machine-wide counting semaphore coordinating resource-intensive work across parallel coding agents (OpenCode, Codex CLI, Claude Code, ...)",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "load-lock": "dist/cli/main.js",
+    "load-lock-mcp": "dist/mcp/main.js"
+  },
+  "exports": {
+    ".": "./dist/adapters/opencode/plugin.js",
+    "./dist/*": "./dist/*",
+    "./shared/*": "./dist/shared/*",
+    "./policy/*": "./dist/policy/*"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "skills",
+    "demo",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test dist/test/",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@opencode/plugin": "^2.0.29",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
