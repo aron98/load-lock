@@ -1,5 +1,7 @@
 # load-lock
 
+[![CI](https://github.com/aron98/load-lock/actions/workflows/ci.yml/badge.svg)](https://github.com/aron98/load-lock/actions/workflows/ci.yml)
+
 **A machine-wide heavy-work budget for parallel coding agents.**
 
 When several agents work side by side on one machine — separate sessions,
