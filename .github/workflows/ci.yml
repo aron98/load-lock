@@ -13,20 +13,20 @@ jobs:
       matrix:
         node: [20, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
       - run: npm run build
       - name: Test (daemon, MCP, hooks, run helpers)
-        run: node --test dist/test/
+        run: node --test dist/test/*.test.js
 
   install-from-tarball:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - run: npm ci
