@@ -1,0 +1,19 @@
+# Seed config for Codex CLI inside the verification container.
+# The load-lock installer appends its MCP server table to this file.
+#
+# trustedtokens is an OpenAI-compatible gateway that also exposes the
+# Responses API (/v1/responses). Codex no longer supports wire_api "chat";
+# the key arrives via TRUSTEDTOKENS_API_KEY (docker run --env-file).
+model = "zai-org/GLM-5.3-Flash"
+model_provider = "trustedtokens"
+
+# Non-interactive verification run: never ask for approvals, allow shell
+# + MCP tools (disposable container, --init, no host mounts).
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[model_providers.trustedtokens]
+name = "TrustedTokens"
+base_url = "https://api.trustedtokens.eu/v1"
+env_key = "TRUSTEDTOKENS_API_KEY"
+wire_api = "responses"

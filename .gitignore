@@ -3,3 +3,4 @@ dist/
 .opencode/
 *.tgz
 *.log
+docker/.env

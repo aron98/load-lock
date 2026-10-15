@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1
+# load-lock harness-verification image.
+#
+# Stage 1 (builder): build load-lock from the LOCAL source tree and pack a
+# tarball, so container verification always tests the code in this repo.
+# Stage 2 (harness): Node + one coding-agent harness + load-lock installed
+# globally, with the load-lock integration already wired into the image's
+# HOME (disposable - the host's ~/.codex / ~/.claude are never touched).
+#
+# Build:
+#   sudo docker build -f docker/Dockerfile.harness --build-arg HARNESS=codex \
+#            -t load-lock-verify:codex .
+#   sudo docker build -f docker/Dockerfile.harness --build-arg HARNESS=claude-code \
+#            -t load-lock-verify:claude-code .
+#
+# The container is self-contained: the load-lock daemon auto-spawns inside it
+# (daemon and harness must share a PID namespace for /proc-based process
+# tracking - that is the whole point of one container per run).
+
+FROM node:24-bookworm-slim AS builder
+WORKDIR /src
+COPY package.json package-lock.json tsconfig.json ./
+COPY src ./src
+RUN npm ci && npm run build && npm pack
+
+FROM node:24-bookworm-slim AS harness
+ARG HARNESS=codex
+ENV HARNESS=${HARNESS}
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git procps \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /pkg
+COPY --from=builder /src/*.tgz ./
+RUN npm install -g ./*.tgz \
+ && case "$HARNESS" in \
+      codex)        npm install -g @openai/codex ;; \
+      claude-code)  npm install -g @anthropic-ai/claude-code ;; \
+      *) echo "unknown HARNESS: $HARNESS" >&2; exit 64 ;; \
+    esac \
+ && mkdir -p /workspace
+
+# Seed harness config BEFORE the load-lock installer so the installer only
+# appends its MCP entry to the existing provider config.
+COPY docker/seed/codex-config.toml /tmp/seed/codex-config.toml
+RUN mkdir -p /root/.codex \
+ && case "$HARNESS" in \
+      codex) \
+        cp /tmp/seed/codex-config.toml /root/.codex/config.toml \
+        && load-lock install --harness codex ;; \
+      claude-code) \
+        load-lock install --harness claude-code ;; \
+    esac \
+ && load-lock doctor || true
+
+# Scenario scripts run inside the container (see docker/run-*-verify.sh).
+COPY docker/verify-codex.sh /usr/local/bin/verify-codex.sh
+COPY docker/verify-claude-code.sh /usr/local/bin/verify-claude-code.sh
+RUN chmod +x /usr/local/bin/verify-*.sh
+
+WORKDIR /workspace
+# Scenario script is passed as the docker run command (see run-*-verify.sh).
