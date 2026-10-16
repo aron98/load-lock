@@ -12,16 +12,21 @@ Usage:
 Driver script directives, one per line:
   send <text>      type <text> and press Enter
   raw <text>       write bytes verbatim (no Enter added)
-  expect <regex>   wait (expect-timeout) until regex matches NEW output
+  expect <regex>   wait (expect-timeout) until regex matches NEW cleaned output
+  rawexpect <text> wait until the escape-decoded TEXT bytes match NEW RAW
+                   pty output (before ANSI cleaning — the only way to see
+                   terminal escape sequences like codex's turn markers:
+                   ESC ]7501;state=working / state=idle :app=codex ST)
   sleep <secs>     pause
   mark             consume all output so far; later expects match only new output
   wait-exit        wait for the child to exit (after /quit etc.)
 
-Expectations match against a pty log cleaned of ANSI escapes and control
-chars, scanning only output received AFTER the previous matched expectation
-(so 'expect' never matches stale text). The full raw transcript is written to
-LOGFILE. Exit codes: 0 = all expectations matched and child exited cleanly;
-1 = an expectation timed out (tail of log on stderr); 2 = spawn/other error.
+Expectations match only output received AFTER the previous matched
+expectation (never stale text). `expect` scans the log cleaned of ANSI
+escapes and control chars; `rawexpect` scans the raw byte stream. The full
+raw transcript is written to LOGFILE. Exit codes: 0 = all expectations
+matched and child exited cleanly; 1 = an expectation timed out (tail of log
+on stderr); 2 = spawn/other error.
 """
 
 import os
@@ -74,8 +79,10 @@ def main() -> int:
     sel.register(master, selectors.EVENT_READ)
 
     log = open(log_path, "wb")
-    cleaned = []  # list of cleaned chunks; expectations scan chunk-aligned
-    pos = 0  # chunk index: expectations must match at or after this
+    cleaned = []  # list of cleaned chunks; `expect` scans chunk-aligned
+    raw = []      # list of raw byte chunks; `rawexpect` scans chunk-aligned
+    pos = 0       # chunk index: `expect` must match at or after this
+    rawpos = 0    # chunk index: `rawexpect` must match at or after this
 
     def read_available(timeout: float) -> bool:
         """Drain pty for up to `timeout` seconds. Returns True if any data."""
@@ -94,6 +101,7 @@ def main() -> int:
                     return saw
                 log.write(data)
                 log.flush()
+                raw.append(data)
                 cleaned.append(ANSI.sub(b"", data).decode("utf-8", "replace"))
                 saw = True
 
@@ -105,6 +113,13 @@ def main() -> int:
             return -1
         # conservative: consume everything seen so far (never rematch old text)
         return len(cleaned)
+
+    def matched_since_raw(marker: int, regex: re.Pattern) -> int:
+        """Search raw byte chunks >= marker; return next marker or -1."""
+        buf = b"".join(raw[marker:])
+        if not regex.search(buf):
+            return -1
+        return len(raw)
 
     def fail(msg: str) -> int:
         sys.stderr.write(f"codex-pty: {msg}\n")
@@ -147,6 +162,7 @@ def main() -> int:
                 # match only NEW output (skips echoed prompt text)
                 read_available(0.2)
                 pos = len(cleaned)
+                rawpos = len(raw)
             elif kind == "expect":
                 pat = re.compile(arg)
                 deadline = time.monotonic() + EXPECT_TIMEOUT
@@ -157,6 +173,19 @@ def main() -> int:
                         break
                     if time.monotonic() > deadline:
                         return fail(f"expect timeout (no match for /{arg}/)")
+                    read_available(2.0)
+            elif kind == "rawexpect":
+                # like `raw`: interpret backslash escapes, then match the
+                # resulting bytes against the RAW (uncleaned) pty stream
+                pat = re.compile(arg.encode().decode("unicode_escape").encode("latin1"))
+                deadline = time.monotonic() + EXPECT_TIMEOUT
+                while True:
+                    nxt = matched_since_raw(rawpos, pat)
+                    if nxt >= 0:
+                        rawpos = nxt
+                        break
+                    if time.monotonic() > deadline:
+                        return fail(f"rawexpect timeout (no match for /{arg}/)")
                     read_available(2.0)
             elif kind == "wait-exit":
                 deadline = time.monotonic() + 120

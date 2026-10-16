@@ -52,25 +52,30 @@ load-lock configure --offer-timeout-ms 180000 \
   --reason "verification container: codex Stop-hook wakeup costs a full model turn; default 30s claim window is too tight for real-model latency"
 
 # ----------------------------------------------------------------- step 1
-# Short interactive probe: boot the TUI, send a trivial prompt, confirm the
-# model answers and detect the per-turn completion marker the TUI renders
-# ("Worked for Ns • 10:38 AM" in codex 0.163.0's inline TUI). The scenario
-# driver expectations are built from this.
-note "pty probe (TUI boot + completion-marker detection)"
+# Short interactive probe: boot the TUI, send a trivial prompt, confirm a
+# real model turn fired and completed. The interactive TUI renders no
+# "N tokens used" marker (that is a `codex exec`-only line), so the driver
+# synchronizes on the machine-readable OSC 7501 state protocol the TUI
+# emits: ESC ]7501;state=working:app=codex on turn start, state=idle on
+# completion (verified on codex 0.163.0 host runs). rawexpect scans the
+# raw byte stream because the ANSI cleaner strips OSC sequences.
+note "pty probe (TUI boot + OSC-7501 turn-marker detection)"
 # The probe asks for "stressed" reversed -> "desserts": the echoed prompt
 # contains "stressed" but never "desserts", so a grep for the reply word
 # cannot be satisfied by the echo of the prompt itself.
 cat > /workspace/pty-probe-driver.txt <<'EOF'
 sleep 15
 raw \r
+sleep 5
 mark
 send Reply with the word "stressed" reversed, as a single word and nothing else.
-expect Worked for
+rawexpect \x1b]7501;state=working:app=codex
+rawexpect \x1b]7501;state=idle:app=codex
 send /quit
 wait-exit
 EOF
 set +e
-PTY_EXPECT_TIMEOUT=360 /usr/local/bin/codex-pty.py /workspace/pty-probe.log /workspace/pty-probe-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
+/usr/local/bin/codex-pty.py /workspace/pty-probe.log /workspace/pty-probe-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
 PROBE_RC=$?
 set -e
 clean_log /workspace/pty-probe.log > /workspace/pty-probe.clean.txt
@@ -81,14 +86,7 @@ if [ "$PROBE_RC" -ne 0 ]; then
   exit 66
 fi
 grep -q "desserts" /workspace/pty-probe.clean.txt \
-  || { echo "FAIL: probe model never replied with the expected word (TUI blocked on a dialog?)"; tail -c 3000 /workspace/pty-probe.clean.txt; exit 66; }
-if grep -q "Worked for" /workspace/pty-probe.clean.txt; then
-  TURN_END="Worked for"
-else
-  echo "FAIL: TUI renders no per-turn completion marker ('Worked for Ns'); cannot synchronize the pty driver on turns"
-  tail -c 3000 /workspace/pty-probe.clean.txt
-  exit 66
-fi
+  || { echo "FAIL: probe model never replied with the expected word (turn markers fired but no reply text)"; tail -c 3000 /workspace/pty-probe.clean.txt; exit 66; }
 
 # ----------------------------------------------------------------- step 2
 # Contention scenario: a CLI holder owns the permit; the model's acquire
@@ -117,13 +115,20 @@ trap 'kill "$HOLDER_REL_PID" 2>/dev/null || true; load-lock release --permit "$H
 SCENARIO_PROMPT="Verify the load-lock integration on this machine. Use ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock. Do exactly this, in order: (1) State whether your instructions include a section starting with '# load-lock: machine-wide heavy-work budget' and quote its first bullet. (2) Call the MCP tool mcp__load-lock__status and report the pool name, capacity and current usage. (3) Call the MCP tool mcp__load-lock__acquire with reason 'verify build' and op_key 'verify/build'. Report the exact state value it returns. (4) Run the shell command 'sleep 30' exactly once - that is light work while queued. (5) Finish with a one-paragraph summary of the states you observed so far; do not call any other load-lock tools before finishing. (6) If you then receive an instruction telling you that load-lock capacity is now reserved for you with an offer_token: call the load-lock claim tool with that exact offer_token, then call the load-lock release tool, and end with a final one-sentence confirmation."
 export SCENARIO_PROMPT
 
+# Turn synchronization: turn 1 = policy quote + MCP status + MCP acquire
+# (queued) + `sleep 30` light work + summary; then the Stop hook fires and
+# codex auto-continues the session (turn 2 = claim + release). Each turn is
+# bracketed by the TUI's OSC 7501 state=working / state=idle markers.
 cat > /workspace/codex-driver.txt <<EOF
 sleep 15
 raw \r
+sleep 5
 mark
 send ${SCENARIO_PROMPT}
-expect ${TURN_END}
-expect ${TURN_END}
+rawexpect \x1b]7501;state=working:app=codex
+rawexpect \x1b]7501;state=idle:app=codex
+rawexpect \x1b]7501;state=working:app=codex
+rawexpect \x1b]7501;state=idle:app=codex
 sleep 10
 send /quit
 wait-exit
@@ -131,7 +136,9 @@ EOF
 
 note "running codex interactive verification scenario (pty)"
 set +e
-PTY_EXPECT_TIMEOUT=420 /usr/local/bin/codex-pty.py /workspace/codex-transcript.log /workspace/codex-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
+# 300s per-expectation ceiling: turn 1 includes a real 30s shell sleep plus
+# several MCP round-trips; turn 2 is the Stop-hook continuation.
+PTY_EXPECT_TIMEOUT=300 /usr/local/bin/codex-pty.py /workspace/codex-transcript.log /workspace/codex-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
 PTY_RC=$?
 set -e
 note "pty driver exit code: $PTY_RC"
