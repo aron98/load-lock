@@ -10,8 +10,11 @@ Usage:
 
 Driver script directives, one per line:
   send <text>      type <text> and press Enter
-  raw <text>       write bytes verbatim (no Enter added)
+  raw <text>       write bytes (no Enter added); \\x1b \\r \\e \\n are unescaped
   expect <regex>   wait (expect-timeout) until regex matches NEW output
+  try-expect <regex> <secs>
+                   bounded wait: consume-and-continue if it matches, just
+                   continue after <secs> if it never does (optional dialogs)
   sleep <secs>     pause
   mark             consume all output so far; later expects match only new output
   wait-exit        wait for the child to exit (after /exit etc.)
@@ -23,6 +26,7 @@ LOGFILE. Exit codes: 0 = all expectations matched and child exited cleanly;
 1 = an expectation timed out (tail of log on stderr); 2 = spawn/other error.
 """
 
+import codecs
 import os
 import fcntl
 import re
@@ -130,7 +134,8 @@ def main() -> int:
             if kind == "send":
                 os.write(master, arg.encode() + b"\r")
             elif kind == "raw":
-                os.write(master, arg.encode())
+                # ASCII driver scripts only: \x1b \r \e etc. become real bytes.
+                os.write(master, codecs.decode(arg, "unicode_escape").encode("latin-1"))
             elif kind == "sleep":
                 read_available(float(arg))
             elif kind == "mark":
@@ -148,6 +153,20 @@ def main() -> int:
                         break
                     if time.monotonic() > deadline:
                         return fail(f"expect timeout (no match for /{arg}/)")
+                    read_available(2.0)
+            elif kind == "try-expect":
+                # try-expect <regex> <secs>: bounded wait, continue either way
+                # (for dialogs that may or may not appear).
+                pat_arg, _, secs_arg = arg.partition(" ")
+                pat = re.compile(pat_arg)
+                deadline = time.monotonic() + float(secs_arg or "30")
+                while True:
+                    nxt = matched_since(pos, pat)
+                    if nxt >= 0:
+                        pos = nxt
+                        break
+                    if time.monotonic() > deadline:
+                        break
                     read_available(2.0)
             elif kind == "wait-exit":
                 deadline = time.monotonic() + 120

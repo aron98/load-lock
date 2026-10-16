@@ -66,6 +66,11 @@ const p = process.env.HOME + "/.claude.json";
 const j = JSON.parse(fs.readFileSync(p, "utf8"));
 j.hasCompletedOnboarding = true;
 j.theme = "dark";
+// Accept the BypassPermissions warning up-front so the interactive TUI
+// phases never block on the "No, exit / Yes, I accept" confirmation dialog
+// (headless -p never shows it). The pty drivers also carry a fallback that
+// answers the dialog via arrow keys, in case newer builds ignore this key.
+j.bypassPermissionsModeAccepted = true;
 j.projects = j.projects || {};
 j.projects["/workspace"] = { ...(j.projects["/workspace"] || {}), hasTrustDialogAccepted: true };
 fs.writeFileSync(p, JSON.stringify(j, null, 2));
@@ -180,7 +185,15 @@ done
 [ "$(state_of /tmp/holder3a.json)" = "granted" ] || { echo "FAIL: 3a holder never granted"; exit 66; }
 H3A=$(permit_of /tmp/holder3a.json)
 
+# DIALOG-FALLBACK: if the TUI still shows the BypassPermissions confirmation
+# despite the config seed, select "Yes, I accept" (down arrow) and confirm.
+# Harmless no-ops when no dialog is up (down+enter on an empty input box).
 cat > /tmp/driver-3a.txt <<'DRIVER'
+try-expect BypassPermissionsmode 25
+raw \x1b[B
+sleep 1
+raw \r
+sleep 8
 send Say the single word READY and nothing else.
 sleep 3
 mark
@@ -231,6 +244,11 @@ H3B=$(permit_of /tmp/holder3b.json)
 H3B_WATCHER=$!
 
 cat > /tmp/driver-3b.txt <<'DRIVER'
+try-expect BypassPermissionsmode 25
+raw \x1b[B
+sleep 1
+raw \r
+sleep 8
 send Call the MCP tool mcp__load-lock__acquire with reason "idle wakeup verification" and op_key "verify/async-wake". It will be queued. Reply with only the single word STANDBY and end your turn. Then wait without doing anything. When a wakeup message tells you capacity was reserved for a request from this directory, call mcp__load-lock__pending, then claim the offer with mcp__load-lock__claim (offer_token), then call mcp__load-lock__release with the permit_token, and finish by replying with only the single word DONE.
 sleep 3
 mark
