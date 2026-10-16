@@ -56,13 +56,15 @@ load-lock configure --offer-timeout-ms 180000 \
 # model answers and detect the per-turn completion marker the TUI renders
 # ("N tokens used"). The scenario driver expectations are built from this.
 note "pty probe (TUI boot + completion-marker detection)"
+# The probe asks for "stressed" reversed -> "desserts": the echoed prompt
+# contains "stressed" but never "desserts", so a grep for the reply word
+# cannot be satisfied by the echo of the prompt itself.
 cat > /workspace/pty-probe-driver.txt <<'EOF'
 sleep 15
 raw \r
 mark
-send hello, reply with the single word: pong
-sleep 60
-mark
+send Reply with the word "stressed" reversed, as a single word and nothing else.
+expect tokens used
 send /quit
 wait-exit
 EOF
@@ -77,8 +79,8 @@ if [ "$PROBE_RC" -ne 0 ]; then
   tail -c 3000 /workspace/pty-probe.clean.txt
   exit 66
 fi
-grep -q "pong" /workspace/pty-probe.clean.txt \
-  || { echo "FAIL: probe model never replied (TUI blocked on a dialog?)"; tail -c 3000 /workspace/pty-probe.clean.txt; exit 66; }
+grep -q "desserts" /workspace/pty-probe.clean.txt \
+  || { echo "FAIL: probe model never replied with the expected word (TUI blocked on a dialog?)"; tail -c 3000 /workspace/pty-probe.clean.txt; exit 66; }
 if grep -q "tokens used" /workspace/pty-probe.clean.txt; then
   TURN_END="tokens used"
 else
@@ -175,14 +177,20 @@ EOF
 note "checking transcript for policy visibility"
 grep -q "load-lock" /workspace/codex-transcript.clean.txt \
   || { echo "FAIL: transcript never mentions load-lock"; exit 66; }
-grep -q "heavy-work budget" /workspace/codex-transcript.clean.txt \
-  || { echo "FAIL: transcript never quotes the policy brief"; exit 66; }
+# Strong check: the scenario prompt only names the policy header, so the
+# bullet text ("Heavy vs light: judge by expected CPU/memory/IO cost ...")
+# can only appear if the SessionStart hook injected the real policy brief
+# into the model's context and the model quoted it back.
+grep -Eq "Heavy vs light|CPU/memory/IO" /workspace/codex-transcript.clean.txt \
+  || { echo "FAIL: transcript never quotes the policy brief's first bullet (SessionStart hook did not inject context, or the model refused to quote it)"; exit 66; }
 
 note "checking transcript for Stop-hook wakeup evidence"
 # The Stop hook decision-block reason (claim instruction) is what codex
 # feeds back as the continuation prompt; it must appear in the TUI log,
-# or the second turn never happened.
-grep -q "reserved for you" /workspace/codex-transcript.clean.txt \
+# or the second turn never happened. "Claim it NOW" and the offer_token
+# id prefix ("off_") both come from claimInstruction() in the hook and
+# never from the scenario prompt, so they prove the hook actually fired.
+grep -q "Claim it NOW" /workspace/codex-transcript.clean.txt \
   || { echo "FAIL: transcript never shows the Stop-hook claim instruction"; exit 66; }
 grep -q "off_" /workspace/codex-transcript.clean.txt \
   || { echo "FAIL: transcript never shows the offer_token from the Stop hook"; exit 66; }
