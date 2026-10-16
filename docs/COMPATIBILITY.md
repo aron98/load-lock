@@ -35,7 +35,7 @@ Status labels mean exactly this:
 | Harness | MCP tools | Policy injection | Compaction restore | Idle wakeup | Async push into context | Cleanup fidelity | Overall |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **OpenCode** (v2) | Native plugin, `load_lock_*` (better than MCP) | Context hook every model call | Yes (hook re-fires per model call) | Yes — `session.synthetic` at execution boundary (live-verified; never interrupts in-flight shell) | Yes (live-verified) | Full: `run_with_permit` tracked jobs + session heartbeats | **Implemented + live-verified** |
-| **Claude Code** | MCP `mcp__load-lock__*` (user scope) | `SessionStart` hook plain-stdout context | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook decision-block + async `await-offer` (`asyncRewake`) | Yes, via asyncRewake (contract-tested) | Full via MCP `run_with_permit` + server heartbeats | **Implemented + contract-tested** |
+| **Claude Code** | MCP `mcp__load-lock__*` (user scope) — live-verified round-trip | `SessionStart` hook plain-stdout context (live-verified: model quoted the brief verbatim) | Yes (SessionStart matcher `compact`) — live-verified after `/compact` | Yes — `Stop` hook decision-block + async `await-offer` (`asyncRewake`), both live-verified | Yes, via asyncRewake (live-verified; the wake text itself is not rendered by the TTY, but the wake drives the full claim lifecycle) | Full via MCP `run_with_permit` + server heartbeats (live-verified incl. a job outliving the claude process) | **Implemented + live-verified** |
 | **Codex CLI** | MCP `mcp__load-lock__*` (config.toml) | `SessionStart` + `SubagentStart` additionalContext; `~/.codex/AGENTS.md` | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook `decision:"block"` continuation | Partial: async background hooks do NOT start a new turn (documented limitation); stop-hook covers turn boundaries | Full via MCP `run_with_permit` + server heartbeats | **Implemented + live-verified** (interactive TUI in Docker; exec-mode MCP blocked upstream — see Tier 2 notes) |
 | **Gemini CLI** | Yes (`settings.json` mcpServers, first-class installer) | `GEMINI.md` global (config `context.fileName`) | Via global GEMINI.md (always loaded) | No hook mechanism exists | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **GitHub Copilot CLI** | Yes (`~/.copilot/mcp-config.json`, merge-only installer; verify with `copilot mcp list`) | `~/.copilot/copilot-instructions.md` (marked section) | Via global instructions file | Hooks reported in ecosystem content but **not verified in official docs** — none installed | Unverified | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
@@ -70,7 +70,7 @@ tool round-trip (acquire → queued → wakeup → claim → release), execution
 boundary delivery without interrupting a running `sleep`, skill visible,
 and graceful handling of a deliberately missed offer (paused → cancel).
 
-### Tier 2 — Claude Code (contract-tested) / Codex CLI (hooks + MCP, live-verified)
+### Tier 2 — Claude Code / Codex CLI (hooks + MCP, live-verified)
 
 `load-lock install --harness claude-code|codex` configures the MCP server
 (user scope) plus hooks:
@@ -87,8 +87,20 @@ and graceful handling of a deliberately missed offer (paused → cancel).
   shown); the agent claims via `pending`/`claim`.
 
 Contract tests cover all hook stdin/stdout shapes against the documented
-harness contracts. Claude Code live verification is pending a machine with
-the harness installed.
+harness contracts. Claude Code is additionally **live-verified** (in Docker,
+via `docker/run-claude-verify.sh` against the real `claude` CLI): SessionStart
+policy brief in context at startup; the same brief re-injected after
+`/compact` (the model quoted the fresh "load-lock now:" line, not a stale
+copy); the full MCP round-trip acquire → queued → offer → claim →
+`run_with_permit` → auto-release; the `Stop` hook decision-block live (async
+watcher disabled so the stop path was exercised directly); the async
+`await-offer` (`asyncRewake`) watcher waking an idle interactive session,
+which then claimed and released; a `Task`-tool subagent using the MCP tools
+and seeing the policy; and a `run_with_permit` background job that
+outlived the `claude` process and was auto-released. One nuance: the TUI does
+not render the async watcher's stderr wake text — the wake still works (the
+session resumes and the claim round-trip succeeds), only the message is not
+shown.
 
 Codex CLI (0.163.0) is live-verified end-to-end in Docker
 (`docker/verify-codex.sh`, driven through a real pty TUI session via
@@ -98,7 +110,8 @@ competing CLI holder, and Stop-hook `decision:"block"` wakeup that continues
 the session with the claim instruction. The verification drives the real
 interactive hook-trust review (the "Hooks need review" dialog) once —
 `--dangerously-bypass-hook-trust` is deliberately NOT used because it forces
-codex embedded mode, which never injects MCP tools. Note: async background
+codex embedded mode, which never injects MCP tools (real users trust the
+hooks once via `/hooks`; the installer prints this). Note: async background
 hooks do not wake an idle Codex session — the Stop hook covers turn
 boundaries only (verified as such).
 
@@ -199,11 +212,12 @@ reconnect, view-model shaping, frame rendering) is covered by
 
 ## Verified vs proposed — summary counts
 
-- Live-verified: OpenCode (full adapter, including wakeup); Codex CLI
+- Live-verified: OpenCode (full adapter, including wakeup); Claude Code
+  (full adapter in Docker: policy injection, compact restore, Stop-hook and
+  asyncRewake wakeup paths, subagents, background-job cleanup); Codex CLI
   (Docker, interactive TUI: policy injection, MCP round-trip, FIFO queueing
   behind a CLI holder, Stop-hook decision-block wakeup; exec-mode MCP
   injection blocked upstream — see Tier 2 notes).
-- Contract-tested: Claude Code hook/MCP contracts.
 - Config-tested: Gemini CLI, Copilot CLI, Cline, Roo Code, Goose (installer
   round-trips, temp HOME; real harnesses not installed on the verification
   machine).
