@@ -55,7 +55,8 @@ agent A (OpenCode)        agent B (Codex)         agent C (Claude Code)
 
 ```sh
 npm install -g @aron98/load-lock
-load-lock install --harness opencode     # or claude-code | codex | generic
+load-lock install --harness opencode     # or claude-code | codex | gemini-cli |
+                                         # copilot-cli | cline | roo-code | goose | generic
 load-lock doctor
 ```
 
@@ -67,8 +68,12 @@ use the generic stdio server; plain shells use the CLI:
 ```sh
 load-lock run --reason "nightly build" -- npm run build   # acquire→run→release
 load-lock status                                          # machine-wide view
+load-lock top                                             # live read-only dashboard (q quits)
 load-lock configure --capacity 2 --reason "16-core host" --author me
 ```
+
+OpenCode users also get a live dashboard panel inside the TUI (`/load-lock`)
+— same data, themed. See docs/OPERATIONS.md → "Dashboard".
 
 ## Layout
 
@@ -99,17 +104,23 @@ skills/         packaged skill
 
 ## Status
 
-- Core daemon/protocol/CLI: implemented, 32 automated tests passing
+- Core daemon/protocol/CLI: implemented, 59 automated tests passing
   (multi-process daemons, real processes, restarts, races, expiry,
-  PID-reuse, subprocess survival).
+  PID-reuse, subprocess survival; plus 9 dashboard tests — view-model
+  shaping, event-cursor resume across a daemon restart, reconnect, and a
+  `load-lock top --once` render smoke test).
 - OpenCode adapter: implemented and **live-verified** (tools, policy
   injection, compaction-proof context hook, execution-boundary wakeup
   with tokens, skill).
 - Claude Code + Codex CLI adapters: implemented, contract-tested against
   documented hook JSON; not yet live-verified (harnesses not installed on
   the verification machine).
-- Gemini CLI, Copilot CLI, Cursor, Cline, Roo Code, Goose, Aider:
-  researched; MCP fallback tier (Aider: manual CLI tier). See
+- Tier-3 fallback installers (Gemini CLI, Copilot CLI, Cline, Roo Code,
+  Goose): implemented merge-only installers (MCP stdio server entry into
+  the harness's real config + a global instructions-file section/policy
+  rule file), config-tested via temp-HOME round-trips; fallback tier (no
+  hooks, no async push — no idle wakeup).
+- Cursor, Aider: researched; generic snippet / manual CLI tier. See
   COMPATIBILITY.md for the matrix.
 
 Linux-first; macOS works with documented liveness-check limitations;

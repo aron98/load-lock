@@ -13,7 +13,9 @@
     "skipLibCheck": true,
     "declaration": true,
     "sourceMap": false,
-    "resolveJsonModule": false
+    "resolveJsonModule": false,
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/solid"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

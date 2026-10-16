@@ -10,7 +10,12 @@ npm install -g @aron98/load-lock    # or: npm install -g ./aron98-load-lock-<ver
 load-lock install --harness opencode
 load-lock install --harness claude-code
 load-lock install --harness codex
-load-lock install --harness generic   # prints MCP snippets for other harnesses
+load-lock install --harness gemini-cli
+load-lock install --harness copilot-cli
+load-lock install --harness cline
+load-lock install --harness roo-code
+load-lock install --harness goose
+load-lock install --harness generic   # prints MCP snippets for other harnesses (Cursor)
 ```
 
 What each installer does (all merges are non-destructive; uninstall removes
@@ -27,8 +32,35 @@ exactly the entries it added):
   `Stop`), appends `[mcp_servers.load-lock]` to `~/.codex/config.toml` if
   absent, adds a marked section to `~/.codex/AGENTS.md`. **Then run `/hooks`
   inside Codex once to trust the hooks.**
-- **generic** — prints MCP stdio config snippets (Gemini CLI, Cursor,
-  Cline/Roo, Goose) plus a suggested instructions-file section.
+- **gemini-cli** — writes `mcpServers.load-lock` (stdio: `node` + absolute
+  path to `dist/mcp/main.js`) into `~/.gemini/settings.json`, adds a marked
+  section to `~/.gemini/GEMINI.md`. MCP-fallback tier: Gemini CLI has no
+  hooks and no async push, so there is no idle wakeup — offers surface at
+  tool boundaries.
+- **copilot-cli** — merges `mcpServers.load-lock` (`type: local`) into
+  `~/.copilot/mcp-config.json` (verify with `copilot mcp list`) and adds a
+  marked section to `~/.copilot/copilot-instructions.md`. MCP-fallback
+  tier: hooks are reported in ecosystem content but not verified in
+  official docs, so none are installed — no idle wakeup is claimed; offers
+  surface at tool boundaries.
+- **cline** — merges `mcpServers.load-lock` into
+  `~/.cline/data/settings/cline_mcp_settings.json` (or the path in
+  `CLINE_MCP_SETTINGS_PATH`) and writes a dedicated
+  `~/.cline/rules/load-lock.md`. MCP-fallback tier: no hooks, no async
+  push — no idle wakeup.
+- **roo-code** — merges `mcpServers.load-lock` into `<project>/.roo/mcp.json`
+  (the CLI's cwd unless `--project` is passed) and into every **existing**
+  global `mcp_settings.json` (VS Code globalStorage; existing files only —
+  never created), plus a dedicated `~/.roo/rules/load-lock.md`. MCP-fallback
+  tier: no hooks, no async push — no idle wakeup.
+- **goose** — merges an `extensions.load-lock` stdio block (marker-tagged
+  block-mapping YAML; refuses flow-style `extensions:`) into
+  `~/.config/goose/config.yaml` (XDG_CONFIG_HOME respected) and adds a
+  marked section to `~/.config/goose/.goosehints`. MCP-fallback tier: no
+  hooks, no async push — no idle wakeup.
+- **generic** — prints MCP stdio config snippets (Cursor and other
+  harnesses without a dedicated installer) plus a suggested
+  instructions-file section.
 
 `load-lock uninstall --harness <harness>` reverses any of these.
 
@@ -75,6 +107,64 @@ Semantics of changes:
 limits (containers respected — we never assume 2 cores means 2 jobs),
 available memory, and current load/memory pressure with an advisory
 suggestion. Agents are expected to consult it before proposing capacity.
+
+## Dashboard: watching the budget live
+
+Two read-only viewers surface the machine-wide state in real time. Both use
+the library's own client + protocol (`./shared/client`, `./shared/protocol`)
+over the daemon's watch event stream — neither scrapes CLI output — and
+both resume cleanly across daemon restarts (event-cursor `events since` +
+journal recovery).
+
+**The viewers never acquire a permit.** Watching the lock is light work by
+construction: they only ever call `status` / `events` / `inspect` / `watch`.
+The one admin action they expose — force-release — sits behind an explicit
+select + confirm step and never runs automatically.
+
+### `load-lock top` (portable, any terminal)
+
+```sh
+load-lock top          # full-screen live dashboard (q quit, r resync)
+load-lock top --once   # render one frame and exit (pipes, scripts, CI logs)
+```
+
+Shows pools with capacity vs in-use, holder cards (label, reason, phase,
+pid/pgid, age, start-deadline or lease countdown), offer cards with the
+claim-window countdown, FIFO queue positions, paused requests, the recent
+event feed, and the `inspect_machine` panel. It reconnects with backoff if
+the daemon dies, and a daemon restart is announced and re-synced (durable
+event ids are per daemon lifetime; the cursor resets on restart).
+
+Zero extra dependencies: it renders plain text lines over the standard
+alternate screen, so it works anywhere the CLI works.
+
+### OpenCode TUI panel
+
+The OpenCode installer also ships the package's `./tui` plugin export (a
+companion to the main plugin, which is unchanged). Inside the opencode TUI:
+
+- `/load-lock` (or the command palette) opens the **load-lock.dashboard**
+  session panel full-screen: same data as `load-lock top`, themed,
+  live-updating.
+- The home footer gains a small `lock 1/1·Q2` indicator.
+- `r` resyncs; `x` opens force-release, which requires an explicit
+  select + confirm — the panel itself is read-only.
+
+Verified live against opencode 2.0.29: the panel renders pools, holder
+cards, queue positions and the event feed against the real daemon, and the
+`x` flow refuses to release anything until the confirm dialog accepts.
+Plugins configured in `opencode.json` that expose `./tui` are loaded
+automatically by the CLI, so the published package needs no extra config.
+For local development against a checkout, opencode also auto-discovers
+plugins laid out like a package under `<project>/.opencode/plugins/<name>/`
+(`index.ts` re-exporting the main plugin, `tui.ts` re-exporting
+`./dist/adapters/opencode/tui.js`).
+
+### Notes for other harnesses
+
+`load-lock top` is the dashboard for every harness (it only needs the
+daemon, which every integration spawns). Harnesses without an in-app UI
+surface get exactly that — no parity claims; see `docs/COMPATIBILITY.md`.
 
 ## Diagnostics & recovery
 
