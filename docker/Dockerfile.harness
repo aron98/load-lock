@@ -21,20 +21,27 @@ FROM node:24-bookworm-slim AS builder
 WORKDIR /src
 COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
+# skills/ ships in the package ("files") and load-lock install copies
+# skills/load-lock/SKILL.md into the harness — without this COPY the packed
+# tarball lacks it and `load-lock install --harness claude-code` dies on ENOENT.
+COPY skills ./skills
 RUN npm ci && npm run build && npm pack
 
 FROM node:24-bookworm-slim AS harness
 ARG HARNESS=codex
 ENV HARNESS=${HARNESS}
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git procps \
+ && apt-get install -y --no-install-recommends ca-certificates git procps python3 \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /pkg
 COPY --from=builder /src/*.tgz ./
 RUN npm install -g ./*.tgz \
  && case "$HARNESS" in \
       codex)        npm install -g @openai/codex ;; \
-      claude-code)  npm install -g @anthropic-ai/claude-code ;; \
+      # --allow-scripts: npm 11 blocks package postinstall scripts by default;
+      # claude-code's install.cjs sets up bundled ripgrep + platform files and
+      # the CLI is unreliable without it.
+      claude-code)  npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code ;; \
       *) echo "unknown HARNESS: $HARNESS" >&2; exit 64 ;; \
     esac \
  && mkdir -p /workspace
@@ -42,20 +49,34 @@ RUN npm install -g ./*.tgz \
 # Seed harness config BEFORE the load-lock installer so the installer only
 # appends its MCP entry to the existing provider config.
 COPY docker/seed/codex-config.toml /tmp/seed/codex-config.toml
+# Claude Code refuses --dangerously-skip-permissions when running as root, so
+# the claude container runs as the unprivileged "node" user (uid 1000, shipped
+# by the official node image) and the integration is installed into /home/node
+# (its HOME). Codex keeps using /root exactly as before. The install itself
+# runs as root (build step), so the claude-code branch chowns /home/node to
+# node afterwards - Claude Code rewrites ~/.claude.json at runtime and would
+# hit EACCES otherwise.
 RUN mkdir -p /root/.codex \
  && case "$HARNESS" in \
       codex) \
         cp /tmp/seed/codex-config.toml /root/.codex/config.toml \
         && load-lock install --harness codex ;; \
       claude-code) \
-        load-lock install --harness claude-code ;; \
+        mkdir -p /home/node/.claude \
+        && chown node:node /workspace \
+        && HOME=/home/node load-lock install --harness claude-code \
+        && chown -R node:node /home/node ;; \
     esac \
- && load-lock doctor || true
+ && { load-lock doctor || true; }
 
 # Scenario scripts run inside the container (see docker/run-*-verify.sh).
+# claude-pty.py drives the interactive TUI through a pty for the parts of
+# verification that need an idle session or slash commands (/compact,
+# async await-offer wake).
 COPY docker/verify-codex.sh /usr/local/bin/verify-codex.sh
 COPY docker/verify-claude-code.sh /usr/local/bin/verify-claude-code.sh
-RUN chmod +x /usr/local/bin/verify-*.sh
+COPY docker/claude-pty.py /usr/local/bin/claude-pty.py
+RUN chmod +x /usr/local/bin/verify-*.sh /usr/local/bin/claude-pty.py
 
 WORKDIR /workspace
 # Scenario script is passed as the docker run command (see run-*-verify.sh).
