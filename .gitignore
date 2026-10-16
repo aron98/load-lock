@@ -3,4 +3,5 @@ dist/
 .opencode/
 *.tgz
 *.log
+__pycache__/
 docker/.env
