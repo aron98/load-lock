@@ -86,6 +86,7 @@ def main() -> int:
 
     def read_available(timeout: float) -> bool:
         """Drain pty for up to `timeout` seconds. Returns True if any data."""
+        nonlocal text
         saw = False
         deadline = time.monotonic() + timeout
         while True:
