@@ -31,9 +31,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /pkg
 COPY --from=builder /src/*.tgz ./
+# codex is version-pinned for reproducible verification; bump deliberately
+# (exec-mode MCP tool injection was broken at 0.162.x — openai/codex#38689).
 RUN npm install -g ./*.tgz \
  && case "$HARNESS" in \
-      codex)        npm install -g @openai/codex ;; \
+      codex)        npm install -g @openai/codex@0.163.0 ;; \
       claude-code)  npm install -g @anthropic-ai/claude-code ;; \
       *) echo "unknown HARNESS: $HARNESS" >&2; exit 64 ;; \
     esac \
@@ -55,7 +57,8 @@ RUN mkdir -p /root/.codex \
 # Scenario scripts run inside the container (see docker/run-*-verify.sh).
 COPY docker/verify-codex.sh /usr/local/bin/verify-codex.sh
 COPY docker/verify-claude-code.sh /usr/local/bin/verify-claude-code.sh
-RUN chmod +x /usr/local/bin/verify-*.sh
+COPY docker/codex-pty.py /usr/local/bin/codex-pty.py
+RUN chmod +x /usr/local/bin/verify-*.sh /usr/local/bin/codex-pty.py
 
 WORKDIR /workspace
 # Scenario script is passed as the docker run command (see run-*-verify.sh).

@@ -1,14 +1,23 @@
 #!/bin/bash
 # load-lock x Codex CLI live verification (runs INSIDE the container).
 #
-# Mirrors the opencode live-verification, adapted to Codex hook semantics:
-#   1. policy brief must be visible to the model (SessionStart hook)
-#   2. MCP tools registered (mcp__load-lock__*)
-#   3. acquire -> queued (holder CLI process owns the only permit)
-#   4. light work while queued (sleep)
-#   5. Stop hook sees the cwd-matched offer after the holder releases and
-#      continues the session with a claim instruction (idle wakeup)
-#   6. model claims + releases; capacity ends clean
+# `codex exec` (0.163.0) connects to MCP servers but never injects their
+# tools into the model's tool catalog (openai/codex#38689 — verified
+# headlessly in this image: connection + handshake succeed, model reports
+# the tools missing even with mcp_optional_startup_grace_ms=0,
+# mcp_servers.load-lock.required=true and startup_timeout_sec=20).
+# Interactive codex DOES register MCP tools, so the full loop is driven
+# through a real TUI session with docker/codex-pty.py:
+#
+#   1. policy brief visible to the model (SessionStart hook)
+#   2. MCP tools registered and callable in the TUI (mcp__load-lock__*)
+#   3. acquire -> queued (a competing holder owns the only permit)
+#   4. light work while queued (shell sleep)
+#   5. holder releases the moment the model queues (event-driven), so a
+#      cwd-matching offer exists when the model's turn ends
+#   6. Stop hook decision-blocks with the claim instruction (idle wakeup)
+#   7. model claims + releases; capacity ends clean
+#
 # Exit 0 = all assertions passed.
 set -eu
 
@@ -19,32 +28,100 @@ cd /workspace
 
 note() { printf '\n===== %s =====\n' "$*"; }
 
+permit_of() { node -e 'process.stdout.write((JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).entry||{}).permitToken ?? "")' "$1"; }
+state_of() { node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).state ?? "")' "$1"; }
+
+# Strip ANSI escapes / control chars from a raw pty log, then join wrapped
+# lines so word-wrapped phrases still grep cleanly.
+clean_log() { perl -pe 's/\e\[[0-9;?]*[a-zA-Z]//g; s/\e\][^\e\x07]*(?:\e\\|\x07)?//g; s/[\x00-\x08\x0b-\x1f]//g' "$1" | tr '\n' ' '; }
+
 note "doctor"
+load-lock service stop >/dev/null 2>&1 || true
+rm -rf "$LOAD_LOCK_STATE_DIR"
+mkdir -p "$LOAD_LOCK_STATE_DIR"
 load-lock doctor
 load-lock service start
 
-note "starting competing holder (holds the permit for 30s)"
-load-lock run --reason "holder: competing build" --op-key holder/verify -- sleep 30 &
-HOLDER_PID=$!
+# ----------------------------------------------------------------- step 1
+# Short interactive probe: boot the TUI, send a trivial prompt, confirm the
+# model answers and detect the per-turn completion marker the TUI renders
+# ("N tokens used"). The scenario driver expectations are built from this.
+note "pty probe (TUI boot + completion-marker detection)"
+cat > /workspace/pty-probe-driver.txt <<'EOF'
+sleep 15
+raw \r
+mark
+send hello, reply with the single word: pong
+sleep 60
+mark
+send /quit
+wait-exit
+EOF
+set +e
+/usr/local/bin/codex-pty.py /workspace/pty-probe.log /workspace/pty-probe-driver.txt -- --dangerously-bypass-hook-trust
+PROBE_RC=$?
+set -e
+clean_log /workspace/pty-probe.log > /workspace/pty-probe.clean.txt
+note "probe exit code: $PROBE_RC"
+if [ "$PROBE_RC" -ne 0 ]; then
+  echo "probe log tail:"
+  tail -c 3000 /workspace/pty-probe.clean.txt
+  exit 66
+fi
+grep -q "pong" /workspace/pty-probe.clean.txt \
+  || { echo "FAIL: probe model never replied (TUI blocked on a dialog?)"; tail -c 3000 /workspace/pty-probe.clean.txt; exit 66; }
+if grep -q "tokens used" /workspace/pty-probe.clean.txt; then
+  TURN_END="tokens used"
+else
+  TURN_END="codex"
+  echo "note: no 'tokens used' marker found in TUI output; using timed waits"
+fi
 
-note "running codex exec verification scenario"
-# sleep 1 gives the holder time to acquire first, so the model's acquire queues.
-sleep 1
-codex exec \
-  --skip-git-repo-check \
-  --dangerously-bypass-hook-trust \
-  "Verify the load-lock integration on this machine. Do exactly this, in order, using ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock: \
-(1) State whether your instructions include a section starting with '# load-lock: machine-wide heavy-work budget' and quote its first bullet. \
-(2) Call the MCP tool mcp__load-lock__status and report the pool name, capacity and current usage. \
-(3) Call the MCP tool mcp__load-lock__acquire with reason 'verify build' and op_key 'verify/build'. Report the exact state value (it should be 'queued' because another process holds the permit). \
-(4) Run the shell command 'sleep 6'. That is light work while queued - do it once and do not sleep again. \
-(5) After the sleep, finish with a one-paragraph summary of the states you observed so far. Do not call any other load-lock tools before finishing." \
-  2>&1 | tee /workspace/codex-transcript.txt
-CODEX_RC=${PIPESTATUS[0]}
+# ----------------------------------------------------------------- step 2
+# Contention scenario: a CLI holder owns the permit; the model's acquire
+# queues. The holder is released the moment the model's request appears in
+# the queue (event-driven), so by the time the model ends its turn a
+# cwd-matching offer exists and the Stop hook must decision-block with the
+# claim instruction.
+note "starting competing holder (released once the model queues)"
+load-lock acquire --json --op-key holder/roundtrip --reason "holder: competing build" --label "cli-holder" \
+  > /tmp/holder.json
+[ "$(state_of /tmp/holder.json)" = "granted" ] || { echo "FAIL: holder not granted"; exit 66; }
+H1=$(permit_of /tmp/holder.json)
 
-wait "$HOLDER_PID"
-note "codex exit code: $CODEX_RC"
-[ "$CODEX_RC" -eq 0 ] || exit 65
+(
+  for _ in $(seq 1 900); do
+    load-lock status --json 2>/dev/null | grep -q '"opKey": "verify/build"' && break
+    sleep 1
+  done
+  sleep 2
+  load-lock release --permit "$H1" > /tmp/holder-release.json
+) &
+HOLDER_REL_PID=$!
+trap 'kill "$HOLDER_REL_PID" 2>/dev/null || true; load-lock release --permit "$H1" >/dev/null 2>&1 || true' EXIT
+
+cat > /workspace/codex-driver.txt <<EOF
+sleep 15
+raw \r
+mark
+send Verify the load-lock integration on this machine. Use ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock. Do exactly this, in order: (1) State whether your instructions include a section starting with '# load-lock: machine-wide heavy-work budget' and quote its first bullet. (2) Call the MCP tool mcp__load-lock__status and report the pool name, capacity and current usage. (3) Call the MCP tool mcp__load-lock__acquire with reason 'verify build' and op_key 'verify/build'. Report the exact state value it returns. (4) Run the shell command 'sleep 30' exactly once - that is light work while queued. (5) Finish with a one-paragraph summary of the states you observed so far; do not call any other load-lock tools before finishing. (6) If you then receive an instruction telling you that load-lock capacity is now reserved for you with an offer_token: call the load-lock claim tool with that exact offer_token, then call the load-lock release tool, and end with a final one-sentence confirmation.
+expect ${TURN_END}
+sleep 75
+send /quit
+wait-exit
+EOF
+
+note "running codex interactive verification scenario (pty)"
+set +e
+/usr/local/bin/codex-pty.py /workspace/codex-transcript.log /workspace/codex-driver.txt -- --dangerously-bypass-hook-trust
+PTY_RC=$?
+set -e
+note "pty driver exit code: $PTY_RC"
+clean_log /workspace/codex-transcript.log > /workspace/codex-transcript.clean.txt
+
+kill "$HOLDER_REL_PID" 2>/dev/null || true
+wait "$HOLDER_REL_PID" 2>/dev/null || true
+load-lock release --permit "$H1" > /tmp/holder-release.json || true
 
 note "daemon event log"
 load-lock events | tee /workspace/events.json
@@ -63,8 +140,8 @@ const at = (pred, m) => { const e = events.find(pred); ok(e, m); return e; };
 const byOp = (op) => (e) => e.entry?.opKey === op;
 
 // holder: granted then released
-const hG = at((e) => e.type === "granted" && byOp("holder/verify")(e), "no holder grant event");
-at((e) => e.type === "released" && byOp("holder/verify")(e), "no holder release event");
+const hG = at((e) => e.type === "granted" && byOp("holder/roundtrip")(e), "no holder grant event");
+at((e) => e.type === "released" && byOp("holder/roundtrip")(e), "no holder release event");
 
 // model agent (MCP): queued -> offered -> claimed -> released, in order
 const q  = at((e) => e.type === "queued"    && byOp("verify/build")(e), "model never queued");
@@ -81,8 +158,10 @@ console.log("PASS: holder granted@%s; model queued@%s offered@%s claimed@%s rele
 EOF
 
 note "checking transcript for policy visibility"
-grep -q "load-lock" /workspace/codex-transcript.txt \
+grep -q "load-lock" /workspace/codex-transcript.clean.txt \
   || { echo "FAIL: transcript never mentions load-lock"; exit 66; }
+grep -q "heavy-work budget" /workspace/codex-transcript.clean.txt \
+  || { echo "FAIL: transcript never quotes the policy brief"; exit 66; }
 
 note "capacity must be free again"
 IN_USE=$(load-lock status | head -1)
