@@ -36,7 +36,7 @@ Status labels mean exactly this:
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **OpenCode** (v2) | Native plugin, `load_lock_*` (better than MCP) | Context hook every model call | Yes (hook re-fires per model call) | Yes — `session.synthetic` at execution boundary (live-verified; never interrupts in-flight shell) | Yes (live-verified) | Full: `run_with_permit` tracked jobs + session heartbeats | **Implemented + live-verified** |
 | **Claude Code** | MCP `mcp__load-lock__*` (user scope) | `SessionStart` hook plain-stdout context | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook decision-block + async `await-offer` (`asyncRewake`) | Yes, via asyncRewake (contract-tested) | Full via MCP `run_with_permit` + server heartbeats | **Implemented + contract-tested** |
-| **Codex CLI** | MCP `mcp__load-lock__*` (config.toml) | `SessionStart` + `SubagentStart` additionalContext; `~/.codex/AGENTS.md` | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook `decision:"block"` continuation | Partial: async background hooks do NOT start a new turn (documented limitation); stop-hook covers turn boundaries | Full via MCP `run_with_permit` + server heartbeats | **Implemented + contract-tested** (hooks need `/hooks` trust review) |
+| **Codex CLI** | MCP `mcp__load-lock__*` (config.toml) | `SessionStart` + `SubagentStart` additionalContext; `~/.codex/AGENTS.md` | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook `decision:"block"` continuation | Partial: async background hooks do NOT start a new turn (documented limitation); stop-hook covers turn boundaries | Full via MCP `run_with_permit` + server heartbeats | **Implemented + live-verified** (interactive TUI in Docker; exec-mode MCP blocked upstream — see Tier 2 notes) |
 | **Gemini CLI** | Yes (`settings.json` mcpServers, first-class installer) | `GEMINI.md` global (config `context.fileName`) | Via global GEMINI.md (always loaded) | No hook mechanism exists | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **GitHub Copilot CLI** | Yes (`copilot mcp add`) | AGENTS.md/GEMINI.md discovery + custom instructions | Via global instructions file | Hooks reported in ecosystem content but **not verified in official docs** — treat as unavailable | Unverified | Via MCP `run_with_permit` only | Proposed (MCP fallback) |
 | **Cursor** | Yes (`.cursor/mcp.json` + global) | `.cursor/rules/*.md` Always rules | Rules re-apply (Always) | `stop` hook exists but **beta** with a less-documented JSON contract — not shipped | Beta/unverified | Via MCP `run_with_permit` only | Proposed (MCP fallback; hook tier possible later) |
@@ -70,7 +70,7 @@ tool round-trip (acquire → queued → wakeup → claim → release), execution
 boundary delivery without interrupting a running `sleep`, skill visible,
 and graceful handling of a deliberately missed offer (paused → cancel).
 
-### Tier 2 — Claude Code / Codex CLI (hooks + MCP, contract-tested)
+### Tier 2 — Claude Code (contract-tested) / Codex CLI (hooks + MCP, live-verified)
 
 `load-lock install --harness claude-code|codex` configures the MCP server
 (user scope) plus hooks:
@@ -87,9 +87,34 @@ and graceful handling of a deliberately missed offer (paused → cancel).
   shown); the agent claims via `pending`/`claim`.
 
 Contract tests cover all hook stdin/stdout shapes against the documented
-harness contracts. Live verification pending a machine with the harness
-installed. Codex requires the user to trust the hooks once via `/hooks`
-(the installer prints this).
+harness contracts. Claude Code live verification is pending a machine with
+the harness installed.
+
+Codex CLI (0.163.0) is live-verified end-to-end in Docker
+(`docker/verify-codex.sh`, driven through a real pty TUI session via
+`docker/codex-pty.py`): SessionStart policy injection visible to the model,
+MCP `status`/`acquire`/`claim`/`release` round-trip, FIFO queueing behind a
+competing CLI holder, and Stop-hook `decision:"block"` wakeup that continues
+the session with the claim instruction. The verification drives the real
+interactive hook-trust review (the "Hooks need review" dialog) once —
+`--dangerously-bypass-hook-trust` is deliberately NOT used because it forces
+codex embedded mode, which never injects MCP tools. Note: async background
+hooks do not wake an idle Codex session — the Stop hook covers turn
+boundaries only (verified as such).
+
+Two upstream/provider constraints shaped the harness:
+
+- Headless `codex exec` cannot inject MCP tools at all
+  (openai/codex#38689), so live verification drives the interactive TUI
+  through a pty.
+- codex 0.163.0 declares MCP tools to the Responses API using the
+  `namespace` tool type; the trustedtokens/GLM endpoint silently drops
+  namespace tools, which made MCP tools invisible to the model even in the
+  TUI. The verification container therefore fronts the API with
+  `docker/codex-api-shim.js`, which rewrites namespaces to flat
+  `mcp__<server>__<tool>` function tools on the wire (request, SSE
+  response, and conversation history). This is a verification-harness
+  workaround for the provider, not a change to load-lock itself.
 
 ### Tier 3 — MCP-only fallback (Gemini CLI, Copilot CLI, Cursor, Cline, Roo Code, Goose)
 
@@ -149,8 +174,11 @@ reconnect, view-model shaping, frame rendering) is covered by
 
 ## Verified vs proposed — summary counts
 
-- Live-verified: OpenCode (full adapter, including wakeup).
-- Contract-tested: Claude Code, Codex CLI hook/MCP contracts.
+- Live-verified: OpenCode (full adapter, including wakeup); Codex CLI
+  (Docker, interactive TUI: policy injection, MCP round-trip, FIFO queueing
+  behind a CLI holder, Stop-hook decision-block wakeup; exec-mode MCP
+  injection blocked upstream — see Tier 2 notes).
+- Contract-tested: Claude Code hook/MCP contracts.
 - Config-tested: Gemini CLI (installer round-trip, temp HOME; real harness
   not installed on the verification machine).
 - Core daemon/protocol/CLI: 45 automated tests + scripted 3-worktree demo
