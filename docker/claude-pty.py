@@ -60,6 +60,10 @@ def main() -> int:
 
     with open(script_path) as fh:
         steps = [line.rstrip("\n") for line in fh if line.strip() and not line.startswith("#")]
+    sys.stderr.write(
+        f"claude-pty: {len(steps)} steps, expect_timeout={EXPECT_TIMEOUT}, "
+        f"overall={OVERALL_TIMEOUT}\n"
+    )
 
     master, slave = os.openpty()
     # A TUI needs a real window size (default pty winsize is 0x0 and renders
@@ -115,6 +119,13 @@ def main() -> int:
 
     def fail(msg: str) -> int:
         sys.stderr.write(f"claude-pty: {msg}\n")
+        # Debug dump: where the match window pointer was relative to the
+        # chunks received, and what the expectations were actually searching.
+        sys.stderr.write(
+            f"claude-pty: dbg pos={pos} chunks={len(cleaned)} "
+            f"expect_timeout={EXPECT_TIMEOUT}\n"
+        )
+        sys.stderr.write("--- searched since mark ---\n" + "".join(cleaned[pos:])[-2000:] + "\n")
         tail = "".join(cleaned[-60:])
         sys.stderr.write("--- cleaned pty tail ---\n" + tail[-4000:] + "\n")
         try:
@@ -196,6 +207,10 @@ def main() -> int:
                 read_available(1.0)
             else:
                 return fail(f"unknown directive: {step!r}")
+            sys.stderr.write(
+                f"claude-pty: [{time.monotonic() - step_start:7.1f}s] {kind:<10}"
+                f" done pos={pos} chunks={len(cleaned)}\n"
+            )
             if time.monotonic() - step_start > OVERALL_TIMEOUT:
                 return fail("overall timeout exceeded")
         if child.poll() is None:
