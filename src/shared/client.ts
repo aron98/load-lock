@@ -29,6 +29,8 @@ export class LLClient {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   private eventCb: ((ev: Record<string, unknown>) => void) | null = null;
+  /** Optional disconnect notifications (dashboard feeds and other watchers). */
+  private disconnectCbs: Array<() => void> = [];
   private buf = "";
   private opts: Required<Omit<ClientOptions, "stateDir">> & { stateDir?: string };
 
@@ -102,11 +104,26 @@ export class LLClient {
     sock.on("error", () => {
       this.failAll(new ProtocolError("unavailable", "daemon connection lost"));
       this.sock = null;
+      this.fireDisconnect();
     });
     sock.on("close", () => {
       this.failAll(new ProtocolError("unavailable", "daemon connection closed"));
       this.sock = null;
+      this.fireDisconnect();
     });
+  }
+
+  private fireDisconnect(): void {
+    // Callbacks stay registered: a long-lived consumer (e.g. a dashboard
+    // feed) reconnects and must keep hearing about later disconnects.
+    // Copy first — a callback may (un)register during iteration.
+    for (const cb of [...this.disconnectCbs]) {
+      try {
+        cb();
+      } catch {
+        /* consumer errors must not break reconnect bookkeeping */
+      }
+    }
   }
 
   private failAll(err: ProtocolError): void {
@@ -147,6 +164,19 @@ export class LLClient {
   async watch(agentId: string, onEvent: (ev: Record<string, unknown>) => void): Promise<void> {
     this.eventCb = onEvent;
     await this.request("watch", { agentId });
+  }
+
+  /**
+   * Register a callback fired whenever the daemon connection drops (socket
+   * closed or errored) — including after later reconnects; the callback
+   * stays registered until its unregister function is called. Dashboard
+   * feeds use this to reconnect and resume via the durable event cursor.
+   */
+  onDisconnect(cb: () => void): () => void {
+    this.disconnectCbs.push(cb);
+    return () => {
+      this.disconnectCbs = this.disconnectCbs.filter((c) => c !== cb);
+    };
   }
 
   close(): void {
