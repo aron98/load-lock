@@ -1,11 +1,11 @@
 #!/bin/bash
 # Host-side: build the harness image and run the Codex CLI verification.
-# Requires: docker (sudo), docker/.env with LLM_GATEWAY_API_KEY.
+# Requires: docker (sudo), docker/.env with TRUSTEDTOKENS_API_KEY.
 set -eu
 cd "$(dirname "$0")/.."
 
 if [ ! -f docker/.env ]; then
-  echo "docker/.env missing (needs LLM_GATEWAY_API_KEY=...)" >&2
+  echo "docker/.env missing (needs TRUSTEDTOKENS_API_KEY=...)" >&2
   exit 64
 fi
 

@@ -1,23 +1,31 @@
 # Seed config for Codex CLI inside the verification container.
 # The load-lock installer appends its MCP server table to this file.
 #
-# Any OpenAI-compatible gateway that also exposes the Responses API
-# (/v1/responses) works. Codex no longer supports wire_api "chat"; the key
-# arrives via LLM_GATEWAY_API_KEY (docker run --env-file docker/.env).
-# Replace `model`, `model_provider` and `base_url` with your gateway's
-# values before use (config.toml cannot read them from the environment;
-# the verification runner is expected to substitute them at container
-# start or the seed can be overwritten in the image build).
-model = "gateway-model"
-model_provider = "llm-gateway"
+# trustedtokens is an OpenAI-compatible gateway that also exposes the
+# Responses API (/v1/responses). Codex no longer supports wire_api "chat";
+# the key arrives via TRUSTEDTOKENS_API_KEY (docker run --env-file).
+#
+# base_url points at the in-container namespace-flattening shim
+# (docker/codex-api-shim.js, started by docker/verify-codex.sh). Codex 0.163
+# exposes MCP tools to the model as Responses-API `namespace` tool groups
+# ({"type":"namespace","name":"mcp__<server>",...}); trustedtokens/GLM does
+# NOT support the namespace tool type and silently drops those groups, so
+# the model never sees mcp__load-lock__* tools. The shim flattens namespace
+# groups to plain function tools on the request side and rewrites the
+# model's flat function_call names back to {"name","namespace"} pairs on
+# the SSE response side, which codex's tool router natively dispatches to
+# the MCP server (source-verified against codex-rs 0.163.0). Without it
+# the interactive loop cannot see or call any load-lock tool.
+model = "zai-org/GLM-5.3-Flash"
+model_provider = "trustedtokens"
 
 # Non-interactive verification run: never ask for approvals, allow shell
 # + MCP tools (disposable container, --init, no host mounts).
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
 
-[model_providers.llm-gateway]
-name = "LLM Gateway"
-base_url = "http://llm-gateway.example.invalid/v1"
-env_key = "LLM_GATEWAY_API_KEY"
+[model_providers.trustedtokens]
+name = "TrustedTokens"
+base_url = "http://127.0.0.1:8788/v1"
+env_key = "TRUSTEDTOKENS_API_KEY"
 wire_api = "responses"

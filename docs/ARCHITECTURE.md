@@ -141,7 +141,7 @@ mechanisms, and labels exactly which apply per harness:
    - Claude Code (contract-tested): a `Stop` hook checks for cwd-matching
      offers and continues the session with a claim instruction; an async
      `await-offer` watcher with `asyncRewake: true` wakes idle sessions.
-   - Codex CLI (contract-tested): `Stop` hook with `decision: "block"`
+   - Codex CLI (live-verified in Docker): `Stop` hook with `decision: "block"`
      continuation. Note: Codex async background hooks do **not** start a new
      turn — documented as a limitation.
 4. **Durable event identities.** All events have monotonic IDs; agents can
@@ -164,7 +164,8 @@ and restored after context compaction:
 - **Claude Code**: `SessionStart` hook (matchers include `compact`) +
   `~/.claude/CLAUDE.md` section + skill.
 - **Codex CLI**: `SessionStart` hook (matcher `compact`) + `SubagentStart`
-  hook + `~/.codex/AGENTS.md` section (hooks require `/hooks` trust review).
+  hook + `~/.codex/AGENTS.md` section (hooks require the interactive
+  hook-trust review once; live-verified in Docker).
 - Other harnesses: MCP server `instructions` + a global instructions file
   snippet where the harness supports one (see COMPATIBILITY.md).
 

@@ -112,15 +112,21 @@ skills/         packaged skill
 - OpenCode adapter: implemented and **live-verified** (tools, policy
   injection, compaction-proof context hook, execution-boundary wakeup
   with tokens, skill).
-- Claude Code + Codex CLI adapters: implemented, contract-tested against
-  documented hook JSON; not yet live-verified (harnesses not installed on
-  the verification machine).
+- Claude Code adapter: implemented, contract-tested against documented
+  hook JSON; not yet live-verified (harness not installed on the
+  verification machine).
+- Codex CLI adapter: implemented and **live-verified** end-to-end in
+  Docker (interactive TUI via pty: policy injection, MCP round-trip,
+  FIFO queueing behind a competing holder, Stop-hook decision-block
+  wakeup; see COMPATIBILITY.md for the two upstream/provider constraints
+  the verification harness works around).
 - Tier-3 fallback installers (Gemini CLI, Copilot CLI, Cline, Roo Code,
   Goose): implemented merge-only installers (MCP stdio server entry into
   the harness's real config + a global instructions-file section/policy
   rule file), config-tested via temp-HOME round-trips; fallback tier (no
   hooks, no async push — no idle wakeup).
 - Cursor, Aider: researched; generic snippet / manual CLI tier. See
+>>>>>>> origin/main
   COMPATIBILITY.md for the matrix.
 
 Linux-first; macOS works with documented liveness-check limitations;

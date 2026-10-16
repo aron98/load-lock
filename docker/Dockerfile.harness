@@ -35,9 +35,13 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /pkg
 COPY --from=builder /src/*.tgz ./
+# codex is version-pinned for reproducible verification; bump deliberately.
+# Exec mode never injects MCP tools at 0.16x (upstream bug, openai/codex#38689);
+# the interactive TUI path plus docker/codex-api-shim.js handle it (see
+# docker/verify-codex.sh for the full story).
 RUN npm install -g ./*.tgz \
  && case "$HARNESS" in \
-      codex)        npm install -g @openai/codex ;; \
+      codex)        npm install -g @openai/codex@0.163.0 ;; \
       # --allow-scripts: npm 11 blocks package postinstall scripts by default;
       # claude-code's install.cjs sets up bundled ripgrep + platform files and
       # the CLI is unreliable without it.
@@ -75,8 +79,10 @@ RUN mkdir -p /root/.codex \
 # async await-offer wake).
 COPY docker/verify-codex.sh /usr/local/bin/verify-codex.sh
 COPY docker/verify-claude-code.sh /usr/local/bin/verify-claude-code.sh
+COPY docker/codex-pty.py /usr/local/bin/codex-pty.py
+COPY docker/codex-api-shim.js /usr/local/bin/codex-api-shim.js
 COPY docker/claude-pty.py /usr/local/bin/claude-pty.py
-RUN chmod +x /usr/local/bin/verify-*.sh /usr/local/bin/claude-pty.py
+RUN chmod +x /usr/local/bin/verify-*.sh /usr/local/bin/codex-pty.py /usr/local/bin/codex-api-shim.js /usr/local/bin/claude-pty.py
 
 WORKDIR /workspace
 # Scenario script is passed as the docker run command (see run-*-verify.sh).
