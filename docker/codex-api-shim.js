@@ -62,20 +62,50 @@ function rewriteSseLine(line) {
   );
 }
 
+// Request-side history rewrite: codex serializes completed tool calls in the
+// follow-up request input as {"type":"function_call","name":"<tool>",
+// "namespace":"mcp__<server>",…}. The provider only ever saw (and still only
+// sees) the flattened tool names, so rewrite history items back to the flat
+// "mcp__<server-dashes>__<tool>" form to keep the conversation coherent.
+function flattenInputItems(obj) {
+  let n = 0;
+  const flat = (item) => {
+    if (
+      item && typeof item === "object" &&
+      item.type === "function_call" &&
+      typeof item.namespace === "string" && item.namespace.startsWith("mcp__") &&
+      typeof item.name === "string" && !item.name.startsWith("mcp__")
+    ) {
+      const server = item.namespace.replace(/^mcp__/, "").replace(/_/g, "-");
+      const out = { ...item, name: `mcp__${server}__${item.name}` };
+      delete out.namespace;
+      n++;
+      return out;
+    }
+    return item;
+  };
+  if (obj && Array.isArray(obj.input)) obj.input = obj.input.map(flat);
+  return { obj, n };
+}
+
 const server = http.createServer((req, res) => {
   const chunks = [];
   req.on("data", (c) => chunks.push(c));
   req.on("end", () => {
     let body = Buffer.concat(chunks);
     let flattened = 0;
+    let historyRewrites = 0;
     try {
       const parsed = JSON.parse(body.toString("utf-8"));
       flattened = (parsed.tools || []).filter((t) => t && t.type === "namespace").length;
-      body = Buffer.from(JSON.stringify(flattenTools(parsed)));
+      flattenTools(parsed);
+      const fi = flattenInputItems(parsed);
+      historyRewrites = fi.n;
+      body = Buffer.from(JSON.stringify(fi.obj));
     } catch (e) {
       log(`request parse fail: ${e.message}`);
     }
-    log(`request ${req.method} ${req.url} namespaces_flattened=${flattened}`);
+    log(`request ${req.method} ${req.url} namespaces_flattened=${flattened} history_rewrites=${historyRewrites}`);
     const hdrs = { ...req.headers, host: UPSTREAM_HOST };
     delete hdrs["content-length"];
     delete hdrs["transfer-encoding"];
