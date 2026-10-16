@@ -199,7 +199,12 @@ sleep 3
 mark
 expect READY
 send /compact
-sleep 45
+# Wait for the compaction to fully finish (the "Compacted" marker renders only
+# after the summarize call AND the post-compact SessionStart hooks complete).
+# A fixed sleep is not enough under load: sending the next prompt mid-compaction
+# gets the Enter swallowed and the question is never submitted (seen live).
+expect Compacted
+sleep 10
 send Quote the last line of the load-lock section in your context, the one starting with "load-lock now:", verbatim. Answer with just that one line and nothing else.
 sleep 3
 mark
