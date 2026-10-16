@@ -174,6 +174,15 @@ grep -q "load-lock" /workspace/codex-transcript.clean.txt \
 grep -q "heavy-work budget" /workspace/codex-transcript.clean.txt \
   || { echo "FAIL: transcript never quotes the policy brief"; exit 66; }
 
+note "checking transcript for Stop-hook wakeup evidence"
+# The Stop hook decision-block reason (claim instruction) is what codex
+# feeds back as the continuation prompt; it must appear in the TUI log,
+# or the second turn never happened.
+grep -q "reserved for you" /workspace/codex-transcript.clean.txt \
+  || { echo "FAIL: transcript never shows the Stop-hook claim instruction"; exit 66; }
+grep -q "off_" /workspace/codex-transcript.clean.txt \
+  || { echo "FAIL: transcript never shows the offer_token from the Stop hook"; exit 66; }
+
 note "capacity must be free again"
 IN_USE=$(load-lock status | head -1)
 echo "$IN_USE" | grep -q "0/1 in use" || { echo "FAIL: $IN_USE"; exit 66; }
