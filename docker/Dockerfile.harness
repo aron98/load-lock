@@ -27,7 +27,7 @@ FROM node:24-bookworm-slim AS harness
 ARG HARNESS=codex
 ENV HARNESS=${HARNESS}
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git procps \
+ && apt-get install -y --no-install-recommends ca-certificates git procps python3 \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /pkg
 COPY --from=builder /src/*.tgz ./

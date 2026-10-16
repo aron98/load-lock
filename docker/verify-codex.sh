@@ -110,6 +110,10 @@ H1=$(permit_of /tmp/holder.json)
 HOLDER_REL_PID=$!
 trap 'kill "$HOLDER_REL_PID" 2>/dev/null || true; load-lock release --permit "$H1" >/dev/null 2>&1 || true' EXIT
 
+# The scenario prompt (single line: the pty driver submits it with one Enter).
+SCENARIO_PROMPT="Verify the load-lock integration on this machine. Use ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock. Do exactly this, in order: (1) State whether your instructions include a section starting with '# load-lock: machine-wide heavy-work budget' and quote its first bullet. (2) Call the MCP tool mcp__load-lock__status and report the pool name, capacity and current usage. (3) Call the MCP tool mcp__load-lock__acquire with reason 'verify build' and op_key 'verify/build'. Report the exact state value it returns. (4) Run the shell command 'sleep 30' exactly once - that is light work while queued. (5) Finish with a one-paragraph summary of the states you observed so far; do not call any other load-lock tools before finishing. (6) If you then receive an instruction telling you that load-lock capacity is now reserved for you with an offer_token: call the load-lock claim tool with that exact offer_token, then call the load-lock release tool, and end with a final one-sentence confirmation."
+export SCENARIO_PROMPT
+
 cat > /workspace/codex-driver.txt <<EOF
 sleep 15
 raw \r
