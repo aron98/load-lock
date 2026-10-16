@@ -54,7 +54,8 @@ load-lock configure --offer-timeout-ms 180000 \
 # ----------------------------------------------------------------- step 1
 # Short interactive probe: boot the TUI, send a trivial prompt, confirm the
 # model answers and detect the per-turn completion marker the TUI renders
-# ("N tokens used"). The scenario driver expectations are built from this.
+# ("Worked for Ns • 10:38 AM" in codex 0.163.0's inline TUI). The scenario
+# driver expectations are built from this.
 note "pty probe (TUI boot + completion-marker detection)"
 # The probe asks for "stressed" reversed -> "desserts": the echoed prompt
 # contains "stressed" but never "desserts", so a grep for the reply word
@@ -64,7 +65,7 @@ sleep 15
 raw \r
 mark
 send Reply with the word "stressed" reversed, as a single word and nothing else.
-expect tokens used
+expect Worked for
 send /quit
 wait-exit
 EOF
@@ -81,10 +82,10 @@ if [ "$PROBE_RC" -ne 0 ]; then
 fi
 grep -q "desserts" /workspace/pty-probe.clean.txt \
   || { echo "FAIL: probe model never replied with the expected word (TUI blocked on a dialog?)"; tail -c 3000 /workspace/pty-probe.clean.txt; exit 66; }
-if grep -q "tokens used" /workspace/pty-probe.clean.txt; then
-  TURN_END="tokens used"
+if grep -q "Worked for" /workspace/pty-probe.clean.txt; then
+  TURN_END="Worked for"
 else
-  echo "FAIL: TUI renders no per-turn completion marker ('N tokens used'); cannot synchronize the pty driver on turns"
+  echo "FAIL: TUI renders no per-turn completion marker ('Worked for Ns'); cannot synchronize the pty driver on turns"
   tail -c 3000 /workspace/pty-probe.clean.txt
   exit 66
 fi
