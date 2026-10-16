@@ -37,9 +37,15 @@
 # Exit 0 = all assertions passed.
 set -eu
 
-export LOAD_LOCK_STATE_DIR=/tmp/ll-state
-export LOAD_LOCK_SOCKET=/tmp/ll-state/daemon.sock
-mkdir -p "$LOAD_LOCK_STATE_DIR"
+# Daemon state dir: use the DEFAULT (~/.local/state/load-lock) for every
+# process in this container — CLI, hooks AND the model's MCP tools. codex
+# spawns MCP server children with a scrubbed environment, so a
+# LOAD_LOCK_STATE_DIR override would silently put the CLI (and this script)
+# on a different daemon than the MCP tools talk to (observed live: two
+# daemons, the model's acquire never saw the CLI holder's permit and the
+# contention path never fired). The default path is shared by all
+# processes, mirroring a real user's machine.
+STATE_DIR="$(node -e 'const{join}=require("node:path"),os=require("node:os");process.stdout.write(join(process.env.XDG_STATE_HOME||join(os.homedir(),".local","state"),"load-lock"))')"
 cd /workspace
 
 note() { printf '\n===== %s =====\n' "$*"; }
@@ -53,8 +59,8 @@ clean_log() { perl -pe 's/\e\[[0-9;?]*[a-zA-Z]//g; s/\e\][^\e\x07]*(?:\e\\|\x07)
 
 note "doctor"
 load-lock service stop >/dev/null 2>&1 || true
-rm -rf "$LOAD_LOCK_STATE_DIR"
-mkdir -p "$LOAD_LOCK_STATE_DIR"
+rm -rf "$STATE_DIR"
+mkdir -p "$STATE_DIR"
 load-lock doctor
 load-lock service start
 
