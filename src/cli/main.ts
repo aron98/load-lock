@@ -14,6 +14,7 @@ import { LLClient, withClient } from "../shared/client.js";
 import { ProtocolError } from "../shared/protocol.js";
 import { installCommand, uninstallCommand } from "./install.js";
 import { hookCommand } from "./hook.js";
+import { topCommand } from "./top.js";
 
 // ---------------------------------------------------------------- arg parsing
 
@@ -86,11 +87,18 @@ async function main(): Promise<void> {
       return;
     }
 
+    // ------------------------------------------------------------- dashboard
+    case "top": {
+      // Full-screen live dashboard (read-only, never acquires a permit).
+      // Falls back to a single rendered frame when stdout is not a TTY.
+      await topCommand({ once: B("once") });
+      return;
+    }
+
     case "inspect":
     case "machine":
       out(await withClient((c) => c.request("inspect", {})));
       return;
-
     case "get-config":
     case "config":
       out(await withClient((c) => c.request("get_config", {})));
@@ -365,7 +373,7 @@ async function main(): Promise<void> {
     }
 
     default:
-      fail(`unknown command "${cmd}". Commands: status, inspect, config, pending, events, acquire, claim, release, cancel, rejoin, mark-started, attach-pid, wait, run, service, doctor, recover, install, uninstall, hook, agent-guide`);
+      fail(`unknown command "${cmd}". Commands: status, top, inspect, config, pending, events, acquire, claim, release, cancel, rejoin, mark-started, attach-pid, wait, run, service, doctor, recover, install, uninstall, hook, agent-guide`);
   }
 }
 

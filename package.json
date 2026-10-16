@@ -72,6 +72,10 @@
       "types": "./dist/core/daemon.d.ts",
       "default": "./dist/core/daemon.js"
     },
+    "./tui": {
+      "types": "./dist/adapters/opencode/tui.d.ts",
+      "default": "./dist/adapters/opencode/tui.js"
+    },
     "./dist/*": "./dist/*"
   },
   "files": [
@@ -97,8 +101,28 @@
     "@opencode/plugin": "^2.0.29",
     "zod": "^3.24.0"
   },
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.8",
+    "@opentui/solid": ">=0.5.8",
+    "solid-js": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@opencode/theme": "2.0.29",
+    "@opentui/core": "0.5.17",
+    "@opentui/solid": "0.5.17",
     "@types/node": "^24.0.0",
+    "solid-js": "1.9.12",
     "typescript": "^5.9.0"
   }
 }
