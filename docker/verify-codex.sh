@@ -168,7 +168,12 @@ HOLDER_REL_PID=$!
 trap 'kill "$HOLDER_REL_PID" 2>/dev/null || true; load-lock release --permit "$H1" >/dev/null 2>&1 || true; kill "$SHIM_PID" 2>/dev/null || true' EXIT
 
 # The scenario prompt (single line: the pty driver submits it with one Enter).
-SCENARIO_PROMPT="Verify the load-lock integration on this machine. Use ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock. Do exactly this, in order: (1) State whether your instructions include a section starting with '# load-lock: machine-wide heavy-work budget' and quote its first bullet. (2) Call the MCP tool mcp__load-lock__status and report the pool name, capacity and current usage. (3) Call the MCP tool mcp__load-lock__acquire with reason 'verify build' and op_key 'verify/build'. Report the exact state value it returns. (4) Run the shell command 'sleep 30' exactly once - that is light work while queued. (5) Finish with a one-paragraph summary of the states you observed so far; do not call any other load-lock tools before finishing. (6) If you then receive an instruction telling you that load-lock capacity is now reserved for you with an offer_token: call the load-lock claim tool with that exact offer_token, then call the load-lock release tool, and end with a final one-sentence confirmation."
+# Steps 1-5 must all happen in turn 1: GLM-5.3-Flash otherwise tends to stop
+# after the status call once it sees the pool busy (observed live), which
+# would end the turn before the acquire ever queues. Step 6 belongs to the
+# Stop-hook continuation turn (the claim instruction arrives as the block
+# reason and is fed back as a new user prompt).
+SCENARIO_PROMPT="Verify the load-lock integration on this machine. Use ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock. Do exactly this, in order, completing ALL of steps 1 through 5 in this single response before stopping: (1) State whether your instructions include a section starting with '# load-lock: machine-wide heavy-work budget' and quote its first bullet. (2) Call the MCP tool mcp__load-lock__status and report the pool name, capacity and current usage. (3) Regardless of the status result, call the MCP tool mcp__load-lock__acquire with reason 'verify build' and op_key 'verify/build' - the pool is expected to be busy, so this call is expected to return state 'queued'; queueing is the point of this test. Report the exact state value it returns. (4) Run the shell command 'sleep 30' exactly once - that is light work while queued. (5) Finish with a one-paragraph summary of the states you observed so far; do not call any other load-lock tools before finishing. (6) If you then receive an instruction telling you that load-lock capacity is now reserved for you with an offer_token: call the load-lock claim tool with that exact offer_token, then call the load-lock release tool, and end with a final one-sentence confirmation."
 export SCENARIO_PROMPT
 
 # Turn synchronization: turn 1 = policy quote + MCP status + MCP acquire
@@ -242,12 +247,12 @@ EOF
 note "checking transcript for policy visibility"
 grep -q "load-lock" /workspace/codex-transcript.clean.txt \
   || { echo "FAIL: transcript never mentions load-lock"; exit 66; }
-# Strong check: the scenario prompt only names the policy header, so the
-# bullet text ("Heavy vs light: judge by expected CPU/memory/IO cost ...")
-# can only appear if the SessionStart hook injected the real policy brief
-# into the model's context and the model quoted it back.
-grep -Eq "Heavy vs light|CPU/memory/IO" /workspace/codex-transcript.clean.txt \
-  || { echo "FAIL: transcript never quotes the policy brief's first bullet (SessionStart hook did not inject context, or the model refused to quote it)"; exit 66; }
+# Strong check: the scenario prompt only names the policy header, so these
+# phrases can only appear if injected policy text (SessionStart hook brief
+# and/or the AGENTS.md instructions the installer seeds) reached the
+# model's context and it quoted them back.
+grep -Eq "Heavy vs light|CPU/memory/IO|Before resource-intensive local work" /workspace/codex-transcript.clean.txt \
+  || { echo "FAIL: transcript never quotes the policy brief (SessionStart hook did not inject context, or the model refused to quote it)"; exit 66; }
 
 note "checking transcript for Stop-hook wakeup evidence"
 # The Stop hook decision-block reason (claim instruction) is what codex
