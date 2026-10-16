@@ -37,12 +37,12 @@ Status labels mean exactly this:
 | **OpenCode** (v2) | Native plugin, `load_lock_*` (better than MCP) | Context hook every model call | Yes (hook re-fires per model call) | Yes — `session.synthetic` at execution boundary (live-verified; never interrupts in-flight shell) | Yes (live-verified) | Full: `run_with_permit` tracked jobs + session heartbeats | **Implemented + live-verified** |
 | **Claude Code** | MCP `mcp__load-lock__*` (user scope) — live-verified round-trip | `SessionStart` hook plain-stdout context (live-verified: model quoted the brief verbatim) | Yes (SessionStart matcher `compact`) — live-verified after `/compact` | Yes — `Stop` hook decision-block + async `await-offer` (`asyncRewake`), both live-verified | Yes, via asyncRewake (live-verified; the wake text itself is not rendered by the TTY, but the wake drives the full claim lifecycle) | Full via MCP `run_with_permit` + server heartbeats (live-verified incl. a job outliving the claude process) | **Implemented + live-verified** |
 | **Codex CLI** | MCP `mcp__load-lock__*` (config.toml) | `SessionStart` + `SubagentStart` additionalContext; `~/.codex/AGENTS.md` | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook `decision:"block"` continuation | Partial: async background hooks do NOT start a new turn (documented limitation); stop-hook covers turn boundaries | Full via MCP `run_with_permit` + server heartbeats | **Implemented + live-verified** (interactive TUI in Docker; exec-mode MCP blocked upstream — see Tier 2 notes) |
-| **Gemini CLI** | Yes (`settings.json` mcpServers, first-class installer) | `GEMINI.md` global (config `context.fileName`) | Via global GEMINI.md (always loaded) | No hook mechanism exists | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
-| **GitHub Copilot CLI** | Yes (`~/.copilot/mcp-config.json`, merge-only installer; verify with `copilot mcp list`) | `~/.copilot/copilot-instructions.md` (marked section) | Via global instructions file | Hooks reported in ecosystem content but **not verified in official docs** — none installed | Unverified | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
+| **Gemini CLI** | Yes (`settings.json` mcpServers, first-class installer) | `GEMINI.md` global (config `context.fileName`) | Via global GEMINI.md (always loaded) | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
+| **GitHub Copilot CLI** | Yes (`~/.copilot/mcp-config.json`, merge-only installer; verify with `copilot mcp list`) | `~/.copilot/copilot-instructions.md` (marked section) | Via global instructions file | Hooks reported in ecosystem content but **not verified in official docs** — none installed; `wait_for_turn` bounded sleep is the primary idle mechanism | Unverified | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **Cursor** | Yes (`.cursor/mcp.json` + global) | `.cursor/rules/*.md` Always rules | Rules re-apply (Always) | `stop` hook exists but **beta** with a less-documented JSON contract — not shipped | Beta/unverified | Via MCP `run_with_permit` only | Proposed (MCP fallback; hook tier possible later) |
-| **Cline** | Yes (`cline_mcp_settings.json`, merge-only installer) | `~/.cline/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
-| **Roo Code** | Yes (project `.roo/mcp.json` + existing global `mcp_settings.json`, merge-only installer) | `~/.roo/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
-| **Goose** | Yes (`~/.config/goose/config.yaml` `extensions` block, merge-only installer) | `.goosehints` (global, marked section) | Hints always loaded | No hooks | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
+| **Cline** | Yes (`cline_mcp_settings.json`, merge-only installer) | `~/.cline/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
+| **Roo Code** | Yes (project `.roo/mcp.json` + existing global `mcp_settings.json`, merge-only installer) | `~/.roo/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
+| **Goose** | Yes (`~/.config/goose/config.yaml` `extensions` block, merge-only installer) | `.goosehints` (global, marked section) | Hints always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **Aider** | **No MCP support** | CONVENTIONS.md / `.aider.conf.yml` | Read each run | N/A | N/A | CLI-only: same-shell `load-lock acquire ... && cmd; load-lock release ...` (manual) | Proposed (manual CLI tier) |
 
 ## How each integration tier works
@@ -169,9 +169,24 @@ harnesses — hence *config-tested*.
 
 `load-lock install --harness generic` still prints snippets for harnesses
 without a dedicated installer (Cursor today).
-Missing: idle wakeup and automatic context re-injection — queued agents
-discover offers at their next tool call or via a bounded `wait`. This is the
-honest fallback; we do not pretend these harnesses got push notifications.
+Idle policy: these harnesses get no push notifications, so the PRIMARY
+idle mechanism is the MCP `wait_for_turn` tool — a bounded, honest sleep
+until it is the caller's turn. Queued agents call
+`mcp__load-lock__wait_for_turn` (optionally with `timeout_ms`, default
+600000, capped by the machine's `maxTurnWaitMs` config) and get a
+structured result on every path: `granted` (the offer was auto-claimed —
+`permit_token` included), `still_queued` (timeout, with queue position
+and holders), `paused`/`cancelled`, or `not_found` (e.g. the daemon
+restarted). The wait itself holds no permit and consumes no capacity;
+harness tool cancellation aborts it cleanly. (Codex CLI note: async
+background hooks never wake an idle session there either — the Stop hook
+covers turn boundaries only — so the same `wait_for_turn` sleep is the
+honest pattern for Codex subagents without hook wiring.)
+
+Still missing on this tier: automatic context re-injection — there is no
+push channel, so a woken agent relies on tool results (which carry
+pending offers) rather than harness messages. We do not pretend these
+harnesses got push notifications.
 
 ### Tier 4 — Aider (manual CLI)
 
@@ -221,9 +236,12 @@ reconnect, view-model shaping, frame rendering) is covered by
 - Config-tested: Gemini CLI, Copilot CLI, Cline, Roo Code, Goose (installer
   round-trips, temp HOME; real harnesses not installed on the verification
   machine).
-- Core daemon/protocol/CLI: 59 automated tests + scripted 3-worktree demo
+- Core daemon/protocol/CLI: 68 automated tests + scripted 3-worktree demo
   (three independent agent processes, real git worktrees, one pool), including
   9 dashboard tests (view-model shaping, event-cursor resume across a daemon
-  restart, reconnect, and a `load-lock top --once` render smoke test).
+  restart, reconnect, and a `load-lock top --once` render smoke test) and
+  9 bounded-wait tests (multi-process `wait_for_turn`: FIFO wake with
+  auto-claim, timeout/pause/cancel/restart/abort paths, `maxTurnWaitMs` cap,
+  MCP snake_case round trip).
 - Proposed (researched capabilities, generic adapter only):
   Cursor, Aider.

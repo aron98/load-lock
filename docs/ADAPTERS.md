@@ -71,7 +71,9 @@ Register the MCP server with the harness and put a short policy section in
 whatever global instructions file the harness reads (GEMINI.md / rules /
 hints...). Offers are surfaced in every tool result (tool-boundary
 delivery), so correctness is preserved; what you lose is idle wakeup —
-document that honestly (see docs/COMPATIBILITY.md).
+steer agents to `wait_for_turn` (bounded blocking sleep that auto-claims
+and returns a `permit_token`) as the primary idle mechanism, and document
+the remaining gap honestly (see docs/COMPATIBILITY.md).
 
 ## Protocol quick reference
 

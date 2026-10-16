@@ -29,6 +29,9 @@ Rules:
 3. If you are queued: keep working on light tasks. When you receive an offer
    (in any load-lock tool result or a wakeup message), claim it promptly —
    offers expire (default 30s) and capacity passes to the next waiter.
+   Out of light work? Sleep honestly with wait_for_turn (MCP/plugin) or
+   'load-lock wait' (CLI) — a bounded sleep until your turn that
+   auto-claims and holds no capacity.
 4. Start heavy work ONLY after acquire/claim succeeds. Never start heavy work
    on a "queued" result; never treat a notification as authorization.
 5. Hold the permit until the heavy process actually finishes — including when

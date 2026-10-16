@@ -20,6 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import { LLClient } from "../../shared/client.js";
 import { POLICY_BRIEF } from "../../policy/text.js";
+import { waitForTurn, WaitAbortedError } from "../../shared/wait-turn.js";
 
 const client = new LLClient();
 const knownSessions = new Set<string>();
@@ -164,6 +165,45 @@ export default Plugin.define({
         "Rejoin the FIFO queue after your offer expired or you declined (paused requests never auto-recycle).",
         { request_id: { type: "string" } },
         (input) => client.request("rejoin", { requestId: input.request_id }),
+      );
+
+      add(
+        "wait_for_turn",
+        "Sleep until it is your turn (bounded blocking wait for a queued request). Returns a structured result on every path: granted (offer auto-claimed for you — permit_token in entry), still_queued (timed out; queue_position + holders shown), paused (rejoin instructions), cancelled, or not_found (daemon restarted — acquire again). Holds NO permit and NO capacity; cancelling this call is safe and never strands anything — the request keeps its queue position.",
+        {
+          request_id: { type: "string", description: "Request to watch (default: your oldest offered/front-most queued/oldest paused request)" },
+          timeout_ms: { type: "number", description: "Bounded sleep in ms (default 600000, clamped to the machine's maxTurnWaitMs cap; 0 = check-only)" },
+        },
+        async (input, context) => {
+          try {
+            const r = await waitForTurn({
+              client,
+              agentId: context.sessionID,
+              requestId: input.request_id,
+              timeoutMs: input.timeout_ms,
+              signal: context.signal as AbortSignal | undefined,
+            });
+            return {
+              state: r.state,
+              request_id: r.requestId,
+              auto_claimed: r.autoClaimed,
+              permit_token: r.state === "granted" ? r.entry?.permitToken : undefined,
+              waited_ms: r.waitedMs,
+              effective_wait_ms: r.effectiveWaitMs,
+              entry: r.entry,
+              queue_position: r.queuePosition,
+              queue_length: r.queueLength,
+              holders: r.holders,
+              next_action: r.nextAction,
+              detail: r.detail,
+            };
+          } catch (err) {
+            if (err instanceof WaitAbortedError) {
+              return { state: "aborted", detail: "wait cancelled by the harness/caller; the request keeps its queue position" };
+            }
+            throw err;
+          }
+        },
       );
 
       add(

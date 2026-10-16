@@ -53,6 +53,7 @@ function statusFixture(): P.StatusResult {
       pools: {},
       offerTimeoutMs: 30_000,
       maxWaitMs: 60_000,
+      maxTurnWaitMs: 600_000,
       startTimeoutMs: 60_000,
       untrackedLeaseMs: 60_000,
     },
