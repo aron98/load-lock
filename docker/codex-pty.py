@@ -58,12 +58,13 @@ def main() -> int:
     # degenerate) and a sane TERM.
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
     env = dict(os.environ, TERM=os.environ.get("TERM", "xterm-256color"))
+    # PTY_CWD / PTY_CMD let the driver be exercised outside the container.
     child = subprocess.Popen(
-        ["codex", *rest],
+        [os.environ.get("PTY_CMD", "codex"), *rest],
         stdin=slave,
         stdout=slave,
         stderr=slave,
-        cwd="/workspace",
+        cwd=os.environ.get("PTY_CWD", "/workspace"),
         env=env,
         start_new_session=True,
     )
@@ -129,7 +130,13 @@ def main() -> int:
             kind, _, arg = step.partition(" ")
             arg = arg.lstrip()
             if kind == "send":
-                os.write(master, arg.encode() + b"\r")
+                # Type the text, give the TUI a moment to process the
+                # keystrokes, then submit with a separate Enter. Writing
+                # text and \r in a single chunk gets swallowed by the TUI
+                # (observed: prompt echoed but never submitted).
+                os.write(master, arg.encode())
+                read_available(0.4)
+                os.write(master, b"\r")
             elif kind == "raw":
                 # interpret backslash escapes (\x1b[B = Down, \x04 = Ctrl-D, ...)
                 os.write(master, arg.encode().decode("unicode_escape").encode("latin1"))

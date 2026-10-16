@@ -69,7 +69,7 @@ send /quit
 wait-exit
 EOF
 set +e
-/usr/local/bin/codex-pty.py /workspace/pty-probe.log /workspace/pty-probe-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
+PTY_EXPECT_TIMEOUT=360 /usr/local/bin/codex-pty.py /workspace/pty-probe.log /workspace/pty-probe-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
 PROBE_RC=$?
 set -e
 clean_log /workspace/pty-probe.log > /workspace/pty-probe.clean.txt
@@ -130,7 +130,7 @@ EOF
 
 note "running codex interactive verification scenario (pty)"
 set +e
-/usr/local/bin/codex-pty.py /workspace/codex-transcript.log /workspace/codex-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
+PTY_EXPECT_TIMEOUT=420 /usr/local/bin/codex-pty.py /workspace/codex-transcript.log /workspace/codex-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
 PTY_RC=$?
 set -e
 note "pty driver exit code: $PTY_RC"
