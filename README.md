@@ -107,7 +107,7 @@ skills/         packaged skill
 
 ## Status
 
-- Core daemon/protocol/CLI: implemented, 59 automated tests passing
+- Core daemon/protocol/CLI: implemented, 68 automated tests passing
   (multi-process daemons, real processes, restarts, races, expiry,
   PID-reuse, subprocess survival; plus 9 dashboard tests — view-model
   shaping, event-cursor resume across a daemon restart, reconnect, and a

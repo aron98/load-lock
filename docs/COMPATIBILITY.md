@@ -236,9 +236,12 @@ reconnect, view-model shaping, frame rendering) is covered by
 - Config-tested: Gemini CLI, Copilot CLI, Cline, Roo Code, Goose (installer
   round-trips, temp HOME; real harnesses not installed on the verification
   machine).
-- Core daemon/protocol/CLI: 59 automated tests + scripted 3-worktree demo
+- Core daemon/protocol/CLI: 68 automated tests + scripted 3-worktree demo
   (three independent agent processes, real git worktrees, one pool), including
   9 dashboard tests (view-model shaping, event-cursor resume across a daemon
-  restart, reconnect, and a `load-lock top --once` render smoke test).
+  restart, reconnect, and a `load-lock top --once` render smoke test) and
+  9 bounded-wait tests (multi-process `wait_for_turn`: FIFO wake with
+  auto-claim, timeout/pause/cancel/restart/abort paths, `maxTurnWaitMs` cap,
+  MCP snake_case round trip).
 - Proposed (researched capabilities, generic adapter only):
   Cursor, Aider.
