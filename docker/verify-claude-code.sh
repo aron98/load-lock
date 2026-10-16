@@ -194,7 +194,7 @@ raw \x1b[B
 sleep 1
 raw \r
 sleep 8
-send Say the single word READY and nothing else.
+type Say the single word READY and nothing else.
 sleep 3
 mark
 expect READY
@@ -205,9 +205,15 @@ send /compact
 # gets the Enter swallowed and the question is never submitted (seen live).
 expect Compacted
 sleep 10
-send Quote the last line of the load-lock section in your context, the one starting with "load-lock now:", verbatim. Answer with just that one line and nothing else.
-sleep 3
+# Long prompts are typed with the `type` directive: a single large input burst
+# is classified by the TUI as a *paste* and inserted WITHOUT submitting
+# (seen live: the question echoed in the composer, zero POSTs, timeout).
+type Quote the last line of the load-lock section in your context, the one starting with "load-lock now:", verbatim. Answer with just that one line and nothing else.
+sleep 1
 mark
+# Hedge: an isolated Enter on an already-submitted (empty) composer is a no-op;
+# if the prompt above somehow sat unsubmitted, this is what actually sends it.
+raw \r
 expect 1/1 in use
 send /exit
 wait-exit
@@ -254,9 +260,13 @@ raw \x1b[B
 sleep 1
 raw \r
 sleep 8
-send Call the MCP tool mcp__load-lock__acquire with reason "idle wakeup verification" and op_key "verify/async-wake". It will be queued. Reply with only the single word STANDBY and end your turn. Then wait without doing anything. When a wakeup message tells you capacity was reserved for a request from this directory, call mcp__load-lock__pending, then claim the offer with mcp__load-lock__claim (offer_token), then call mcp__load-lock__release with the permit_token, and finish by replying with only the single word DONE.
-sleep 3
+# Long prompts must be typed (chunked), not `send`-burst: a large single
+# write is treated by the TUI as a paste and is never submitted (seen live).
+type Call the MCP tool mcp__load-lock__acquire with reason "idle wakeup verification" and op_key "verify/async-wake". It will be queued. Reply with only the single word STANDBY and end your turn. Then wait without doing anything. When a wakeup message tells you capacity was reserved for a request from this directory, call mcp__load-lock__pending, then claim the offer with mcp__load-lock__claim (offer_token), then call mcp__load-lock__release with the permit_token, and finish by replying with only the single word DONE.
+sleep 1
 mark
+# Hedge: isolated Enter retry - no-op if the prompt already submitted.
+raw \r
 expect STANDBY
 mark
 expect DONE

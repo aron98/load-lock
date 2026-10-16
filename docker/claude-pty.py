@@ -9,7 +9,12 @@ Usage:
   claude-pty.py LOGFILE DRIVER_SCRIPT [-- claude args ...]
 
 Driver script directives, one per line:
-  send <text>      type <text> and press Enter
+  send <text>      type <text> and press Enter (single write: fine for short
+                   strings; a TUI may treat a long single burst as a *paste*
+                   and insert it without submitting)
+  type <text>      type <text> like a human: small chunks with delays, then
+                   Enter as its own write. Use for prompts longer than ~60
+                   chars so the TUI never classifies them as pasted text.
   raw <text>       write bytes (no Enter added); \\x1b \\r \\e \\n are unescaped
   expect <regex>   wait (expect-timeout) until regex matches NEW output
   try-expect <regex> <secs>
@@ -133,6 +138,20 @@ def main() -> int:
             arg = arg.lstrip()
             if kind == "send":
                 os.write(master, arg.encode() + b"\r")
+            elif kind == "type":
+                # Type like a human: the Claude Code TUI classifies a large
+                # input burst as a *paste* and inserts the text WITHOUT
+                # submitting it (seen live: 140-char prompt echoed in the
+                # composer but never sent). Write in small chunks (draining
+                # the pty between them so the child never blocks on a full
+                # output buffer), then press Enter as its own write so it
+                # always registers as a keypress.
+                data = arg.encode()
+                for i in range(0, len(data), 12):
+                    os.write(master, data[i:i + 12])
+                    read_available(0.04)
+                read_available(0.3)
+                os.write(master, b"\r")
             elif kind == "raw":
                 # ASCII driver scripts only: \x1b \r \e etc. become real bytes.
                 os.write(master, codecs.decode(arg, "unicode_escape").encode("latin-1"))
