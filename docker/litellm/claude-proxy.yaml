@@ -1,9 +1,11 @@
 # LiteLLM translation sidecar for Claude Code live verification.
 #
-# Claude Code only speaks the Anthropic /v1/messages protocol; the
-# llm-gateway gateway (https://llm-gateway.example.invalid/v1) is OpenAI-compatible
-# only. LiteLLM's proxy exposes an Anthropic-format /v1/messages endpoint and
-# translates to OpenAI chat-completions for the configured backend model.
+# Claude Code only speaks the Anthropic /v1/messages protocol; the upstream
+# LLM gateway is OpenAI-compatible only. LiteLLM's proxy exposes an
+# Anthropic-format /v1/messages endpoint and translates to OpenAI
+# chat-completions for the configured backend model. All gateway specifics
+# (base URL, model, API key) arrive via environment variables — this file is
+# deliberately provider-free.
 #
 # Claude Code in the verification container is pointed at this proxy via:
 #   ANTHROPIC_BASE_URL=http://litellm:4000
@@ -11,21 +13,21 @@
 #   ANTHROPIC_MODEL=claude-sonnet-4-5          (mapped below)
 #   ANTHROPIC_SMALL_FAST_MODEL=claude-haiku-4-5 (mapped below)
 #
-# The upstream key arrives via LLM_GATEWAY_API_KEY (docker/.env, gitignored)
+# The gateway key arrives via LLM_GATEWAY_API_KEY (docker/.env, gitignored)
 # and is NEVER written into this file.
 model_list:
   - model_name: claude-sonnet-4-5
     litellm_params:
-      model: openai/gateway-model
-      api_base: https://llm-gateway.example.invalid/v1
+      model: os.environ/LLM_GATEWAY_MODEL
+      api_base: os.environ/LLM_GATEWAY_BASE_URL
       api_key: os.environ/LLM_GATEWAY_API_KEY
   # Claude Code makes a few auxiliary model calls (titles, etc.) unless
   # CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set; keep the small-model
   # alias on the same backend so nothing 404s.
   - model_name: claude-haiku-4-5
     litellm_params:
-      model: openai/gateway-model
-      api_base: https://llm-gateway.example.invalid/v1
+      model: os.environ/LLM_GATEWAY_MODEL
+      api_base: os.environ/LLM_GATEWAY_BASE_URL
       api_key: os.environ/LLM_GATEWAY_API_KEY
 
 litellm_settings:
