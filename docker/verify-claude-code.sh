@@ -280,7 +280,13 @@ sleep 10
 # Long prompts are typed with the `type` directive: a single large input burst
 # is classified by the TUI as a *paste* and inserted WITHOUT submitting
 # (seen live: the question echoed in the composer, zero POSTs, timeout).
-type Quote the last line of the load-lock section in your context, the one starting with "load-lock now:", verbatim. Answer with just that one line and nothing else.
+# Post-compact the context holds TWO "load-lock now:" lines: the startup copy
+# (0/1, preserved inside the compaction summary) and the fresh one re-injected
+# by the SessionStart(compact) hook (1/1 - holder/compact is still held). The
+# prompt must point the model at the FRESH copy: an ambiguous "the last line of
+# the load-lock section" let the model quote the stale 0/1 copy (seen live in
+# one run; another run quoted the fresh 1/1 - nondeterministic pick).
+type Quote the "load-lock now:" line from the most recent load-lock section in your context - the one re-injected right after this conversation was compacted, not any older copy from before compaction. Answer with just that one line, verbatim, nothing else.
 sleep 1
 mark
 # Hedge: an isolated Enter on an already-submitted (empty) composer is a no-op;
