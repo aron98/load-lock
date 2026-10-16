@@ -214,7 +214,10 @@ mark
 # Hedge: an isolated Enter on an already-submitted (empty) composer is a no-op;
 # if the prompt above somehow sat unsubmitted, this is what actually sends it.
 raw \r
-expect 1/1 in use
+# The TUI renders the answer with absolute-cursor escapes ([32G1/1[36Gin[39Guse);
+# after ANSI stripping the words run together ("1/1inuse"), so the regex must
+# tolerate zero-or-more whitespace between the tokens.
+expect 1/1\s*in\s*use
 send /exit
 wait-exit
 DRIVER
@@ -379,8 +382,9 @@ fi
 if has_phase 3; then
   # phase 3a: post-compact the model quoted a FRESH "1/1 in use" machine
   # status (holder acquired after startup; only the re-fired
-  # SessionStart(compact) hook could have delivered it).
-  clean_log /workspace/claude-phase3a.log | grep -Eq '1/1\s+in\s+use' \
+  # SessionStart(compact) hook could have delivered it). \s* not \s+: the TUI
+  # renders "1/1 in use" with cursor-position escapes that strip to "1/1inuse".
+  clean_log /workspace/claude-phase3a.log | grep -Eq '1/1\s*in\s*use' \
     || { echo "FAIL: post-/compact answer lacks fresh machine status (SessionStart compact restore broken)"; exit 66; }
   # phase 3b: the asyncRewake stderr wakeup text is the async hook's mark;
   # report-but-do-not-fail if the TUI chose not to render it (the event chain
