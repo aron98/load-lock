@@ -42,6 +42,15 @@ mkdir -p "$LOAD_LOCK_STATE_DIR"
 load-lock doctor
 load-lock service start
 
+# The codex Stop-hook wakeup needs a full model turn restart (async hooks
+# cannot wake an idle codex session — documented limitation), so the model
+# claims its offer well after it was made. Real-model turn latency routinely
+# exceeds the default 30s claim window; widen it for this verification run
+# (documented knob; the queued->offered->claim->release semantics are
+# unchanged and still fully exercised).
+load-lock configure --offer-timeout-ms 180000 \
+  --reason "verification container: codex Stop-hook wakeup costs a full model turn; default 30s claim window is too tight for real-model latency"
+
 # ----------------------------------------------------------------- step 1
 # Short interactive probe: boot the TUI, send a trivial prompt, confirm the
 # model answers and detect the per-turn completion marker the TUI renders
@@ -58,7 +67,7 @@ send /quit
 wait-exit
 EOF
 set +e
-/usr/local/bin/codex-pty.py /workspace/pty-probe.log /workspace/pty-probe-driver.txt -- --dangerously-bypass-hook-trust
+/usr/local/bin/codex-pty.py /workspace/pty-probe.log /workspace/pty-probe-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
 PROBE_RC=$?
 set -e
 clean_log /workspace/pty-probe.log > /workspace/pty-probe.clean.txt
@@ -73,8 +82,9 @@ grep -q "pong" /workspace/pty-probe.clean.txt \
 if grep -q "tokens used" /workspace/pty-probe.clean.txt; then
   TURN_END="tokens used"
 else
-  TURN_END="codex"
-  echo "note: no 'tokens used' marker found in TUI output; using timed waits"
+  echo "FAIL: TUI renders no per-turn completion marker ('N tokens used'); cannot synchronize the pty driver on turns"
+  tail -c 3000 /workspace/pty-probe.clean.txt
+  exit 66
 fi
 
 # ----------------------------------------------------------------- step 2
@@ -104,16 +114,17 @@ cat > /workspace/codex-driver.txt <<EOF
 sleep 15
 raw \r
 mark
-send Verify the load-lock integration on this machine. Use ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock. Do exactly this, in order: (1) State whether your instructions include a section starting with '# load-lock: machine-wide heavy-work budget' and quote its first bullet. (2) Call the MCP tool mcp__load-lock__status and report the pool name, capacity and current usage. (3) Call the MCP tool mcp__load-lock__acquire with reason 'verify build' and op_key 'verify/build'. Report the exact state value it returns. (4) Run the shell command 'sleep 30' exactly once - that is light work while queued. (5) Finish with a one-paragraph summary of the states you observed so far; do not call any other load-lock tools before finishing. (6) If you then receive an instruction telling you that load-lock capacity is now reserved for you with an offer_token: call the load-lock claim tool with that exact offer_token, then call the load-lock release tool, and end with a final one-sentence confirmation.
+send ${SCENARIO_PROMPT}
 expect ${TURN_END}
-sleep 75
+expect ${TURN_END}
+sleep 10
 send /quit
 wait-exit
 EOF
 
 note "running codex interactive verification scenario (pty)"
 set +e
-/usr/local/bin/codex-pty.py /workspace/codex-transcript.log /workspace/codex-driver.txt -- --dangerously-bypass-hook-trust
+/usr/local/bin/codex-pty.py /workspace/codex-transcript.log /workspace/codex-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
 PTY_RC=$?
 set -e
 note "pty driver exit code: $PTY_RC"
