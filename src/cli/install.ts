@@ -20,6 +20,22 @@
  *                   marked section in ~/.gemini/GEMINI.md. MCP-fallback
  *                   tier: Gemini CLI has no hooks and no async push (no
  *                   idle wakeup) — offers surface at tool boundaries.
+ *  - copilot-cli  : mcpServers.load-lock (type "local" / stdio) in
+ *                   ~/.copilot/mcp-config.json, marked section in the
+ *                   global ~/.copilot/copilot-instructions.md. MCP-fallback
+ *                   tier: Copilot CLI hooks are ecosystem-reported but NOT
+ *                   verified in official docs — we install none.
+ *  - cline        : mcpServers.load-lock in
+ *                   ~/.cline/data/settings/cline_mcp_settings.json
+ *                   (honors CLINE_MCP_SETTINGS_PATH), own rule file in
+ *                   ~/.cline/rules/. MCP-fallback tier: no hooks.
+ *  - roo-code     : project .roo/mcp.json (+ global Roo/Zoo mcp_settings.json
+ *                   when a VS Code globalStorage copy exists), own rule
+ *                   file in ~/.roo/rules/. MCP-fallback tier: no hooks.
+ *  - goose        : extensions.load-lock (type: stdio) merged into
+ *                   ~/.config/goose/config.yaml, marked section in the
+ *                   global hints file ~/.config/goose/.goosehints.
+ *                   MCP-fallback tier: no hooks.
  *  - generic      : prints an MCP stdio config snippet (any MCP-capable harness).
  */
 import fs from "node:fs";
@@ -81,12 +97,24 @@ function writeJson(file: string, data: unknown) {
   fs.renameSync(tmp, file);
 }
 
-/** Append a marked section to a markdown file once. */
+/** Atomic plain-text write (used for YAML / hints files). */
+function writeText(file: string, text: string) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = file + ".tmp-ll-" + process.pid;
+  fs.writeFileSync(tmp, text);
+  fs.renameSync(tmp, file);
+}
+
+/**
+ * Append a marked section to a markdown file once. The section must start with
+ * `marker`; exactly one newline separates the user's existing bytes from it, so
+ * a removeMdSection round-trip restores the original bytes exactly.
+ */
 function mdSection(file: string, marker: string, section: string): boolean {
   const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   if (existing.includes(marker)) return false;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, existing + (existing.endsWith("\n") ? "" : "\n") + section);
+  fs.writeFileSync(file, existing === "" ? section : existing + "\n" + section);
   return true;
 }
 
@@ -97,7 +125,9 @@ function removeMdSection(file: string, marker: string) {
   if (idx === -1) return;
   const next = text.indexOf(marker, idx + marker.length);
   const end = next === -1 ? text.length : next;
-  fs.writeFileSync(file, text.slice(0, idx) + text.slice(end));
+  // mdSection put exactly one newline before our section; take it back.
+  const start = idx > 0 && text[idx - 1] === "\n" ? idx - 1 : idx;
+  fs.writeFileSync(file, text.slice(0, start) + text.slice(end));
 }
 
 const LL_HOOK_TAG = "dist/cli/main.js hook"; // how we recognize our hook entries
@@ -207,7 +237,7 @@ function installClaudeCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>)
     mdSection(
       md,
       marker,
-      `\n${marker}\n## load-lock: machine-wide heavy-work budget\n\n` +
+      `${marker}\n## load-lock: machine-wide heavy-work budget\n\n` +
         `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine:\n\n` +
         `1. Call the MCP tool \`mcp__load-lock__acquire\` (reason + op_key) — it grants a permit or queues you.\n` +
         `2. While queued, keep doing light work. When an offer arrives (hook wakeup or \`mcp__load-lock__pending\`), claim it via \`mcp__load-lock__claim\` within the window (default 30s).\n` +
@@ -315,7 +345,7 @@ function installCodex(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): str
     mdSection(
       agentsMd,
       "<!-- load-lock:begin -->",
-      `\n<!-- load-lock:begin -->\n## load-lock: machine-wide heavy-work budget\n\n` +
+      `<!-- load-lock:begin -->\n## load-lock: machine-wide heavy-work budget\n\n` +
         `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine via the \`load-lock\` MCP tools (mcp__load-lock__acquire / claim / release / run_with_permit / pending / status / inspect_machine / configure). ` +
         `Acquire before heavy work, keep doing light work while queued, claim offers promptly (they expire), release when done. Full guide: \`load-lock agent-guide\`.\n<!-- load-lock:end -->\n`,
     )
@@ -383,7 +413,7 @@ function installGeminiCli(opts: InstallOptions, P: ReturnType<typeof pkgPaths>):
     mdSection(
       geminiMd,
       marker,
-      `\n${marker}\n## load-lock: machine-wide heavy-work budget\n\n` +
+      `${marker}\n## load-lock: machine-wide heavy-work budget\n\n` +
         `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine:\n\n` +
         `1. Call the \`load-lock\` MCP \`acquire\` tool (reason + op_key) — it grants a permit or queues you. Pass \`wait_ms\` for a bounded blocking wait, or keep doing light work while queued.\n` +
         `2. Offers surface in every tool result (tool-boundary delivery) — check \`pending\` and claim promptly via \`claim\` within the window (default 30s); expired offers pass capacity to the next waiter.\n` +
@@ -419,6 +449,442 @@ function uninstallGeminiCli(): string[] {
   return actions;
 }
 
+// ------------------------------------------------- shared MCP-fallback bits
+
+/** XDG-ish config home (~/.config on Linux/macOS default). */
+function configHome(): string {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  return xdg && xdg.trim() ? path.resolve(xdg) : path.join(HOME, ".config");
+}
+
+/**
+ * Policy section for MCP-fallback-tier harnesses (no hooks, no async push).
+ * `note` states the harness-specific honesty line (never claim wakeup).
+ */
+function fallbackSection(note: string): string {
+  return (
+    `## load-lock: machine-wide heavy-work budget\n\n` +
+    `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine:\n\n` +
+    `1. Call the \`load-lock\` MCP \`acquire\` tool (reason + op_key) — it grants a permit or queues you. Pass \`wait_ms\` for a bounded blocking wait, or keep doing light work while queued.\n` +
+    `2. Offers surface in every tool result (tool-boundary delivery) — check \`pending\` and claim promptly via \`claim\` within the window (default 30s); expired offers pass capacity to the next waiter.\n` +
+    `3. Only start heavy work after acquire/claim succeeds. Prefer \`run_with_permit\` for full lifecycle ownership (auto-release), or \`attach_pid\` / \`mark_started\` for processes you already started.\n` +
+    `4. Release (or cancel queued work) promptly when done. Inspect the machine with \`inspect_machine\`; adjust capacity via \`configure\` when warranted.\n\n` +
+    `Note: ${note}\n` +
+    `Full guide: \`load-lock agent-guide\`.\n`
+  );
+}
+
+const NO_WAKEUP_NOTE = (h: string) =>
+  `${h} has no hooks and no async push — there is NO idle wakeup. You discover offers at your next tool call or via a bounded \`wait_ms\`.`;
+
+/** Merge `key` under `obj.mcpServers` in a JSON settings file (create-safe). */
+function mergeMcpServer(
+  file: string,
+  entry: Record<string, unknown>,
+  action: string,
+): string[] {
+  const cfg = readJson(file) ?? {};
+  if (typeof cfg !== "object" || cfg === null || Array.isArray(cfg)) {
+    throw new Error(`${file} is not a JSON object; refusing to overwrite`);
+  }
+  if (!cfg.mcpServers || typeof cfg.mcpServers !== "object" || cfg.mcpServers === null) {
+    cfg.mcpServers = {};
+  }
+  cfg.mcpServers["load-lock"] = entry;
+  writeJson(file, cfg);
+  return [action];
+}
+
+/** Remove our `mcpServers["load-lock"]` from a JSON settings file, if present. */
+function removeMcpServer(file: string, action: string): string[] {
+  const actions: string[] = [];
+  const cfg = readJson(file);
+  if (cfg?.mcpServers && typeof cfg.mcpServers === "object" && "load-lock" in cfg.mcpServers) {
+    delete cfg.mcpServers["load-lock"];
+    writeJson(file, cfg);
+    actions.push(action);
+  }
+  return actions;
+}
+
+/**
+ * rmdir empty directories from `startDir` upward, never leaving `stopDir`'s
+ * parent (only dirs that are empty because we created them disappear).
+ */
+function pruneEmptyDirs(startDir: string, stopDir: string) {
+  if (path.relative(stopDir, startDir).startsWith("..")) return;
+  let up = startDir;
+  while (path.relative(stopDir, up) !== "..") {
+    try {
+      fs.rmdirSync(up); // only succeeds when empty
+    } catch {
+      break;
+    }
+    up = path.dirname(up);
+  }
+}
+
+// --------------------------------------------------------------- copilot-cli
+
+function installCopilotCli(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
+  const actions: string[] = [];
+
+  // 1. mcpServers.load-lock (type "local" == stdio) in ~/.copilot/mcp-config.json
+  //    (the file `copilot mcp add` writes; per official Copilot CLI docs).
+  const cfgFile = path.join(HOME, ".copilot", "mcp-config.json");
+  actions.push(
+    ...mergeMcpServer(
+      cfgFile,
+      { type: "local", command: P.node, args: [P.mcp], env: {}, tools: ["*"] },
+      `MCP server "load-lock" (type: local / stdio) in ${cfgFile}`,
+    ),
+  );
+
+  // 2. marked policy section in the global personal instructions file
+  const instructions = path.join(HOME, ".copilot", "copilot-instructions.md");
+  const marker = "<!-- load-lock:begin -->";
+  if (
+    mdSection(
+      instructions,
+      marker,
+      `${marker}\n` +
+        fallbackSection(
+          `Copilot CLI hook support is ecosystem-reported but NOT verified in official docs — load-lock installs no hooks here; there is no idle wakeup. You discover offers at your next tool call or via a bounded \`wait_ms\`.`,
+        ) +
+        `<!-- load-lock:end -->\n`,
+    )
+  )
+    actions.push(`marked section in ${instructions} (global personal instructions)`);
+
+  // 3. be honest about the tier
+  actions.push(
+    "tier: MCP fallback — Copilot CLI hooks are ecosystem-reported but not verified in official docs; " +
+      "we install none, so there is no idle wakeup — offers surface at tool boundaries",
+  );
+  actions.push("verify with `copilot mcp list` (or `/mcp` inside Copilot CLI)");
+  return actions;
+}
+
+function uninstallCopilotCli(): string[] {
+  const actions: string[] = [];
+  const cfgFile = path.join(HOME, ".copilot", "mcp-config.json");
+  actions.push(...removeMcpServer(cfgFile, `removed MCP server from ${cfgFile}`));
+  removeMdSection(path.join(HOME, ".copilot", "copilot-instructions.md"), "<!-- load-lock:begin -->");
+  actions.push("removed copilot-instructions.md section");
+  return actions;
+}
+
+// -------------------------------------------------------------------- cline
+
+function clineMcpSettingsFile(): string {
+  // Official Cline docs: CLI reads ~/.cline/data/settings/cline_mcp_settings.json,
+  // overridable via CLINE_MCP_SETTINGS_PATH.
+  return process.env.CLINE_MCP_SETTINGS_PATH?.trim()
+    ? path.resolve(process.env.CLINE_MCP_SETTINGS_PATH)
+    : path.join(HOME, ".cline", "data", "settings", "cline_mcp_settings.json");
+}
+
+function installCline(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
+  const actions: string[] = [];
+
+  // 1. mcpServers.load-lock (stdio) in the MCP settings file
+  const cfgFile = clineMcpSettingsFile();
+  actions.push(
+    ...mergeMcpServer(
+      cfgFile,
+      { command: P.node, args: [P.mcp], env: {}, disabled: false, autoApprove: [] },
+      `MCP server "load-lock" (stdio) in ${cfgFile}`,
+    ),
+  );
+
+  // 2. own rule file in the global rules dir (whole file is ours → trivially clean uninstall)
+  const ruleFile = path.join(HOME, ".cline", "rules", "load-lock.md");
+  fs.mkdirSync(path.dirname(ruleFile), { recursive: true });
+  fs.writeFileSync(
+    ruleFile,
+    `# load-lock: machine-wide heavy-work budget\n\n` +
+      `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine via the \`load-lock\` MCP tools (acquire / claim / release / cancel / rejoin / pending / status / run_with_permit / attach_pid / mark_started / inspect_machine / configure). ` +
+      `Acquire before heavy work, keep doing light work while queued, claim offers promptly (they expire), release when done.\n\n` +
+      `${NO_WAKEUP_NOTE("Cline")}\n` +
+      `Full guide: \`load-lock agent-guide\`.\n`,
+  );
+  actions.push(`global rule file ${ruleFile}`);
+
+  // 3. be honest about the tier
+  actions.push("tier: MCP fallback — Cline has no hooks and no async push, so there is no idle wakeup; offers surface at tool boundaries");
+  actions.push("restart Cline (or reload the window) to pick up the MCP server");
+  return actions;
+}
+
+function uninstallCline(): string[] {
+  const actions: string[] = [];
+  const cfgFile = clineMcpSettingsFile();
+  actions.push(...removeMcpServer(cfgFile, `removed MCP server from ${cfgFile}`));
+  const ruleFile = path.join(HOME, ".cline", "rules", "load-lock.md");
+  if (fs.existsSync(ruleFile)) {
+    fs.rmSync(ruleFile);
+    actions.push(`removed ${ruleFile}`);
+    pruneEmptyDirs(path.dirname(ruleFile), path.join(HOME, ".cline"));
+  }
+  return actions;
+}
+
+// ----------------------------------------------------------------- roo-code
+
+/**
+ * Existing global Roo Code / Zoo Code `mcp_settings.json` files (VS Code keeps
+ * them in per-extension globalStorage; the extension id changed across
+ * roo-cline → roo-code → zoo-code releases, and the editor may be Code,
+ * Code - OSS or VSCodium). We merge into every one we FIND; we never create
+ * one — if it is absent the user manages the global file via the Roo/Zoo
+ * settings UI ("Edit Global MCP") and we write the project file instead.
+ */
+function rooGlobalMcpFiles(): string[] {
+  const appData =
+    process.platform === "darwin" ? path.join(HOME, "Library", "Application Support") : configHome();
+  const out: string[] = [];
+  for (const editor of ["Code", "Code - OSS", "VSCodium"]) {
+    for (const ext of ["roocode.roo-cline", "RooCodeInc.roo-code", "ZooCodeOrganization.zoo-code"]) {
+      const f = path.join(appData, editor, "User", "globalStorage", ext, "settings", "mcp_settings.json");
+      if (fs.existsSync(f)) out.push(f);
+    }
+  }
+  return out;
+}
+
+function installRooCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
+  const actions: string[] = [];
+
+  // 1. project-level .roo/mcp.json (documented, auto-loaded, shareable)
+  const projMcp = path.join(opts.project, ".roo", "mcp.json");
+  actions.push(
+    ...mergeMcpServer(
+      projMcp,
+      { command: P.node, args: [P.mcp], disabled: false },
+      `MCP server "load-lock" (stdio) in ${projMcp} (project-level; Roo/Zoo auto-loads it)`,
+    ),
+  );
+
+  // 2. own rule file in the global rules dir
+  const ruleFile = path.join(HOME, ".roo", "rules", "load-lock.md");
+  fs.mkdirSync(path.dirname(ruleFile), { recursive: true });
+  fs.writeFileSync(
+    ruleFile,
+    `# load-lock: machine-wide heavy-work budget\n\n` +
+      `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine via the \`load-lock\` MCP tools (acquire / claim / release / cancel / rejoin / pending / status / run_with_permit / attach_pid / mark_started / inspect_machine / configure). ` +
+      `Acquire before heavy work, keep doing light work while queued, claim offers promptly (they expire), release when done.\n\n` +
+      `${NO_WAKEUP_NOTE("Roo Code")}\n` +
+      `Full guide: \`load-lock agent-guide\`.\n`,
+  );
+  actions.push(`global rule file ${ruleFile}`);
+
+  // 3. global mcp_settings.json copies that already exist
+  const globals = rooGlobalMcpFiles();
+  for (const f of globals) {
+    actions.push(...mergeMcpServer(f, { command: P.node, args: [P.mcp], disabled: false }, `MCP server "load-lock" in existing global ${f}`));
+  }
+  if (!globals.length) {
+    actions.push(
+      "no global Roo/Zoo mcp_settings.json found — to add the server globally, use " +
+        "\"Edit Global MCP\" in the Roo/Zoo MCP settings UI and paste the same stdio entry",
+    );
+  }
+
+  // 4. be honest about the tier
+  actions.push("tier: MCP fallback — Roo Code has no hooks and no async push, so there is no idle wakeup; offers surface at tool boundaries");
+  return actions;
+}
+
+function uninstallRooCode(opts: UninstallOptions): string[] {
+  const actions: string[] = [];
+  const projMcp = path.join(opts.project, ".roo", "mcp.json");
+  actions.push(...removeMcpServer(projMcp, `removed MCP server from ${projMcp}`));
+  for (const f of rooGlobalMcpFiles()) {
+    actions.push(...removeMcpServer(f, `removed MCP server from ${f}`));
+  }
+  const ruleFile = path.join(HOME, ".roo", "rules", "load-lock.md");
+  if (fs.existsSync(ruleFile)) {
+    fs.rmSync(ruleFile);
+    actions.push(`removed ${ruleFile}`);
+    pruneEmptyDirs(path.dirname(ruleFile), path.join(HOME, ".roo"));
+  }
+  return actions;
+}
+
+// -------------------------------------------------------------------- goose
+
+// goose config.yaml is YAML. Rather than a full parser (a new dependency, and
+// a formatting-destroying one), we do a careful line-oriented block-mapping
+// merge for the one key we touch (`extensions`), and refuse anything we do
+// not understand (flow style) instead of guessing.
+const GOOSE_BEGIN = "# load-lock:begin (managed by `load-lock install`)";
+const GOOSE_END = "# load-lock:end";
+const GOOSE_HEADER_TAG = "# load-lock-created (managed by `load-lock install`)";
+
+function gooseConfigFile(): string {
+  // Official goose docs: macOS/Linux ~/.config/goose/config.yaml
+  // (Windows: %APPDATA%\Block\goose\config\config.yaml — not supported by load-lock).
+  return path.join(configHome(), "goose", "config.yaml");
+}
+
+function gooseBlockLines(P: ReturnType<typeof pkgPaths>): string[] {
+  return [
+    `  ${GOOSE_BEGIN}`,
+    "  load-lock:",
+    "    type: stdio",
+    "    name: load-lock",
+    "    enabled: true",
+    `    cmd: ${JSON.stringify(P.node)}`,
+    `    args: [${JSON.stringify(P.mcp)}]`,
+    `  ${GOOSE_END}`,
+  ];
+}
+
+/** Remove our marked child block(s) from a goose config.yaml text. */
+function gooseRemoveMarked(lines: string[]): string[] {
+  const out: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    if (/^\s+# load-lock:begin \(managed by `load-lock install`\)$/.test(line)) {
+      skipping = true;
+      continue;
+    }
+    if (skipping && /^\s+# load-lock:end$/.test(line)) {
+      skipping = false;
+      continue;
+    }
+    if (!skipping) out.push(line);
+  }
+  return out;
+}
+
+/**
+ * Remove an unmarked `load-lock:` child block under `extensions:` (pre-existing
+ * name collision) so we never write a duplicate YAML key. Only touches the
+ * `load-lock` child; sibling extensions are preserved.
+ */
+function gooseRemoveCollidingChild(lines: string[], extIdx: number): string[] {
+  const childRe = /^(\s+)load-lock:\s*(#.*)?$/;
+  for (let i = extIdx + 1; i < lines.length; i++) {
+    if (/^\S/.test(lines[i])) break; // left the extensions block
+    const m = childRe.exec(lines[i]);
+    if (m) {
+      const indent = m[1].length;
+      let j = i + 1;
+      while (j < lines.length && (lines[j].trim() === "" || new RegExp(`^\\s{${indent + 1},}\\S`).test(lines[j]))) j++;
+      while (j > i + 1 && lines[j - 1].trim() === "") j--; // keep trailing blank separators
+      lines.splice(i, j - i);
+      break;
+    }
+  }
+  return lines;
+}
+
+/**
+ * If our tagged `extensions:` header has no other children, remove it — and the
+ * separator blank we own immediately before it, when the header sits at end of
+ * file — so an install/uninstall round-trip restores the user's bytes exactly.
+ */
+function gooseDropChildlessTaggedHeader(lines: string[]): string[] {
+  const taggedIdx = lines.findIndex((l) => l === `extensions: ${GOOSE_HEADER_TAG}`);
+  if (taggedIdx === -1) return lines;
+  let hasChild = false;
+  for (let i = taggedIdx + 1; i < lines.length && !/^\S/.test(lines[i]); i++) {
+    if (/\S/.test(lines[i]) && !/^\s*#/.test(lines[i])) hasChild = true;
+  }
+  if (!hasChild) {
+    lines.splice(taggedIdx, 1);
+    if (
+      taggedIdx > 0 &&
+      lines[taggedIdx - 1].trim() === "" &&
+      lines.slice(taggedIdx).every((l) => l.trim() === "")
+    ) {
+      lines.splice(taggedIdx - 1, 1);
+    }
+  }
+  return lines;
+}
+
+/** Merge/replace the `extensions.load-lock` stdio entry in goose config.yaml text. */
+function gooseUpsertExtension(text: string, P: ReturnType<typeof pkgPaths>): string {
+  // NOTE: [ \t]* (not \s*) — \s would span the newline and misread the first
+  // block-mapping child as a flow-style value on the header line.
+  const flow = /^extensions:[ \t]*[^\s#]/m.exec(text);
+  if (flow) {
+    throw new Error(
+      "goose config.yaml uses a non-block-style `extensions:` value; load-lock refuses to guess — " +
+        "convert it to a block mapping or add the load-lock extension manually",
+    );
+  }
+  let lines = gooseRemoveMarked(text.split("\n"));
+  lines = gooseDropChildlessTaggedHeader(lines);
+
+  const block = gooseBlockLines(P);
+  const extIdx = lines.findIndex((l) => /^extensions:\s*(#.*)?$/.test(l));
+  if (extIdx === -1) {
+    // no extensions key yet → append one, tagged as ours
+    if (lines.length && lines[lines.length - 1] === "") lines.pop(); // normalize trailing newline
+    if (lines.length) lines.push(""); // separator blank (ours; removed on uninstall)
+    lines.push(`extensions: ${GOOSE_HEADER_TAG}`, ...block, "");
+  } else {
+    lines = gooseRemoveCollidingChild(lines, extIdx);
+    lines.splice(extIdx + 1, 0, ...block);
+  }
+  return lines.join("\n");
+}
+
+/** Remove our extension from a goose config.yaml text (idempotent, no-op safe). */
+function gooseRemoveExtension(text: string): string {
+  let lines = gooseRemoveMarked(text.split("\n"));
+  lines = gooseDropChildlessTaggedHeader(lines);
+  return lines.join("\n");
+}
+
+function installGoose(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
+  const actions: string[] = [];
+  const cfgFile = gooseConfigFile();
+  fs.mkdirSync(path.dirname(cfgFile), { recursive: true });
+  const prev = fs.existsSync(cfgFile) ? fs.readFileSync(cfgFile, "utf8") : "";
+  writeText(cfgFile, gooseUpsertExtension(prev, P));
+  actions.push(`extensions.load-lock (type: stdio) in ${cfgFile}`);
+
+  // 2. marked section in the global hints file (~/.config/goose/.goosehints)
+  const hints = path.join(configHome(), "goose", ".goosehints");
+  const marker = "<!-- load-lock:begin -->";
+  if (mdSection(hints, marker, `${marker}\n` + fallbackSection(NO_WAKEUP_NOTE("Goose")) + `<!-- load-lock:end -->\n`))
+    actions.push(`marked section in ${hints} (global hints)`);
+
+  // 3. be honest about the tier
+  actions.push("tier: MCP fallback — Goose has no hooks and no async push, so there is no idle wakeup; offers surface at tool boundaries");
+  actions.push("restart goose sessions to pick up the extension");
+  return actions;
+}
+
+function uninstallGoose(): string[] {
+  const actions: string[] = [];
+  const cfgFile = gooseConfigFile();
+  if (fs.existsSync(cfgFile)) {
+    const prev = fs.readFileSync(cfgFile, "utf8");
+    const next = gooseRemoveExtension(prev);
+    if (next !== prev) writeText(cfgFile, next);
+    if (next.trim() === "") {
+      fs.rmSync(cfgFile);
+      actions.push(`removed ${cfgFile} (nothing else was in it)`);
+    } else {
+      actions.push(`removed extensions.load-lock from ${cfgFile}`);
+    }
+  }
+  const hints = path.join(configHome(), "goose", ".goosehints");
+  removeMdSection(hints, "<!-- load-lock:begin -->");
+  actions.push("removed hints section");
+  if (fs.existsSync(hints) && fs.readFileSync(hints, "utf8").trim() === "") {
+    fs.rmSync(hints);
+    actions.push(`removed ${hints} (nothing else was in it)`);
+  }
+  pruneEmptyDirs(path.dirname(cfgFile), path.dirname(cfgFile));
+  return actions;
+}
+
 // -------------------------------------------------------------------- public
 
 export async function installCommand(opts: InstallOptions): Promise<void> {
@@ -427,7 +893,7 @@ export async function installCommand(opts: InstallOptions): Promise<void> {
     throw new Error(`compiled entry not found at ${P.mcp} — run \`npm run build\` inside the load-lock package first`);
   }
   const harness = opts.harness;
-  if (!harness) throw new Error("install: --harness <opencode|claude-code|codex|gemini-cli|generic> is required");
+  if (!harness) throw new Error("install: --harness <opencode|claude-code|codex|gemini-cli|copilot-cli|cline|roo-code|goose|generic> is required");
 
   let actions: string[];
   switch (harness) {
@@ -444,6 +910,22 @@ export async function installCommand(opts: InstallOptions): Promise<void> {
     case "gemini-cli":
     case "gemini":
       actions = installGeminiCli(opts, P);
+      break;
+    case "copilot-cli":
+    case "copilot":
+      actions = installCopilotCli(opts, P);
+      break;
+    case "cline":
+      actions = installCline(opts, P);
+      break;
+    case "roo-code":
+    case "roo":
+    case "zoo-code":
+    case "zoo":
+      actions = installRooCode(opts, P);
+      break;
+    case "goose":
+      actions = installGoose(opts, P);
       break;
     case "generic":
     case "all":
@@ -479,6 +961,22 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<void> {
     case "gemini-cli":
     case "gemini":
       actions = uninstallGeminiCli();
+      break;
+    case "copilot-cli":
+    case "copilot":
+      actions = uninstallCopilotCli();
+      break;
+    case "cline":
+      actions = uninstallCline();
+      break;
+    case "roo-code":
+    case "roo":
+    case "zoo-code":
+    case "zoo":
+      actions = uninstallRooCode(opts);
+      break;
+    case "goose":
+      actions = uninstallGoose();
       break;
     default:
       throw new Error(`uninstall: unknown harness "${opts.harness}"`);
