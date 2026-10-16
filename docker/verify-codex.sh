@@ -99,6 +99,12 @@ load-lock acquire --json --op-key holder/roundtrip --reason "holder: competing b
   > /tmp/holder.json
 [ "$(state_of /tmp/holder.json)" = "granted" ] || { echo "FAIL: holder not granted"; exit 66; }
 H1=$(permit_of /tmp/holder.json)
+# The CLI holder runs no tracked process, so acknowledge its start
+# explicitly: without this the daemon's start-deadline sweep reclaims the
+# permit after startTimeoutMs (120s in this container) if the model takes
+# longer than that to queue (observed in run 2). The untracked lease
+# (900s) covers the whole scenario.
+load-lock mark-started --permit "$H1" >/dev/null
 
 (
   for _ in $(seq 1 900); do

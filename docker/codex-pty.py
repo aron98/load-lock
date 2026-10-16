@@ -148,9 +148,17 @@ def main() -> int:
                 # Type the text, give the TUI a moment to process the
                 # keystrokes, then submit with a separate Enter. Writing
                 # text and \r in a single chunk gets swallowed by the TUI
-                # (observed: prompt echoed but never submitted).
-                os.write(master, arg.encode())
-                read_available(0.4)
+                # (observed: prompt echoed but never submitted). Large
+                # single writes additionally trigger the codex TUI's
+                # paste-burst detection ("[Pasted Content N chars]" review
+                # dialog, tui/src/bottom_pane/paste_burst.rs): a 1024-char
+                # os.write was captured as a paste and never submitted.
+                # Type in small chunks with short drains so everything
+                # registers as keystrokes.
+                data = arg.encode()
+                for i in range(0, len(data), 16):
+                    os.write(master, data[i : i + 16])
+                    read_available(0.05)
                 os.write(master, b"\r")
             elif kind == "raw":
                 # interpret backslash escapes (\x1b[B = Down, \x04 = Ctrl-D, ...)
