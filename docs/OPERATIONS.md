@@ -10,7 +10,12 @@ npm install -g @aron98/load-lock    # or: npm install -g ./aron98-load-lock-<ver
 load-lock install --harness opencode
 load-lock install --harness claude-code
 load-lock install --harness codex
-load-lock install --harness generic   # prints MCP snippets for other harnesses
+load-lock install --harness gemini-cli
+load-lock install --harness copilot-cli
+load-lock install --harness cline
+load-lock install --harness roo-code
+load-lock install --harness goose
+load-lock install --harness generic   # prints MCP snippets for other harnesses (Cursor)
 ```
 
 What each installer does (all merges are non-destructive; uninstall removes
@@ -32,8 +37,30 @@ exactly the entries it added):
   section to `~/.gemini/GEMINI.md`. MCP-fallback tier: Gemini CLI has no
   hooks and no async push, so there is no idle wakeup — offers surface at
   tool boundaries.
-- **generic** — prints MCP stdio config snippets (Cursor, Cline/Roo, Goose)
-  plus a suggested instructions-file section.
+- **copilot-cli** — merges `mcpServers.load-lock` (`type: local`) into
+  `~/.copilot/mcp-config.json` (verify with `copilot mcp list`) and adds a
+  marked section to `~/.copilot/copilot-instructions.md`. MCP-fallback
+  tier: hooks are reported in ecosystem content but not verified in
+  official docs, so none are installed — no idle wakeup is claimed; offers
+  surface at tool boundaries.
+- **cline** — merges `mcpServers.load-lock` into
+  `~/.cline/data/settings/cline_mcp_settings.json` (or the path in
+  `CLINE_MCP_SETTINGS_PATH`) and writes a dedicated
+  `~/.cline/rules/load-lock.md`. MCP-fallback tier: no hooks, no async
+  push — no idle wakeup.
+- **roo-code** — merges `mcpServers.load-lock` into `<project>/.roo/mcp.json`
+  (the CLI's cwd unless `--project` is passed) and into every **existing**
+  global `mcp_settings.json` (VS Code globalStorage; existing files only —
+  never created), plus a dedicated `~/.roo/rules/load-lock.md`. MCP-fallback
+  tier: no hooks, no async push — no idle wakeup.
+- **goose** — merges an `extensions.load-lock` stdio block (marker-tagged
+  block-mapping YAML; refuses flow-style `extensions:`) into
+  `~/.config/goose/config.yaml` (XDG_CONFIG_HOME respected) and adds a
+  marked section to `~/.config/goose/.goosehints`. MCP-fallback tier: no
+  hooks, no async push — no idle wakeup.
+- **generic** — prints MCP stdio config snippets (Cursor and other
+  harnesses without a dedicated installer) plus a suggested
+  instructions-file section.
 
 `load-lock uninstall --harness <harness>` reverses any of these.
 

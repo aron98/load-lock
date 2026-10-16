@@ -38,11 +38,11 @@ Status labels mean exactly this:
 | **Claude Code** | MCP `mcp__load-lock__*` (user scope) | `SessionStart` hook plain-stdout context | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook decision-block + async `await-offer` (`asyncRewake`) | Yes, via asyncRewake (contract-tested) | Full via MCP `run_with_permit` + server heartbeats | **Implemented + contract-tested** |
 | **Codex CLI** | MCP `mcp__load-lock__*` (config.toml) | `SessionStart` + `SubagentStart` additionalContext; `~/.codex/AGENTS.md` | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook `decision:"block"` continuation | Partial: async background hooks do NOT start a new turn (documented limitation); stop-hook covers turn boundaries | Full via MCP `run_with_permit` + server heartbeats | **Implemented + contract-tested** (hooks need `/hooks` trust review) |
 | **Gemini CLI** | Yes (`settings.json` mcpServers, first-class installer) | `GEMINI.md` global (config `context.fileName`) | Via global GEMINI.md (always loaded) | No hook mechanism exists | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
-| **GitHub Copilot CLI** | Yes (`copilot mcp add`) | AGENTS.md/GEMINI.md discovery + custom instructions | Via global instructions file | Hooks reported in ecosystem content but **not verified in official docs** — treat as unavailable | Unverified | Via MCP `run_with_permit` only | Proposed (MCP fallback) |
+| **GitHub Copilot CLI** | Yes (`~/.copilot/mcp-config.json`, merge-only installer; verify with `copilot mcp list`) | `~/.copilot/copilot-instructions.md` (marked section) | Via global instructions file | Hooks reported in ecosystem content but **not verified in official docs** — none installed | Unverified | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **Cursor** | Yes (`.cursor/mcp.json` + global) | `.cursor/rules/*.md` Always rules | Rules re-apply (Always) | `stop` hook exists but **beta** with a less-documented JSON contract — not shipped | Beta/unverified | Via MCP `run_with_permit` only | Proposed (MCP fallback; hook tier possible later) |
-| **Cline** | Yes (`cline_mcp_settings.json`) | `.clinerules/` + `~/.cline/rules` | Rules always loaded | No hooks | No | Via MCP `run_with_permit` only | Proposed (MCP fallback) |
-| **Roo Code** | Yes (Roo MCP settings) | `.roo/` rule dirs | Rules always loaded | No hooks | No | Via MCP `run_with_permit` only | Proposed (MCP fallback) |
-| **Goose** | Yes (`~/.config/goose/config.yaml`) | `.goosehints` (global + project) | Hints always loaded | No hooks | No | Via MCP `run_with_permit` only | Proposed (MCP fallback) |
+| **Cline** | Yes (`cline_mcp_settings.json`, merge-only installer) | `~/.cline/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
+| **Roo Code** | Yes (project `.roo/mcp.json` + existing global `mcp_settings.json`, merge-only installer) | `~/.roo/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
+| **Goose** | Yes (`~/.config/goose/config.yaml` `extensions` block, merge-only installer) | `.goosehints` (global, marked section) | Hints always loaded | No hooks | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **Aider** | **No MCP support** | CONVENTIONS.md / `.aider.conf.yml` | Read each run | N/A | N/A | CLI-only: same-shell `load-lock acquire ... && cmd; load-lock release ...` (manual) | Proposed (manual CLI tier) |
 
 ## How each integration tier works
@@ -91,21 +91,46 @@ harness contracts. Live verification pending a machine with the harness
 installed. Codex requires the user to trust the hooks once via `/hooks`
 (the installer prints this).
 
-### Tier 3 — MCP-only fallback (Gemini CLI, Copilot CLI, Cursor, Cline, Roo Code, Goose)
+### Tier 3 — MCP-only fallback (Gemini CLI, Copilot CLI, Cline, Roo Code, Goose)
 
 The MCP server itself carries the policy in its `instructions`, every tool
 result surfaces pending offers (tool-boundary delivery), and
 `inspect_machine`/`get_config`/`configure` work unchanged.
 
-**Gemini CLI ships a first-class installer** (`load-lock install --harness
-gemini-cli`, see issue #1): it writes `mcpServers.load-lock` (stdio) into
-`~/.gemini/settings.json` and a marked policy section into
-`~/.gemini/GEMINI.md`, both merged non-destructively; `uninstall` removes
-exactly those. Round-trip tested against a temp HOME (`src/test/install.test.ts`),
-but not live-verified against a real Gemini CLI — hence *config-tested*.
+**Every tier-3 MCP harness except Cursor ships a first-class merge-only
+installer** (Gemini CLI landed with issue #1; Copilot CLI, Cline, Roo Code
+and Goose with issue #2). Each merges into the harness's real config file
+and never deletes anything the user wrote; `load-lock uninstall` removes
+exactly the entries the installer added:
 
-For the remaining harnesses that support global instruction files (rules /
-hints...), `load-lock install --harness generic` prints a snippet to add.
+- **Gemini CLI** — `mcpServers.load-lock` (stdio) into
+  `~/.gemini/settings.json` + a marked policy section in
+  `~/.gemini/GEMINI.md`.
+- **Copilot CLI** — `mcpServers.load-lock` (`type: local`) into
+  `~/.copilot/mcp-config.json` (verify with `copilot mcp list`) + a marked
+  section in `~/.copilot/copilot-instructions.md`. Hooks are reported in
+  ecosystem content but unverified in official docs, so the installer ships
+  none — no idle wakeup is claimed.
+- **Cline** — `mcpServers.load-lock` into the MCP settings file
+  (`~/.cline/data/settings/cline_mcp_settings.json`, or the path in
+  `CLINE_MCP_SETTINGS_PATH`) + a dedicated `~/.cline/rules/load-lock.md`
+  (our own file, so uninstall is a simple delete).
+- **Roo Code** — `mcpServers.load-lock` into `<project>/.roo/mcp.json`
+  (pass `--project`) plus every **existing** global `mcp_settings.json`
+  (VS Code globalStorage for Roo/Zoo; existing files only — the installer
+  never guesses storage paths) + a dedicated `~/.roo/rules/load-lock.md`.
+- **Goose** — an `extensions.load-lock` stdio block (marker-tagged
+  block-mapping YAML) into `~/.config/goose/config.yaml`
+  (XDG_CONFIG_HOME respected) + a marked section in
+  `~/.config/goose/.goosehints`.
+
+Install/uninstall round-trips for all five are tested against a temp HOME
+and validated against the harnesses' documented config schemas
+(`src/test/install.test.ts`), but not live-verified against real
+harnesses — hence *config-tested*.
+
+`load-lock install --harness generic` still prints snippets for harnesses
+without a dedicated installer (Cursor today).
 Missing: idle wakeup and automatic context re-injection — queued agents
 discover offers at their next tool call or via a bounded `wait`. This is the
 honest fallback; we do not pretend these harnesses got push notifications.
@@ -151,11 +176,12 @@ reconnect, view-model shaping, frame rendering) is covered by
 
 - Live-verified: OpenCode (full adapter, including wakeup).
 - Contract-tested: Claude Code, Codex CLI hook/MCP contracts.
-- Config-tested: Gemini CLI (installer round-trip, temp HOME; real harness
-  not installed on the verification machine).
+- Config-tested: Gemini CLI, Copilot CLI, Cline, Roo Code, Goose (installer
+  round-trips, temp HOME; real harnesses not installed on the verification
+  machine).
 - Core daemon/protocol/CLI: 45 automated tests + scripted 3-worktree demo
   (three independent agent processes, real git worktrees, one pool), including
   9 dashboard tests (view-model shaping, event-cursor resume across a daemon
   restart, reconnect, and a `load-lock top --once` render smoke test).
 - Proposed (researched capabilities, generic adapter only):
-  Copilot CLI, Cursor, Cline, Roo Code, Goose, Aider.
+  Cursor, Aider.
