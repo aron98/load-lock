@@ -1,9 +1,13 @@
 # Seed config for Codex CLI inside the verification container.
 # The load-lock installer appends its MCP server table to this file.
 #
-# llm-gateway is an OpenAI-compatible gateway that also exposes the
-# Responses API (/v1/responses). Codex no longer supports wire_api "chat";
-# the key arrives via LLM_GATEWAY_API_KEY (docker run --env-file).
+# Any OpenAI-compatible gateway that also exposes the Responses API
+# (/v1/responses) works. Codex no longer supports wire_api "chat"; the key
+# arrives via LLM_GATEWAY_API_KEY (docker run --env-file docker/.env).
+# Replace `model`, `model_provider` and `base_url` with your gateway's
+# values before use (config.toml cannot read them from the environment;
+# the verification runner is expected to substitute them at container
+# start or the seed can be overwritten in the image build).
 model = "gateway-model"
 model_provider = "llm-gateway"
 
@@ -14,6 +18,6 @@ sandbox_mode = "danger-full-access"
 
 [model_providers.llm-gateway]
 name = "LLM Gateway"
-base_url = "https://llm-gateway.example.invalid/v1"
+base_url = "http://llm-gateway.example.invalid/v1"
 env_key = "LLM_GATEWAY_API_KEY"
 wire_api = "responses"

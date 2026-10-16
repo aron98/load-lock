@@ -1,0 +1,71 @@
+# load-lock x Claude Code live-verification stack.
+#
+# Two containers:
+#   litellm  - Anthropic /v1/messages -> OpenAI chat-completions translation
+#              proxy (see docker/litellm/claude-proxy.yaml). Holds the only
+#              copy of the gateway API key.
+#   claude   - the harness image built by docker/Dockerfile.harness with
+#              --build-arg HARNESS=claude-code: load-lock installed globally,
+#              MCP server + hooks wired into the image's HOME. The load-lock
+#              daemon spawns inside this container so /proc-based process
+#              tracking shares the harness PID namespace.
+#
+# Run (host side): docker/run-claude-verify.sh
+#
+# docker/.env (gitignored) must contain LLM_GATEWAY_API_KEY=...,
+# LLM_GATEWAY_BASE_URL=... and LLM_GATEWAY_MODEL=... — compose auto-loads it
+# from this directory for ${...} interpolation. The key is passed ONLY to the
+# litellm service; the claude container never sees it.
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    # NB: --no-db was removed in recent litellm builds; the proxy runs fine
+    # without a database as long as no DB-backed features are requested.
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes:
+      - ./litellm/claude-proxy.yaml:/app/config.yaml:ro
+    environment:
+      # Gateway specifics stay in docker/.env; the proxy is provider-free.
+      LLM_GATEWAY_API_KEY: ${LLM_GATEWAY_API_KEY:?LLM_GATEWAY_API_KEY missing from docker/.env}
+      LLM_GATEWAY_BASE_URL: ${LLM_GATEWAY_BASE_URL:?LLM_GATEWAY_BASE_URL missing from docker/.env}
+      LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:?LLM_GATEWAY_MODEL missing from docker/.env}
+      # Recent litellm builds refuse to start without a master key. This is a
+      # throwaway value local to the compose network; the claude container sends
+      # it as ANTHROPIC_AUTH_TOKEN. The real gateway key stays in docker/.env.
+      LITELLM_MASTER_KEY: "sk-load-lock-verify"
+      LITELLM_TELEMETRY: "False"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness',timeout=5).status==200 else 1)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 36
+      start_period: 30s
+
+  claude:
+    image: load-lock-verify:claude-code
+    depends_on:
+      litellm:
+        condition: service_healthy
+    init: true
+    # Claude Code refuses --dangerously-skip-permissions when running as root,
+    # so the scenario runs as the unprivileged "node" user shipped by the
+    # official node image (uid 1000, home /home/node, owns /workspace). HOME
+    # is explicit: docker does not always set HOME for a `user:` override.
+    user: "node"
+    environment:
+      # HOME is explicit: docker does not always set it for a `user:` override.
+      HOME: /home/node
+      # Anthropic-shaped API served by the LiteLLM sidecar (never upstream).
+      ANTHROPIC_BASE_URL: http://litellm:4000
+      ANTHROPIC_AUTH_TOKEN: sk-load-lock-verify
+      ANTHROPIC_MODEL: claude-sonnet-4-5
+      ANTHROPIC_SMALL_FAST_MODEL: claude-haiku-4-5
+      # Deterministic headless run: no telemetry, no title/summary calls.
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      DISABLE_TELEMETRY: "1"
+      DISABLE_ERROR_REPORTING: "1"
+      CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1"
+      CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
+      # Which scenario phases to run (see verify-claude-code.sh).
+      PHASES: ${PHASES:-1,2,3}
+    command: ["/bin/bash", "/usr/local/bin/verify-claude-code.sh"]

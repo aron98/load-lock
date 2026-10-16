@@ -35,7 +35,7 @@ Status labels mean exactly this:
 | Harness | MCP tools | Policy injection | Compaction restore | Idle wakeup | Async push into context | Cleanup fidelity | Overall |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **OpenCode** (v2) | Native plugin, `load_lock_*` (better than MCP) | Context hook every model call | Yes (hook re-fires per model call) | Yes — `session.synthetic` at execution boundary (live-verified; never interrupts in-flight shell) | Yes (live-verified) | Full: `run_with_permit` tracked jobs + session heartbeats | **Implemented + live-verified** |
-| **Claude Code** | MCP `mcp__load-lock__*` (user scope) | `SessionStart` hook plain-stdout context | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook decision-block + async `await-offer` (`asyncRewake`) | Yes, via asyncRewake (contract-tested) | Full via MCP `run_with_permit` + server heartbeats | **Implemented + contract-tested** |
+| **Claude Code** | MCP `mcp__load-lock__*` (user scope) — live-verified round-trip | `SessionStart` hook plain-stdout context (live-verified: model quoted the brief verbatim) | Yes (SessionStart matcher `compact`) — live-verified after `/compact` | Yes — `Stop` hook decision-block + async `await-offer` (`asyncRewake`), both live-verified | Yes, via asyncRewake (live-verified; the wake text itself is not rendered by the TTY, but the wake drives the full claim lifecycle) | Full via MCP `run_with_permit` + server heartbeats (live-verified incl. a job outliving the claude process) | **Implemented + live-verified** |
 | **Codex CLI** | MCP `mcp__load-lock__*` (config.toml) | `SessionStart` + `SubagentStart` additionalContext; `~/.codex/AGENTS.md` | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook `decision:"block"` continuation | Partial: async background hooks do NOT start a new turn (documented limitation); stop-hook covers turn boundaries | Full via MCP `run_with_permit` + server heartbeats | **Implemented + contract-tested** (hooks need `/hooks` trust review) |
 | **Gemini CLI** | Yes (`settings.json` mcpServers, first-class installer) | `GEMINI.md` global (config `context.fileName`) | Via global GEMINI.md (always loaded) | No hook mechanism exists | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **GitHub Copilot CLI** | Yes (`~/.copilot/mcp-config.json`, merge-only installer; verify with `copilot mcp list`) | `~/.copilot/copilot-instructions.md` (marked section) | Via global instructions file | Hooks reported in ecosystem content but **not verified in official docs** — none installed | Unverified | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
@@ -70,7 +70,7 @@ tool round-trip (acquire → queued → wakeup → claim → release), execution
 boundary delivery without interrupting a running `sleep`, skill visible,
 and graceful handling of a deliberately missed offer (paused → cancel).
 
-### Tier 2 — Claude Code / Codex CLI (hooks + MCP, contract-tested)
+### Tier 2 — Claude Code / Codex CLI (hooks + MCP)
 
 `load-lock install --harness claude-code|codex` configures the MCP server
 (user scope) plus hooks:
@@ -87,9 +87,21 @@ and graceful handling of a deliberately missed offer (paused → cancel).
   shown); the agent claims via `pending`/`claim`.
 
 Contract tests cover all hook stdin/stdout shapes against the documented
-harness contracts. Live verification pending a machine with the harness
-installed. Codex requires the user to trust the hooks once via `/hooks`
-(the installer prints this).
+harness contracts. Claude Code is additionally **live-verified** (in Docker,
+via `docker/run-claude-verify.sh` against the real `claude` CLI): SessionStart
+policy brief in context at startup; the same brief re-injected after
+`/compact` (the model quoted the fresh "load-lock now:" line, not a stale
+copy); the full MCP round-trip acquire → queued → offer → claim →
+`run_with_permit` → auto-release; the `Stop` hook decision-block live (async
+watcher disabled so the stop path was exercised directly); the async
+`await-offer` (`asyncRewake`) watcher waking an idle interactive session,
+which then claimed and released; a `Task`-tool subagent using the MCP tools
+and seeing the policy; and a `run_with_permit` background job that
+outlived the `claude` process and was auto-released. One nuance: the TUI does
+not render the async watcher's stderr wake text — the wake still works (the
+session resumes and the claim round-trip succeeds), only the message is not
+shown. Codex remains contract-tested; it requires the user to trust the
+hooks once via `/hooks` (the installer prints this).
 
 ### Tier 3 — MCP-only fallback (Gemini CLI, Copilot CLI, Cline, Roo Code, Goose)
 
@@ -174,8 +186,10 @@ reconnect, view-model shaping, frame rendering) is covered by
 
 ## Verified vs proposed — summary counts
 
-- Live-verified: OpenCode (full adapter, including wakeup).
-- Contract-tested: Claude Code, Codex CLI hook/MCP contracts.
+- Live-verified: OpenCode (full adapter, including wakeup); Claude Code
+  (full adapter in Docker: policy injection, compact restore, Stop-hook and
+  asyncRewake wakeup paths, subagents, background-job cleanup).
+- Contract-tested: Codex CLI hook/MCP contracts.
 - Config-tested: Gemini CLI, Copilot CLI, Cline, Roo Code, Goose (installer
   round-trips, temp HOME; real harnesses not installed on the verification
   machine).
