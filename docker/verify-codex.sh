@@ -1,13 +1,29 @@
 #!/bin/bash
 # load-lock x Codex CLI live verification (runs INSIDE the container).
 #
-# `codex exec` (0.163.0) connects to MCP servers but never injects their
-# tools into the model's tool catalog (openai/codex#38689 — verified
-# headlessly in this image: connection + handshake succeed, model reports
-# the tools missing even with mcp_optional_startup_grace_ms=0,
-# mcp_servers.load-lock.required=true and startup_timeout_sec=20).
-# Interactive codex DOES register MCP tools, so the full loop is driven
-# through a real TUI session with docker/codex-pty.py:
+# Why the interactive TUI path: `codex exec` (0.163.0) connects to MCP
+# servers but never injects their tools into the model's tool catalog
+# (openai/codex#38689 — verified headlessly in this image: connection +
+# handshake succeed; grace/required/startup-timeout knobs and the
+# mcp_2026_07_28 / non_prefixed_mcp_tool_names feature flags do not help).
+#
+# Interactive codex exposes MCP tools, but as Responses-API `namespace`
+# tool groups ({"type":"namespace","name":"mcp__<server>","tools":[…]}).
+# trustedtokens/GLM does not support the namespace tool type and silently
+# drops those groups, so the model would never see mcp__load-lock__*.
+# The in-container shim (docker/codex-api-shim.js, port 8788) flattens
+# namespace groups to plain function tools on the request side and
+# rewrites the model's flat function_call names back to
+# {"name","namespace"} pairs on the SSE response side — the form codex's
+# tool router natively dispatches to MCP servers (source-verified against
+# codex-rs 0.163.0; full loop first proven on the host).
+#
+# The full loop is driven through a real interactive TUI session
+# (docker/codex-pty.py), without --dangerously-bypass-hook-trust: that
+# flag forces embedded mode, which never injects MCP tools. The first
+# TUI boot shows the hook-trust dialog (load-lock installs user-layer
+# hooks); the probe drive trusts them ("2" + Enter), mirroring the
+# real-user setup, and codex persists trust in config.toml.
 #
 #   1. policy brief visible to the model (SessionStart hook)
 #   2. MCP tools registered and callable in the TUI (mcp__load-lock__*)
@@ -51,22 +67,50 @@ load-lock service start
 load-lock configure --offer-timeout-ms 180000 \
   --reason "verification container: codex Stop-hook wakeup costs a full model turn; default 30s claim window is too tight for real-model latency"
 
+# ----------------------------------------------------------------- step 0
+# Start the namespace-flattening API shim (see header). codex's seeded
+# base_url points at 127.0.0.1:8788; upstream is api.trustedtokens.eu.
+note "starting codex-api-shim (namespace tool flattening)"
+rm -f /workspace/api-shim.log
+SHIM_UPSTREAM_HOST=api.trustedtokens.eu SHIM_LISTEN_PORT=8788 \
+  node /usr/local/bin/codex-api-shim.js >/dev/null 2>&1 &
+SHIM_PID=$!
+trap 'kill "$SHIM_PID" 2>/dev/null || true' EXIT
+for _ in $(seq 1 50); do
+  if node -e 'const net=require("net");const s=net.connect(8788,"127.0.0.1",()=>{s.end();process.exit(0)});s.on("error",()=>process.exit(1))' 2>/dev/null; then
+    break
+  fi
+  sleep 0.2
+done
+node -e 'const net=require("net");const s=net.connect(8788,"127.0.0.1",()=>{s.end();process.exit(0)});s.on("error",()=>process.exit(1))' \
+  || { echo "FAIL: codex-api-shim did not come up on 127.0.0.1:8788"; tail -20 /workspace/api-shim.log 2>/dev/null || true; exit 66; }
+
 # ----------------------------------------------------------------- step 1
-# Short interactive probe: boot the TUI, send a trivial prompt, confirm a
-# real model turn fired and completed. The interactive TUI renders no
-# "N tokens used" marker (that is a `codex exec`-only line), so the driver
-# synchronizes on the machine-readable OSC 7501 state protocol the TUI
-# emits: ESC ]7501;state=working:app=codex on turn start, state=idle on
+# Short interactive probe: boot the TUI, handle the first-boot hook-trust
+# dialog (option 2 = "Trust all and continue"; codex persists the trust
+# state in config.toml, so the scenario boot later needs no dialog), then
+# send a trivial prompt and confirm a real model turn fired and completed.
+# The interactive TUI renders no "N tokens used" marker (that is a
+# `codex exec`-only line), so the driver synchronizes on the
+# machine-readable OSC 7501 state protocol the TUI emits:
+# ESC ]7501;state=working:app=codex on turn start, state=idle on
 # completion (verified on codex 0.163.0 host runs). rawexpect scans the
 # raw byte stream because the ANSI cleaner strips OSC sequences.
-note "pty probe (TUI boot + OSC-7501 turn-marker detection)"
+note "pty probe (TUI boot + hook trust + OSC-7501 turn-marker detection)"
 # The probe asks for "stressed" reversed -> "desserts": the echoed prompt
 # contains "stressed" but never "desserts", so a grep for the reply word
 # cannot be satisfied by the echo of the prompt itself.
 cat > /workspace/pty-probe-driver.txt <<'EOF'
 sleep 15
+# First boot shows the hooks-trust dialog (load-lock installs user-layer
+# SessionStart/SubagentStart/Stop hooks): "2" = Trust all and continue.
+send 2
+sleep 3
+# Defensive: clear any stray input (if the dialog did not appear, the "2"
+# landed in the prompt box instead) and dismiss the boot screen.
+raw \x15
 raw \r
-sleep 5
+sleep 2
 mark
 send Reply with the word "stressed" reversed, as a single word and nothing else.
 rawexpect \x1b]7501;state=working:app=codex
@@ -75,7 +119,7 @@ send /quit
 wait-exit
 EOF
 set +e
-/usr/local/bin/codex-pty.py /workspace/pty-probe.log /workspace/pty-probe-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
+/usr/local/bin/codex-pty.py /workspace/pty-probe.log /workspace/pty-probe-driver.txt -- --no-alt-screen
 PROBE_RC=$?
 set -e
 clean_log /workspace/pty-probe.log > /workspace/pty-probe.clean.txt
@@ -115,7 +159,7 @@ load-lock mark-started --permit "$H1" >/dev/null
   load-lock release --permit "$H1" > /tmp/holder-release.json
 ) &
 HOLDER_REL_PID=$!
-trap 'kill "$HOLDER_REL_PID" 2>/dev/null || true; load-lock release --permit "$H1" >/dev/null 2>&1 || true' EXIT
+trap 'kill "$HOLDER_REL_PID" 2>/dev/null || true; load-lock release --permit "$H1" >/dev/null 2>&1 || true; kill "$SHIM_PID" 2>/dev/null || true' EXIT
 
 # The scenario prompt (single line: the pty driver submits it with one Enter).
 SCENARIO_PROMPT="Verify the load-lock integration on this machine. Use ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock. Do exactly this, in order: (1) State whether your instructions include a section starting with '# load-lock: machine-wide heavy-work budget' and quote its first bullet. (2) Call the MCP tool mcp__load-lock__status and report the pool name, capacity and current usage. (3) Call the MCP tool mcp__load-lock__acquire with reason 'verify build' and op_key 'verify/build'. Report the exact state value it returns. (4) Run the shell command 'sleep 30' exactly once - that is light work while queued. (5) Finish with a one-paragraph summary of the states you observed so far; do not call any other load-lock tools before finishing. (6) If you then receive an instruction telling you that load-lock capacity is now reserved for you with an offer_token: call the load-lock claim tool with that exact offer_token, then call the load-lock release tool, and end with a final one-sentence confirmation."
@@ -144,7 +188,8 @@ note "running codex interactive verification scenario (pty)"
 set +e
 # 300s per-expectation ceiling: turn 1 includes a real 30s shell sleep plus
 # several MCP round-trips; turn 2 is the Stop-hook continuation.
-PTY_EXPECT_TIMEOUT=300 /usr/local/bin/codex-pty.py /workspace/codex-transcript.log /workspace/codex-driver.txt -- --no-alt-screen --dangerously-bypass-hook-trust
+# Hooks were trusted in the probe boot, so this boot shows no dialog.
+PTY_EXPECT_TIMEOUT=300 /usr/local/bin/codex-pty.py /workspace/codex-transcript.log /workspace/codex-driver.txt -- --no-alt-screen
 PTY_RC=$?
 set -e
 note "pty driver exit code: $PTY_RC"

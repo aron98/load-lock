@@ -58,7 +58,8 @@ RUN mkdir -p /root/.codex \
 COPY docker/verify-codex.sh /usr/local/bin/verify-codex.sh
 COPY docker/verify-claude-code.sh /usr/local/bin/verify-claude-code.sh
 COPY docker/codex-pty.py /usr/local/bin/codex-pty.py
-RUN chmod +x /usr/local/bin/verify-*.sh /usr/local/bin/codex-pty.py
+COPY docker/codex-api-shim.js /usr/local/bin/codex-api-shim.js
+RUN chmod +x /usr/local/bin/verify-*.sh /usr/local/bin/codex-pty.py /usr/local/bin/codex-api-shim.js
 
 WORKDIR /workspace
 # Scenario script is passed as the docker run command (see run-*-verify.sh).
