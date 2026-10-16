@@ -79,10 +79,10 @@ def main() -> int:
     sel.register(master, selectors.EVENT_READ)
 
     log = open(log_path, "wb")
-    cleaned = []  # list of cleaned chunks; `expect` scans chunk-aligned
-    raw = []      # list of raw byte chunks; `rawexpect` scans chunk-aligned
-    pos = 0       # chunk index: `expect` must match at or after this
-    rawpos = 0    # chunk index: `rawexpect` must match at or after this
+    text = ""     # all cleaned output so far; `expect` scans this
+    rawbuf = bytearray()  # all raw bytes so far; `rawexpect` scans this
+    pos = 0       # char offset into `text`: `expect` must match at or after
+    rawpos = 0    # byte offset into `rawbuf`: `rawexpect` must match at or after
 
     def read_available(timeout: float) -> bool:
         """Drain pty for up to `timeout` seconds. Returns True if any data."""
@@ -101,30 +101,35 @@ def main() -> int:
                     return saw
                 log.write(data)
                 log.flush()
-                raw.append(data)
-                cleaned.append(ANSI.sub(b"", data).decode("utf-8", "replace"))
+                rawbuf.extend(data)
+                text += ANSI.sub(b"", data).decode("utf-8", "replace")
                 saw = True
 
-    def matched_since(marker: int, regex: re.Pattern) -> int:
-        """Search cleaned chunks >= marker; return next marker or -1."""
-        buf = "".join(cleaned[marker:])
-        m = regex.search(buf)
+    # NOTE on matching semantics: `pos`/`rawpos` are OFFSETS PAST THE LAST
+    # MATCH END, not "everything seen so far". Consuming everything at
+    # match time (the earlier design) silently skipped a second marker
+    # that arrived in the SAME read batch (fast turn: working+idle OSC
+    # 7501 markers land in one read, and the following rawexpect idles
+    # out forever).
+    def search_text(pat: re.Pattern) -> bool:
+        nonlocal pos
+        m = pat.search(text, pos)
         if not m:
-            return -1
-        # conservative: consume everything seen so far (never rematch old text)
-        return len(cleaned)
+            return False
+        pos = m.end()
+        return True
 
-    def matched_since_raw(marker: int, regex: re.Pattern) -> int:
-        """Search raw byte chunks >= marker; return next marker or -1."""
-        buf = b"".join(raw[marker:])
-        if not regex.search(buf):
-            return -1
-        return len(raw)
+    def search_raw(pat: re.Pattern) -> bool:
+        nonlocal rawpos
+        m = pat.search(rawbuf, rawpos)
+        if not m:
+            return False
+        rawpos = m.end()
+        return True
 
     def fail(msg: str) -> int:
         sys.stderr.write(f"codex-pty: {msg}\n")
-        tail = "".join(cleaned[-60:])
-        sys.stderr.write("--- cleaned pty tail ---\n" + tail[-4000:] + "\n")
+        sys.stderr.write("--- cleaned pty tail ---\n" + text[-4000:] + "\n")
         try:
             os.killpg(child.pid, signal.SIGTERM)
         except OSError:
@@ -169,15 +174,13 @@ def main() -> int:
                 # consume everything seen so far: subsequent expectations
                 # match only NEW output (skips echoed prompt text)
                 read_available(0.2)
-                pos = len(cleaned)
-                rawpos = len(raw)
+                pos = len(text)
+                rawpos = len(rawbuf)
             elif kind == "expect":
                 pat = re.compile(arg)
                 deadline = time.monotonic() + EXPECT_TIMEOUT
                 while True:
-                    nxt = matched_since(pos, pat)
-                    if nxt >= 0:
-                        pos = nxt
+                    if search_text(pat):
                         break
                     if time.monotonic() > deadline:
                         return fail(f"expect timeout (no match for /{arg}/)")
@@ -188,9 +191,7 @@ def main() -> int:
                 pat = re.compile(arg.encode().decode("unicode_escape").encode("latin1"))
                 deadline = time.monotonic() + EXPECT_TIMEOUT
                 while True:
-                    nxt = matched_since_raw(rawpos, pat)
-                    if nxt >= 0:
-                        rawpos = nxt
+                    if search_raw(pat):
                         break
                     if time.monotonic() > deadline:
                         return fail(f"rawexpect timeout (no match for /{arg}/)")
