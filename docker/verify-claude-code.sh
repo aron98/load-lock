@@ -8,6 +8,11 @@
 #     - Stop-hook decision-block wakeup with a cwd-matching offer -> claim
 #     - run_with_permit background job that outlives the tool call AND the
 #       claude process; daemon auto-releases on process-group death
+#   Phase 1b (headless -p, async watcher disabled):
+#     - the async await-offer SessionStart watcher usually wins the wake
+#       race, so it is stripped from settings.json for this phase; the Stop
+#       hook is then the only wakeup path and its decision-block/claim
+#       instruction is live-verified in isolation
 #   Phase 2 (headless -p):
 #     - subagent behavior: a Task-tool subagent uses mcp__load-lock__* tools
 #       and reports what context it sees
@@ -145,6 +150,73 @@ for _ in $(seq 1 90); do
   sleep 2
 done
 [ "$P1_TERMINAL" -eq 0 ] || { echo "FAIL: verify/build never reached a terminal permit state (background job cleanup)"; exit 66; }
+fi
+
+# ------------------------------------------------------------------ phase 1b
+# The async await-offer SessionStart watcher (async + asyncRewake) always
+# wins the wake race - in phase 1 the wakeup arrived while the model was
+# still mid-turn (bash sleep), so the Stop hook's decision-block branch
+# never fired. Issue #3 task 3 requires BOTH paths live-verified, so here
+# the watcher entry is temporarily removed from settings.json: the Stop
+# hook (turn-end) is then the ONLY wakeup path and its claimInstruction
+# ("capacity ... is now reserved for you (request ...)") is the only text
+# that can reach the model.
+if has_phase 1; then
+note "Phase 1b: Stop-hook decision-block wakeup (async watcher disabled)"
+
+assert_clean "phase 1b"
+SETTINGS="$HOME/.claude/settings.json"
+cp "$SETTINGS" /tmp/settings-backup.json
+python3 - <<'PY'
+import json, os
+p = os.path.join(os.environ["HOME"], ".claude", "settings.json")
+s = json.load(open(p))
+ss = s.get("hooks", {}).get("SessionStart", [])
+s["hooks"]["SessionStart"] = [e for e in ss if "await-offer" not in json.dumps(e)]
+json.dump(s, open(p, "w"), indent=2)
+PY
+restore_settings() { cp /tmp/settings-backup.json "$SETTINGS"; }
+trap restore_settings EXIT
+
+load-lock acquire --json --op-key holder/stopblock --reason "holder: stop-hook block verify" --label "cli-holder" \
+  > /tmp/holder1b.json
+[ "$(state_of /tmp/holder1b.json)" = "granted" ] || { echo "FAIL: holder/stopblock not granted"; exit 66; }
+H1B=$(permit_of /tmp/holder1b.json)
+
+# Event-driven release: the moment the model's verify/stopblock request is
+# QUEUED, free the holder. The model then sleeps 45s, so by the time it ends
+# its turn (WAITING) a live, cwd-matching offer exists for the Stop hook to
+# decision-block on.
+(
+  for _ in $(seq 1 900); do
+    load-lock status --json 2>/dev/null | grep -q '"opKey": "verify/stopblock"' && break
+    sleep 1
+  done
+  sleep 2
+  load-lock release --permit "$H1B" > /tmp/holder1b-release.json
+) &
+HOLDER1B_REL_PID=$!
+
+set +e
+timeout 900 claude -p "${CLAUDE_FLAGS[@]}" --output-format stream-json --verbose \
+  "This machine enforces the load-lock policy. Do exactly this, in order, using ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock: \
+(1) Call the MCP tool mcp__load-lock__acquire with reason 'stop-hook wakeup verification' and op_key 'verify/stopblock'. It will be queued behind another permit holder. \
+(2) Run the shell command 'sleep 45' exactly once. Do not sleep again. \
+(3) When the sleep finishes, end your turn immediately, replying with only the single word WAITING. Do not call mcp__load-lock__pending and do not claim anything yet. \
+(4) If a load-lock stop-hook message then tells you capacity is now reserved for you, call mcp__load-lock__pending, claim the offer with mcp__load-lock__claim (offer_token), then call mcp__load-lock__release with the permit_token. Finish your reply by quoting the exact full text of the stop-hook message that woke you, then reply with the single word STOPHOOK-DONE." \
+  2>&1 | tee /workspace/claude-phase1b-stream.jsonl
+P1B_RC=${PIPESTATUS[0]}
+set -e
+kill "$HOLDER1B_REL_PID" 2>/dev/null || true
+wait "$HOLDER1B_REL_PID" 2>/dev/null || true
+load-lock release --permit "$H1B" > /tmp/holder1b-release.json || true
+# Restore the async watcher NOW: later phases (esp. 3b's idle wake) depend
+# on it; the EXIT trap is only a backstop for failure paths above.
+restore_settings
+trap - EXIT
+
+note "phase 1b: claude exit code: $P1B_RC"
+[ "$P1B_RC" -eq 0 ] || { echo "FAIL: claude -p phase 1b exited $P1B_RC"; exit 65; }
 fi
 
 # ------------------------------------------------------------------ phase 2
@@ -342,6 +414,21 @@ if (has(1)) {
 
   console.log("PASS: verify/build queued@" + q1.id + " offered@" + of1.id + " claimed@" + c1.id
     + " started@" + s1.id + " terminal@" + t1.id + " (holder grant@" + h1g.id + ")");
+
+  // Phase 1b: Stop-hook decision-block wakeup (async watcher disabled).
+  const h1bg = at((e) => e.type === "granted"  && byOp("holder/stopblock")(e), "holder/stopblock never granted");
+  const h1br = at((e) => e.type === "released" && byOp("holder/stopblock")(e), "holder/stopblock never released");
+  ok(h1bg.id < h1br.id, "holder/stopblock grant must precede release");
+  const q1b  = at((e) => e.type === "queued"  && byOp("verify/stopblock")(e), "model never queued (verify/stopblock)");
+  const of1b = at((e) => e.type === "offered" && byOp("verify/stopblock")(e), "model never offered (verify/stopblock)");
+  const c1b  = at((e) => e.type === "claimed" && byOp("verify/stopblock")(e), "model never claimed (verify/stopblock)");
+  const t1b  = at((e) => terminal(e) && byOp("verify/stopblock")(e), "verify/stopblock never reached a terminal permit state");
+  ok(q1b.id < of1b.id && of1b.id < c1b.id && c1b.id < t1b.id,
+     "verify/stopblock event order broken (queued->offered->claimed->terminal)");
+  ok(h1br.id < of1b.id, "holder/stopblock release must precede the offer");
+  ok(c1b.entry.cwd === "/workspace", "stopblock claimed entry cwd must be the session cwd for hook matching, got " + c1b.entry.cwd);
+  console.log("PASS: verify/stopblock (Stop-hook decision-block) queued@" + q1b.id + " offered@" + of1b.id
+    + " claimed@" + c1b.id + " terminal@" + t1b.id + " (holder grant@" + h1bg.id + ")");
 }
 
 if (has(2)) {
@@ -369,11 +456,23 @@ EOF
 note "transcript assertions"
 if has_phase 1; then
   # Distinctive substrings that appear ONLY in real adapter output, never in
-  # the prompts themselves.
+  # the prompts themselves. Phase 1 accepts EITHER wake path: the Stop-hook
+  # claimInstruction ("...is now reserved for you (request ...") or the async
+  # await-offer watcher text ("was just reserved for a request from this
+  # directory") - live runs show the async watcher usually wins the race.
   grep -q "judge by expected CPU/memory/IO cost" /workspace/claude-phase1-stream.jsonl \
     || { echo "FAIL: model did not quote the policy first rule (startup policy not visible)"; exit 66; }
-  grep -q "reserved for you (request" /workspace/claude-phase1-stream.jsonl \
-    || { echo "FAIL: no Stop-hook claim instruction in phase 1 transcript"; exit 66; }
+  grep -Eq "reserved for (you \(request|a request from this directory)" /workspace/claude-phase1-stream.jsonl \
+    || { echo "FAIL: no offer-wakeup instruction in phase 1 transcript"; exit 66; }
+  # Phase 1b: with the async watcher stripped, the ONLY possible wakeup is
+  # the Stop-hook decision-block, whose claimInstruction text is unique to
+  # src/cli/hook.ts's stop branch.
+  grep -q "reserved for you (request" /workspace/claude-phase1b-stream.jsonl \
+    || { echo "FAIL: no Stop-hook decision-block claim instruction in phase 1b transcript"; exit 66; }
+  if grep -q "was just reserved for a request from this directory" /workspace/claude-phase1b-stream.jsonl; then
+    echo "FAIL: async watcher text present in phase 1b - watcher was not disabled"
+    exit 66
+  fi
 fi
 if has_phase 2; then
   grep -q "verify/subagent" /workspace/claude-phase2-stream.jsonl \
