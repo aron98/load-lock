@@ -105,12 +105,16 @@ function writeText(file: string, text: string) {
   fs.renameSync(tmp, file);
 }
 
-/** Append a marked section to a markdown file once. */
+/**
+ * Append a marked section to a markdown file once. The section must start with
+ * `marker`; exactly one newline separates the user's existing bytes from it, so
+ * a removeMdSection round-trip restores the original bytes exactly.
+ */
 function mdSection(file: string, marker: string, section: string): boolean {
   const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
   if (existing.includes(marker)) return false;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, existing + (existing.endsWith("\n") ? "" : "\n") + section);
+  fs.writeFileSync(file, existing === "" ? section : existing + "\n" + section);
   return true;
 }
 
@@ -121,7 +125,9 @@ function removeMdSection(file: string, marker: string) {
   if (idx === -1) return;
   const next = text.indexOf(marker, idx + marker.length);
   const end = next === -1 ? text.length : next;
-  fs.writeFileSync(file, text.slice(0, idx) + text.slice(end));
+  // mdSection put exactly one newline before our section; take it back.
+  const start = idx > 0 && text[idx - 1] === "\n" ? idx - 1 : idx;
+  fs.writeFileSync(file, text.slice(0, start) + text.slice(end));
 }
 
 const LL_HOOK_TAG = "dist/cli/main.js hook"; // how we recognize our hook entries
@@ -231,7 +237,7 @@ function installClaudeCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>)
     mdSection(
       md,
       marker,
-      `\n${marker}\n## load-lock: machine-wide heavy-work budget\n\n` +
+      `${marker}\n## load-lock: machine-wide heavy-work budget\n\n` +
         `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine:\n\n` +
         `1. Call the MCP tool \`mcp__load-lock__acquire\` (reason + op_key) — it grants a permit or queues you.\n` +
         `2. While queued, keep doing light work. When an offer arrives (hook wakeup or \`mcp__load-lock__pending\`), claim it via \`mcp__load-lock__claim\` within the window (default 30s).\n` +
@@ -339,7 +345,7 @@ function installCodex(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): str
     mdSection(
       agentsMd,
       "<!-- load-lock:begin -->",
-      `\n<!-- load-lock:begin -->\n## load-lock: machine-wide heavy-work budget\n\n` +
+      `<!-- load-lock:begin -->\n## load-lock: machine-wide heavy-work budget\n\n` +
         `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine via the \`load-lock\` MCP tools (mcp__load-lock__acquire / claim / release / run_with_permit / pending / status / inspect_machine / configure). ` +
         `Acquire before heavy work, keep doing light work while queued, claim offers promptly (they expire), release when done. Full guide: \`load-lock agent-guide\`.\n<!-- load-lock:end -->\n`,
     )
@@ -407,7 +413,7 @@ function installGeminiCli(opts: InstallOptions, P: ReturnType<typeof pkgPaths>):
     mdSection(
       geminiMd,
       marker,
-      `\n${marker}\n## load-lock: machine-wide heavy-work budget\n\n` +
+      `${marker}\n## load-lock: machine-wide heavy-work budget\n\n` +
         `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine:\n\n` +
         `1. Call the \`load-lock\` MCP \`acquire\` tool (reason + op_key) — it grants a permit or queues you. Pass \`wait_ms\` for a bounded blocking wait, or keep doing light work while queued.\n` +
         `2. Offers surface in every tool result (tool-boundary delivery) — check \`pending\` and claim promptly via \`claim\` within the window (default 30s); expired offers pass capacity to the next waiter.\n` +
@@ -541,7 +547,7 @@ function installCopilotCli(opts: InstallOptions, P: ReturnType<typeof pkgPaths>)
     mdSection(
       instructions,
       marker,
-      `\n${marker}\n` +
+      `${marker}\n` +
         fallbackSection(
           `Copilot CLI hook support is ecosystem-reported but NOT verified in official docs — load-lock installs no hooks here; there is no idle wakeup. You discover offers at your next tool call or via a bounded \`wait_ms\`.`,
         ) +
@@ -801,7 +807,9 @@ function gooseDropChildlessTaggedHeader(lines: string[]): string[] {
 
 /** Merge/replace the `extensions.load-lock` stdio entry in goose config.yaml text. */
 function gooseUpsertExtension(text: string, P: ReturnType<typeof pkgPaths>): string {
-  const flow = /^extensions:\s*[^\s#]/m.exec(text);
+  // NOTE: [ \t]* (not \s*) — \s would span the newline and misread the first
+  // block-mapping child as a flow-style value on the header line.
+  const flow = /^extensions:[ \t]*[^\s#]/m.exec(text);
   if (flow) {
     throw new Error(
       "goose config.yaml uses a non-block-style `extensions:` value; load-lock refuses to guess — " +
@@ -843,7 +851,7 @@ function installGoose(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): str
   // 2. marked section in the global hints file (~/.config/goose/.goosehints)
   const hints = path.join(configHome(), "goose", ".goosehints");
   const marker = "<!-- load-lock:begin -->";
-  if (mdSection(hints, marker, `\n${marker}\n` + fallbackSection(NO_WAKEUP_NOTE("Goose")) + `<!-- load-lock:end -->\n`))
+  if (mdSection(hints, marker, `${marker}\n` + fallbackSection(NO_WAKEUP_NOTE("Goose")) + `<!-- load-lock:end -->\n`))
     actions.push(`marked section in ${hints} (global hints)`);
 
   // 3. be honest about the tier
