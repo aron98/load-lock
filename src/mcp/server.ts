@@ -10,7 +10,8 @@
  * into the model's context. load-lock therefore relies on:
  *   (a) tool-boundary delivery — every acquire/claim/release/... response
  *       carries the agent's pending offers and queue positions;
- *   (b) bounded blocking wait in acquire (waitMs);
+ *   (b) bounded blocking wait in acquire (waitMs) and wait_for_turn
+ *       (the "sleep until it is my turn" tool);
  *   (c) harness-specific idle wakeup (hooks/plugins) where verified.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -20,6 +21,7 @@ import { spawn, ChildProcess } from "node:child_process";
 
 import { LLClient } from "../shared/client.js";
 import { POLICY_BRIEF } from "../policy/text.js";
+import { waitForTurn, WaitAbortedError } from "../shared/wait-turn.js";
 
 const ACQUIRE_DESC = `Acquire a machine-wide permit before starting resource-intensive local work (full builds, test suites, big compiles/containers).
 
@@ -186,6 +188,55 @@ export function buildServer(opts: McpServerOptions): McpServer {
   );
 
   server.registerTool(
+    "wait_for_turn",
+    {
+      title: "Sleep until it is your turn",
+      description: `Bounded blocking sleep for one of your queued/offered/paused requests: "sleep until it is my turn". Returns a STRUCTURED result on every path — never an error for a normal resolution:
+- granted: capacity reached you and the offer was AUTO-CLAIMED on your behalf (permit_token in entry, auto_claimed: true) — start the heavy work now;
+- still_queued: timed out; you are still queued — queue_position, queue_length and holders (who is ahead of you) included; call wait_for_turn again to keep sleeping;
+- paused: the offer expired or was declined meanwhile; next_action has rejoin instructions;
+- cancelled: the request was cancelled/declined/reclaimed meanwhile;
+- not_found: the request ended or the daemon restarted (queues are ephemeral); acquire again.
+Input: request_id (default: your oldest offered, then front-most queued, then oldest paused request), timeout_ms (default 600000, clamped to the machine's maxTurnWaitMs config — get_config shows the cap). timeout_ms 0 = check-only. The wait holds NO permit and NO capacity (it is light work); cancelling this call is safe and never strands anything — you simply stop sleeping and the request keeps its queue position. A daemon restart mid-wait resolves promptly with not_found + re-acquire instructions.`,
+      inputSchema: {
+        request_id: z.string().optional().describe("Request to watch (default: your oldest offered/front-most queued/oldest paused request)"),
+        timeout_ms: z.number().int().optional().describe("Bounded sleep (ms); default 600000, clamped to the machine's maxTurnWaitMs cap. 0 = check-only."),
+        agent_id: z.string().optional().describe("Override agent identity (rarely needed)"),
+      },
+    },
+    async (input, extra) => {
+      try {
+        const r = await waitForTurn({
+          client,
+          agentId: agentIdOf(input),
+          requestId: input.request_id,
+          timeoutMs: input.timeout_ms,
+          signal: extra?.signal,
+        });
+        return json({
+          state: r.state,
+          request_id: r.requestId,
+          auto_claimed: r.autoClaimed,
+          permit_token: r.state === "granted" ? r.entry?.permitToken : undefined,
+          waited_ms: r.waitedMs,
+          effective_wait_ms: r.effectiveWaitMs,
+          entry: r.entry,
+          queue_position: r.queuePosition,
+          queue_length: r.queueLength,
+          holders: r.holders,
+          next_action: r.nextAction,
+          detail: r.detail,
+        });
+      } catch (err) {
+        if (err instanceof WaitAbortedError) {
+          return json({ state: "aborted", detail: "wait cancelled by the harness/caller; the request keeps its queue position" });
+        }
+        throw err;
+      }
+    },
+  );
+
+  server.registerTool(
     "pending",
     {
       title: "Your offers/queue/permits",
@@ -238,6 +289,7 @@ export function buildServer(opts: McpServerOptions): McpServer {
             pools: z.record(z.string(), z.object({ capacity: z.number().int() })).optional(),
             offer_timeout_ms: z.number().int().optional(),
             max_wait_ms: z.number().int().optional(),
+            max_turn_wait_ms: z.number().int().optional(),
             start_timeout_ms: z.number().int().optional(),
             untracked_lease_ms: z.number().int().optional(),
             guidance: z
@@ -262,6 +314,7 @@ export function buildServer(opts: McpServerOptions): McpServer {
             ...input.changes,
             offerTimeoutMs: input.changes.offer_timeout_ms,
             maxWaitMs: input.changes.max_wait_ms,
+            maxTurnWaitMs: input.changes.max_turn_wait_ms,
             startTimeoutMs: input.changes.start_timeout_ms,
             untrackedLeaseMs: input.changes.untracked_lease_ms,
             guidance: input.changes.guidance

@@ -32,6 +32,8 @@ acquire(reason, op_key)
   ├─ granted  → you hold a permit → do the heavy work now
   ├─ queued   → keep doing LIGHT work; offers reach you at your next
   │             load-lock tool call, or via a wakeup message
+  │             no light work left? wait_for_turn() = "sleep until it
+  │             is my turn" (bounded; auto-claims the offer for you)
   └─ ...
 offer arrives (token, expiry) → claim(token) BEFORE the window closes
 claim → held → start the heavy work
@@ -71,6 +73,36 @@ Notes on the details:
   explicitly `rejoin(request_id)`. If you know you can't start in time,
   `decline` instead of letting it expire.
 
+### Sleeping until your turn (`wait_for_turn`)
+
+Rule 2 says keep doing light work while queued — but sometimes there is
+nothing useful left. `wait_for_turn(request_id?, timeout_ms?)` is the honest
+way to idle: a **bounded blocking sleep** over one of your queued, offered
+or paused requests (default: your most urgent one). When capacity reaches
+you mid-sleep, the offer is **auto-claimed inside the claim window** and
+you wake holding the permit (`granted`, `permit_token` + `auto_claimed:
+true` in the response).
+
+Every resolution is a structured result, never an opaque error:
+
+- `granted` — your turn came; the permit is already claimed for you.
+- `still_queued` — the bound expired; you get your queue position, queue
+  length and who is holding the capacity. Call it again to keep sleeping.
+- `paused` — your offer expired or was declined meanwhile; `next_action`
+  has the rejoin instructions.
+- `cancelled` — the request was cancelled/declined/reclaimed meanwhile.
+- `not_found` — the request ended, or the daemon restarted (queues are
+  ephemeral); acquire again.
+
+The sleep is bounded and **safe by construction**: it holds no permit and
+no capacity, cancelling the tool call just stops the local sleep (nothing
+is orphaned — your request keeps its queue position), and a daemon restart
+mid-sleep resolves promptly with `not_found` instead of hanging. `timeout_ms`
+defaults to 600000 (10 minutes) and is clamped to the machine's
+`maxTurnWaitMs` cap (`get_config` shows it; `configure` can set it, valid
+range 1000–3600000 ms). `timeout_ms: 0` means check-only. The CLI form is
+`load-lock wait --id <request-id> --timeout <ms>`.
+
 ## 3. Running heavy work (lifecycle options)
 
 How you start the work determines how reliably the permit cleans up after
@@ -104,7 +136,7 @@ load-lock acquire --reason "cargo test" --op-key "test/core"      # prints JSON
 load-lock run --permit <permit-token> -- cargo test --quiet       # tracks + releases
 # or acquire+run in one go:
 load-lock run --reason "nightly build" -- npm run build
-load-lock wait --id <request-id> --timeout 120000                # bounded wait → auto-claim
+load-lock wait --id <request-id> --timeout 120000                # sleep until your turn → auto-claim
 ```
 
 ## 4. Reading state

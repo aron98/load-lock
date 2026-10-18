@@ -70,6 +70,7 @@ export function defaultConfig(): MachineConfig {
     pools: { heavy: { capacity: 1 } },
     offerTimeoutMs: 30_000,
     maxWaitMs: 5_000,
+    maxTurnWaitMs: 600_000,
     startTimeoutMs: 120_000,
     untrackedLeaseMs: 15 * 60_000,
     guidance: {},
@@ -688,6 +689,7 @@ export class Machine {
         pools: this.config.pools,
         offerTimeoutMs: this.config.offerTimeoutMs,
         maxWaitMs: this.config.maxWaitMs,
+        maxTurnWaitMs: this.config.maxTurnWaitMs,
         startTimeoutMs: this.config.startTimeoutMs,
         untrackedLeaseMs: this.config.untrackedLeaseMs,
       },
@@ -815,6 +817,9 @@ export class Machine {
     if (c.maxWaitMs !== undefined && (c.maxWaitMs < 0 || c.maxWaitMs > 600_000)) {
       throw new ProtocolError("invalid", "maxWaitMs must be within [0, 600000]");
     }
+    if (c.maxTurnWaitMs !== undefined && (c.maxTurnWaitMs < 1000 || c.maxTurnWaitMs > 3_600_000)) {
+      throw new ProtocolError("invalid", "maxTurnWaitMs must be within [1000, 3600000]");
+    }
     if (c.startTimeoutMs !== undefined && (c.startTimeoutMs < 1000 || c.startTimeoutMs > 3_600_000)) {
       throw new ProtocolError("invalid", "startTimeoutMs must be within [1000, 3600000]");
     }
@@ -828,6 +833,7 @@ export class Machine {
     }
     if (c.offerTimeoutMs !== undefined) this.config.offerTimeoutMs = c.offerTimeoutMs;
     if (c.maxWaitMs !== undefined) this.config.maxWaitMs = c.maxWaitMs;
+    if (c.maxTurnWaitMs !== undefined) this.config.maxTurnWaitMs = c.maxTurnWaitMs;
     if (c.startTimeoutMs !== undefined) this.config.startTimeoutMs = c.startTimeoutMs;
     if (c.untrackedLeaseMs !== undefined) this.config.untrackedLeaseMs = c.untrackedLeaseMs;
     this.config.guidance = this.config.guidance ?? {};

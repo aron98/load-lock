@@ -23,6 +23,10 @@ Judge by *expected* CPU/memory/IO impact, not by command name. When unsure,
    `granted` (you hold a permit; start heavy work now) or `queued`
    (keep doing light work; an offer will arrive).
 2. While queued: **continue useful light work**. Do not idle-poll.
+   Out of light work? `wait_for_turn(request_id?, timeout_ms?)` — a
+   bounded blocking sleep until your turn that auto-claims the offer and
+   wakes you with the permit_token (holds no capacity; cancellation
+   leaves nothing behind).
 3. When an offer arrives (harness wakeup or `pending`): `claim(offer_token)`
    inside the claim window (default 30s). Expired offers are rejected; your
    request pauses until you `rejoin`.

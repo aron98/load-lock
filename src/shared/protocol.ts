@@ -54,6 +54,12 @@ export interface MachineConfig {
   /** Upper bound for bounded blocking waits in acquire (advisory). */
   maxWaitMs: number;
   /**
+   * Upper bound for ONE wait_for_turn call ("sleep until it is my turn",
+   * issue #11), in milliseconds. Callers' timeout_ms is clamped to this —
+   * operators tune how long an agent may block in a single tool call.
+   */
+  maxTurnWaitMs: number;
+  /**
    * Start deadline: after a permit is claimed/granted, execution must begin
    * (run_with_permit / attach_pid / mark_started) within this window, or the
    * permit is reclaimed automatically. Covers "claimed but never started".
@@ -81,6 +87,7 @@ export interface ConfigChange {
   pools?: Record<string, PoolConfig>;
   offerTimeoutMs?: number;
   maxWaitMs?: number;
+  maxTurnWaitMs?: number;
   startTimeoutMs?: number;
   untrackedLeaseMs?: number;
   guidance?: {
@@ -198,6 +205,7 @@ export interface StatusResult {
     pools: Record<string, PoolConfig>;
     offerTimeoutMs: number;
     maxWaitMs: number;
+    maxTurnWaitMs: number;
     startTimeoutMs: number;
     untrackedLeaseMs: number;
   };
@@ -381,6 +389,42 @@ export interface EventsParams {
 export interface EventsResult {
   events: MachineEvent[];
   latestEventId: number;
+}
+
+// ---------------------------------------------------------------------------
+// wait_for_turn (issue #11): bounded "sleep until it is my turn" for a
+// queued request. One shared client-side implementation serves the CLI
+// `wait` command, the MCP `wait_for_turn` tool and the OpenCode plugin's
+// `load_lock_wait_for_turn` tool (src/shared/wait-turn.ts). The wait holds
+// no permit and no capacity — it is light work — and every resolution path
+// returns a structured result, not an error.
+
+export type WaitForTurnState =
+  | "granted" // permit held (auto-claimed or already held); permit_token in entry
+  | "still_queued" // timed out; request still queued — position + holders included
+  | "paused" // offer expired / declined meanwhile; rejoin when ready
+  | "cancelled" // request cancelled meanwhile
+  | "not_found"; // request unknown (never existed / ended / pruned / daemon restarted)
+
+export interface WaitForTurnResult {
+  state: WaitForTurnState;
+  requestId?: string;
+  /** True when THIS wait claimed the offer on the caller's behalf (explicit auto-claim). */
+  autoClaimed?: boolean;
+  /** How long the wait actually ran before resolving (ms). */
+  waitedMs: number;
+  /** The clamped budget actually applied, when it differed from the requested one. */
+  effectiveWaitMs?: number;
+  /** Owner snapshot of the request at resolution time (carries permit_token when granted). */
+  entry?: OwnerEntrySnapshot;
+  /** 1-based FIFO position (still_queued). */
+  queuePosition?: number;
+  /** Queue depth of the request's pool (still_queued). */
+  queueLength?: number;
+  /** Who holds the pool's capacity (still_queued) — the agents ahead of you. */
+  holders?: EntrySnapshot[];
+  nextAction: string;
+  detail?: string;
 }
 
 /** Recovery diagnostics: held permits with holder + job information. */

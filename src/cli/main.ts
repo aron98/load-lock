@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import { LLClient, withClient } from "../shared/client.js";
 import { ProtocolError } from "../shared/protocol.js";
+import { waitForTurn } from "../shared/wait-turn.js";
 import { installCommand, uninstallCommand } from "./install.js";
 import { hookCommand } from "./hook.js";
 import { topCommand } from "./top.js";
@@ -119,10 +120,11 @@ async function main(): Promise<void> {
         if (S("capacity")) changes.pools = { [S("pool", "heavy")]: { capacity: N("capacity", 1) } };
         if (S("offer-timeout-ms")) changes.offerTimeoutMs = N("offer-timeout-ms", 0);
         if (S("max-wait-ms")) changes.maxWaitMs = N("max-wait-ms", 0);
+        if (S("max-turn-wait-ms")) changes.maxTurnWaitMs = N("max-turn-wait-ms", 0);
         if (S("start-timeout-ms")) changes.startTimeoutMs = N("start-timeout-ms", 0);
         if (S("untracked-lease-ms")) changes.untrackedLeaseMs = N("untracked-lease-ms", 0);
         if (S("heavy-work-heuristic")) changes.guidance = { heavyWorkHeuristic: S("heavy-work-heuristic") };
-        if (!Object.keys(changes).length) fail("configure: no changes given (--capacity, --offer-timeout-ms, --max-wait-ms, --start-timeout-ms, --untracked-lease-ms, --heavy-work-heuristic)");
+        if (!Object.keys(changes).length) fail("configure: no changes given (--capacity, --offer-timeout-ms, --max-wait-ms, --max-turn-wait-ms, --start-timeout-ms, --untracked-lease-ms, --heavy-work-heuristic)");
         out(await c.request("configure", { expectedVersion: expected, changes, reason, author }));
       });
       return;
@@ -214,49 +216,23 @@ async function main(): Promise<void> {
     case "wait": {
       // Watches a queued request; auto-claims the offer when capacity is
       // handed to it and prints the permit token. Honest bounded blocking
-      // for scriptable flows (aider, plain shell scripts).
+      // for scriptable flows (aider, plain shell scripts). Shares the exact
+      // implementation with the MCP wait_for_turn tool and the OpenCode
+      // plugin (src/shared/wait-turn.ts).
       const id = S("id") || fail("wait: --id <request-id> required");
       const timeoutMs = N("timeout", 600_000);
       const agent = S("agent", defaultAgent());
       const c = new LLClient();
       await c.connect();
       try {
-        let last = 0;
-        let resolved = false;
-        const permit = await new Promise<string | null>((resolve) => {
-          const finish = (v: string | null) => {
-            if (!resolved) {
-              resolved = true;
-              resolve(v);
-            }
-          };
-          const timer = timeoutMs > 0 ? setTimeout(() => finish(null), timeoutMs) : null;
-          void (async () => {
-            while (!resolved) {
-              try {
-                const r = (await c.request("events", { sinceEventId: last, agentId: agent })) as any;
-                last = r.latestEventId;
-                for (const ev of r.events as any[]) {
-                  if (ev.entry?.requestId !== id) continue;
-                  if (ev.type === "offered" && ev.offerToken) {
-                    const claimed = (await c.request("claim", { offerToken: ev.offerToken })) as any;
-                    if (timer) clearTimeout(timer);
-                    finish(claimed.entry.permitToken);
-                  } else if (ev.type === "cancelled" || ev.type === "paused" || ev.type === "reclaimed") {
-                    if (timer) clearTimeout(timer);
-                    finish(null);
-                  }
-                }
-              } catch {
-                /* transient; retry */
-              }
-              await new Promise((r2) => setTimeout(r2, 200));
-            }
-          })();
-        });
-        if (!permit) fail("wait: timed out or the request was cancelled/paused/reclaimed", 69);
-        out({ permit_token: permit });
-        return;
+        const r = await waitForTurn({ client: c, agentId: agent, requestId: id, timeoutMs });
+        if (r.state === "granted" && r.entry?.permitToken) {
+          out({ permit_token: r.entry.permitToken, state: r.state, request_id: r.requestId, auto_claimed: r.autoClaimed ?? false });
+          return;
+        }
+        out({ state: r.state, request_id: r.requestId, detail: r.detail ?? r.nextAction });
+        if (r.state === "still_queued") fail(`wait: still queued (position ${r.queuePosition ?? "?"}) after ${r.waitedMs}ms`, 68);
+        fail(`wait: request is ${r.state.replace("_", " ")} — ${r.nextAction}`, 69);
       } finally {
         c.close();
       }
