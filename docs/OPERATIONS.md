@@ -3,7 +3,9 @@
 ## Install
 
 Requirements: Node 20+, Linux (macOS works with the limitations noted below;
-Windows would need a named-pipe adapter — not implemented).
+Windows has a named-pipe transport adapter — implemented and unit-tested on
+Linux via platform injection, not yet verified on a Windows machine; see the
+Windows section at the bottom).
 
 ```sh
 npm install -g @aron98/load-lock    # or: npm install -g ./aron98-load-lock-<ver>.tgz
@@ -75,8 +77,10 @@ exactly the entries it added):
 
 ## The daemon
 
-- State dir: `~/.local/state/load-lock` (override `LOAD_LOCK_STATE_DIR`).
-- Socket: `<state dir>/daemon.sock` (override `LOAD_LOCK_SOCKET`).
+- State dir: `~/.local/state/load-lock` (Windows: `%LOCALAPPDATA%\load-lock`;
+  override `LOAD_LOCK_STATE_DIR`).
+- Socket: `<state dir>/daemon.sock` (Windows: named pipe `\\.\pipe\load-lock`;
+  override `LOAD_LOCK_SOCKET`).
 - **Auto-spawns** on first client connection; no service unit needed.
 - Files: `config.json` (settings + history), `journal.json` (held permits),
   `daemon.json` (pid), `spawn.lock` (bootstrap race guard).
@@ -352,5 +356,68 @@ Caveats to watch for (unverified expectations):
 - macOS: no cgroup limits; process-liveness checks fall back from
   `/proc/<pid>/stat` start times to `kill(pid, 0)` (weaker PID-reuse
   defense — document and prefer `run_with_permit`). Everything else works.
-- Windows: Unix-domain sockets are not used; a named-pipe transport adapter
-  would be required (planned, not implemented).
+
+### Windows — procedure (NOT verified here)
+
+**No Windows environment was available on the verification machine** (all
+development and testing happened on Linux). The transport adapter is
+implemented in `src/shared/transport.ts` and its logic is covered by
+`src/test/platform.test.ts` (endpoint resolution, pipe naming, probe,
+stale-cleanup, liveness, and job-tree kill paths, exercised via platform
+injection on Linux) — but nothing in this subsection has been executed on
+Windows. It is a ready-to-run procedure with *expected* outcomes, to be
+verified and recorded by someone with a Windows setup.
+
+What the adapter does:
+
+- Transport: clients and the daemon talk over the named pipe
+  `\\.\pipe\load-lock` (Node's `net` module accepts pipe paths in
+  `connect`/`createServer` natively). No Unix-domain socket is involved.
+- State dir: `%LOCALAPPDATA%\load-lock` (falls back to
+  `%USERPROFILE%\AppData\Local\load-lock`); `LOAD_LOCK_STATE_DIR` and
+  `LOAD_LOCK_SOCKET` overrides still win, as on POSIX.
+- Daemon claim: a second daemon probes the pipe before listening and
+  exits with "denied" if a live daemon answers (same semantics as the
+  POSIX socket claim). Because a named pipe is a kernel object, there is
+  no stale-socket file to clean up.
+
+1. Install Node 20+ on Windows and install the package:
+
+   ```powershell
+   npm install -g @aron98/load-lock
+   load-lock install --harness <harness>
+   load-lock doctor
+   ```
+
+   Expected: `doctor` reports the `%LOCALAPPDATA%\load-lock` state dir and
+   reaches the daemon over the pipe (it probes by connecting, since a pipe
+   is not a filesystem entry).
+
+2. Run two `load-lock acquire` in separate shells, then `load-lock top --once`.
+
+   Expected: the same queue/permit behavior as on Linux — the pipe carries
+   the identical NDJSON protocol.
+
+3. Start a permit-tracked job (`run_with_permit` / `load-lock run`), kill
+   the job, and confirm the permit auto-releases via the sweep.
+
+4. Run `load-lock service stop`, then any tool call.
+
+   Expected: the daemon exits and the next client auto-spawns a fresh one.
+
+Caveats to watch for (unverified expectations):
+
+- **No PID-reuse defense.** Windows has no `/proc`-style start time, so
+  `isProcessAlive` can only use `kill(pid, 0)` semantics. A recycled PID
+  could be mistaken for the original job — the same limitation as macOS,
+  documented here rather than solved.
+- **No process-group scan.** The `/proc`-based process-group scan does not
+  exist on Windows. Tracked permits release when the main PID dies even if
+  child processes survive; job stop/kill uses `taskkill /PID <pid> /T`
+  (`/F` for SIGKILL) to take down the tree.
+- **Pipe name is machine-wide.** Unlike POSIX, where each user gets their
+  own state dir and socket, a named pipe named `\\.\pipe\load-lock` is
+  machine-global — two Windows users on one host share one daemon. Point
+  `LOAD_LOCK_SOCKET` at a different pipe name if that is a problem.
+- `inspect_machine` cgroup detection reads `/sys/fs/cgroup` and will
+  degrade gracefully (`cgroupVersion: "none"`), reporting raw host numbers.

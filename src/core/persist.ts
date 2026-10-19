@@ -1,6 +1,7 @@
 /**
  * Atomic JSON persistence for daemon config + change history.
- * State dir: $XDG_STATE_HOME/load-lock (default ~/.local/state/load-lock).
+ * State dir: $XDG_STATE_HOME/load-lock (default ~/.local/state/load-lock;
+ * Windows: %LOCALAPPDATA%\load-lock — see shared/transport.ts).
  *
  * Only *configuration* persists across daemon restarts. Permits and queue
  * are ephemeral by design (see docs/ARCHITECTURE.md — restart behavior):
@@ -10,18 +11,14 @@ import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync } from "
 import { dirname, join } from "node:path";
 import { MachineConfig, ConfigHistoryEntry, JournalEntry } from "../shared/protocol.js";
 import { defaultConfig } from "./state.js";
+import { resolveStateDir, resolveSocketPath } from "../shared/transport.js";
 
 export function stateDir(override?: string): string {
-  if (override) return override;
-  if (process.env.LOAD_LOCK_STATE_DIR) return process.env.LOAD_LOCK_STATE_DIR;
-  const xdg = process.env.XDG_STATE_HOME || join(process.env.HOME ?? "~", ".local", "state");
-  return join(xdg, "load-lock");
+  return resolveStateDir(process.platform, process.env, override);
 }
 
 export function socketPath(override?: string): string {
-  if (override) return override;
-  if (process.env.LOAD_LOCK_SOCKET) return process.env.LOAD_LOCK_SOCKET;
-  return join(stateDir(), "daemon.sock");
+  return resolveSocketPath(process.platform, process.env, override);
 }
 
 export function loadState(dir: string): { config: MachineConfig; history: ConfigHistoryEntry[] } {

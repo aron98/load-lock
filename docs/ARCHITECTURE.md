@@ -42,7 +42,8 @@ and inherit unrelated constraints.
 
 **One daemon, one budget.** A single `load-lock` daemon process per machine
 owns all state. Every client — any harness, any repo, any worktree — talks to
-the same Unix-domain socket, so all sessions share one capacity budget
+the same Unix-domain socket (named pipe `\\.\pipe\load-lock` on Windows),
+so all sessions share one capacity budget
 regardless of working directory. The default configuration is one pool
 `heavy` with capacity 1; pools, capacity, and timings are changed at runtime
 through `configure` (versioned compare-and-swap, persisted with author +

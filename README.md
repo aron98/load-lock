@@ -137,4 +137,5 @@ skills/         packaged skill
 - Aider: researched; manual CLI tier. See COMPATIBILITY.md for the matrix.
 
 Linux-first; macOS works with documented liveness-check limitations;
-Windows would need a named-pipe transport adapter (planned, not built).
+Windows has a named-pipe transport adapter (implemented and unit-tested on
+Linux via platform injection; not yet verified on a Windows machine).

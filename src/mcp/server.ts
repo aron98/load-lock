@@ -22,6 +22,7 @@ import { spawn, ChildProcess } from "node:child_process";
 import { LLClient } from "../shared/client.js";
 import { POLICY_BRIEF } from "../policy/text.js";
 import { waitForTurn, WaitAbortedError } from "../shared/wait-turn.js";
+import { killProcessGroup } from "../shared/transport.js";
 
 const ACQUIRE_DESC = `Acquire a machine-wide permit before starting resource-intensive local work (full builds, test suites, big compiles/containers).
 
@@ -425,11 +426,7 @@ Input: request_id (default: your oldest offered, then front-most queued, then ol
           pgid: child.pid,
         });
       } catch (err) {
-        try {
-          process.kill(-child.pid!, "SIGKILL");
-        } catch {
-          /* already gone */
-        }
+        killProcessGroup(child.pid!, "SIGKILL");
         return json({
           error: `permit no longer startable (${(err as Error).message}); job killed before doing work; acquire again`,
         });
@@ -476,18 +473,10 @@ Input: request_id (default: your oldest offered, then front-most queued, then ol
       const job = jobs.get(input.job_id);
       if (!job) return json({ error: "unknown job_id" });
       if (!job.exited) {
-        try {
-          process.kill(-job.child.pid!, "SIGTERM");
-        } catch {
-          /* already gone */
-        }
+        killProcessGroup(job.child.pid!, "SIGTERM");
         setTimeout(() => {
           if (!job.exited) {
-            try {
-              process.kill(-job.child.pid!, "SIGKILL");
-            } catch {
-              /* already gone */
-            }
+            killProcessGroup(job.child.pid!, "SIGKILL");
           }
         }, 5_000).unref?.();
       }

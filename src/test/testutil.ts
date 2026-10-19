@@ -9,7 +9,10 @@ import { connect } from "node:net";
 import { fileURLToPath } from "node:url";
 import { LLClient } from "../shared/client.js";
 
-const TMP_BASE = join(tmpdir(), "opencode");
+// Tests must never touch the user's real state dir. LL_TEST_TMP lets the
+// suite run on machines where /tmp/opencode is not writable (same override
+// as daemon.test.ts).
+const TMP_BASE = process.env.LL_TEST_TMP ?? join(tmpdir(), "opencode");
 mkdirSync(TMP_BASE, { recursive: true });
 
 export const daemonMainPath = join(dirname(fileURLToPath(import.meta.url)), "..", "core", "daemon-main.js");

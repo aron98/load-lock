@@ -272,6 +272,14 @@ reconnect, view-model shaping, frame rendering) is covered by
 | Cursor | hooks get `conversation_id` (no `cwd` — `workspace_roots[0]` identifies the request); MCP tools take explicit `agent_id` | same |
 | Tier 3 | explicit `agent_id` argument | falls back to per-server-process id |
 
+## Platform matrix
+
+| Platform | Status | Notes |
+| --- | --- | --- |
+| **Linux** | Implemented + live-verified | Primary target; all daemon/protocol/CLI tests and the 3-worktree demo run here. `/proc`-based liveness with start-time PID-reuse defense. |
+| **macOS** | Implemented, limitations documented | Works; liveness falls back from `/proc` start times to `kill(pid, 0)` (weaker PID-reuse defense), no cgroup limits. See OPERATIONS.md. |
+| **Windows** | Implemented, unit-tested on Linux — **not Windows-verified** | Named-pipe transport (`\\.\pipe\load-lock`), `%LOCALAPPDATA%` state dir, `kill(pid, 0)` liveness, `taskkill /T` job-tree kills. Covered by `src/test/platform.test.ts` via platform injection; no Windows machine was available for end-to-end verification. See the Windows procedure in OPERATIONS.md. |
+
 ## Verified vs proposed — summary counts
 
 - Live-verified: OpenCode (full adapter, including wakeup); Claude Code

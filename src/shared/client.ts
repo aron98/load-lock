@@ -1,13 +1,17 @@
 /**
- * NDJSON-over-UDS client for the load-lock daemon, shared by the CLI, the
+ * NDJSON transport client for the load-lock daemon, shared by the CLI, the
  * MCP server, and harness hook scripts. The OpenCode plugin ships a
  * self-contained copy of this logic (see adapters/opencode).
  *
- * Auto-spawn: if the daemon socket is absent, exactly one client becomes the
- * spawner (serialized by a mkdir-based lock — atomic on POSIX) and starts a
- * detached daemon; losers wait for the socket to appear. The freshly spawned
- * daemon itself re-checks the socket before binding, so a double-spawn is
- * harmless (the loser exits).
+ * Transport: Unix-domain socket on POSIX, named pipe (`\\.\pipe\load-lock`)
+ * on Windows — Node's `net` handles both transparently, so only endpoint
+ * resolution differs (see shared/transport.ts).
+ *
+ * Auto-spawn: if the daemon endpoint is absent, exactly one client becomes
+ * the spawner (serialized by a mkdir-based lock — atomic on POSIX and on
+ * NTFS) and starts a detached daemon; losers wait for the endpoint to
+ * appear. The freshly spawned daemon itself re-checks the endpoint before
+ * binding, so a double-spawn is harmless (the loser exits).
  */
 import { connect, Socket } from "node:net";
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
@@ -17,6 +21,7 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { ProtocolError } from "./protocol.js";
 import { socketPath as defaultSocket, stateDir as defaultStateDir } from "../core/persist.js";
+import { probeTransport } from "./transport.js";
 
 export interface ClientOptions {
   socket?: string;
@@ -240,14 +245,7 @@ export async function ensureDaemon(stateDir: string, sockPath: string): Promise<
 }
 
 function probe(sockPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const s = connect(sockPath);
-    s.once("connect", () => {
-      s.end();
-      resolve(true);
-    });
-    s.once("error", () => resolve(false));
-  });
+  return probeTransport(sockPath);
 }
 
 /** One-shot helper: connect (auto-spawning), run fn, close. */
