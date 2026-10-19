@@ -77,7 +77,8 @@ the remaining gap honestly (see docs/COMPATIBILITY.md).
 
 ## Protocol quick reference
 
-Wire protocol: NDJSON over a Unix domain socket; `LLClient` handles
+Wire protocol: NDJSON over a Unix domain socket (named pipe on Windows);
+`LLClient` handles
 framing, timeouts, auto-spawn, and event subscriptions. Methods an adapter
 normally touches:
 
