@@ -1,5 +1,5 @@
 /**
- * load-lock harness hook handlers (Claude Code, Codex CLI).
+ * load-lock harness hook handlers (Claude Code, Codex CLI, Cursor).
  *
  * These are invoked by the harness's hook system with the harness's hook
  * JSON on stdin. They are intentionally fast (one daemon RPC or none) and
@@ -16,6 +16,11 @@
  *  - Codex SessionStart/SubagentStart: plain stdout = additionalContext.
  *  - Codex Stop: {"decision":"block","reason":...} continues; async hooks
  *    cannot wake an idle Codex session (documented limitation).
+ *  - Cursor Stop (hooks v1, https://cursor.com/docs/hooks): stdin carries
+ *    workspace_roots (no cwd) and loop_count; stdout JSON
+ *    {"followup_message":...} is auto-submitted as the next user message
+ *    (idle wakeup). loop_count > 0 guards against followup loops. Verified
+ *    against the official docs only (contract-tested, not live-verified).
  */
 import { LLClient } from "../shared/client.js";
 import { POLICY_BRIEF } from "../policy/text.js";
@@ -28,6 +33,9 @@ interface HookInput {
   agent_type?: string;
   stop_hook_active?: boolean;
   hook_event_name?: string;
+  // Cursor stop-hook fields (hooks v1)
+  workspace_roots?: string[];
+  loop_count?: number;
 }
 
 async function readStdin(): Promise<HookInput> {
@@ -110,6 +118,36 @@ export async function hookCommand(rest: string[]): Promise<void> {
             const seconds = Math.max(0, Math.round(((o.offerExpiresAt ?? Date.now()) - Date.now()) / 1000));
             process.stdout.write(
               JSON.stringify({ decision: "block", reason: claimInstruction(o, seconds) }) + "\n",
+            );
+          }
+        } finally {
+          c.close();
+        }
+      } catch {
+        /* daemon down: nothing to deliver */
+      }
+      return;
+    }
+
+    // Cursor Stop (hooks v1): {"followup_message":...} is auto-submitted by
+    // Cursor as the next user message — the documented loop-style idle
+    // wakeup. loop_count counts prior stop-hook followups for this
+    // conversation (starts at 0) — Cursor's stop_hook_active equivalent.
+    case "cursor/stop": {
+      if ((input.loop_count ?? 0) > 0) {
+        return; // already woke once for this conversation; do not loop
+      }
+      const cursorCwd = input.workspace_roots?.[0] || process.cwd();
+      try {
+        const c = new LLClient({ spawnDaemon: false });
+        await c.connect();
+        try {
+          const { offers } = (await c.request("offers_for_cwd", { cwd: cursorCwd })) as any;
+          if (offers.length > 0) {
+            const o = offers[0];
+            const seconds = Math.max(0, Math.round(((o.offerExpiresAt ?? Date.now()) - Date.now()) / 1000));
+            process.stdout.write(
+              JSON.stringify({ followup_message: claimInstruction(o, seconds) }) + "\n",
             );
           }
         } finally {

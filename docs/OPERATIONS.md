@@ -15,7 +15,8 @@ load-lock install --harness copilot-cli
 load-lock install --harness cline
 load-lock install --harness roo-code
 load-lock install --harness goose
-load-lock install --harness generic   # prints MCP snippets for other harnesses (Cursor)
+load-lock install --harness cursor --project /path/to/repo
+load-lock install --harness generic   # prints MCP snippets for other harnesses
 ```
 
 What each installer does (all merges are non-destructive; uninstall removes
@@ -58,8 +59,16 @@ exactly the entries it added):
   `~/.config/goose/config.yaml` (XDG_CONFIG_HOME respected) and adds a
   marked section to `~/.config/goose/.goosehints`. MCP-fallback tier: no
   hooks, no async push — no idle wakeup.
-- **generic** — prints MCP stdio config snippets (Cursor and other
-  harnesses without a dedicated installer) plus a suggested
+- **cursor** — project-level (pass `--project`, defaults to cwd): merges
+  `mcpServers.load-lock` into `<project>/.cursor/mcp.json`, merges a flat
+  hooks-v1 stop entry into `<project>/.cursor/hooks.json` (`version` added
+  only if absent; user entries preserved), writes a dedicated Always-apply
+  rule `<project>/.cursor/rules/load-lock.mdc`. Hooks tier: the stop hook
+  returns `{"followup_message":...}` so Cursor continues the session when an
+  offer arrives. Contract-tested against the documented hooks JSON
+  (https://cursor.com/docs/hooks); not live-verified.
+- **generic** — prints MCP stdio config snippets (harnesses without a
+  dedicated installer) plus a suggested
   instructions-file section.
 
 `load-lock uninstall --harness <harness>` reverses any of these.
