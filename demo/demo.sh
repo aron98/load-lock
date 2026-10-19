@@ -99,7 +99,7 @@ say "final state"
     const j = JSON.parse(s);
     console.log(`config version ${j.config.version}; capacity(heavy)=${j.config.pools.heavy.capacity}; offer window ${j.config.offerTimeoutMs}ms`);
     console.log("change history:");
-    for (const h of j.history) console.log(`  v${h.version} by ${h.author}: ${h.reason}`);
+    for (const h of j.history) console.log(`  v${h.resultingVersion} by ${h.author}: ${h.reason}`);
   });'
 
 say "event log (durable identities — every grant, offer, claim, release)"

@@ -208,6 +208,136 @@ Recovery policy summary:
 | Config change lost | Configuration is CAS-versioned: fetch `get_config`, retry with the fresh `version` on `version_conflict`. |
 | After OS reboot | Nothing to do: state dir persists config; daemon respawns on first use; journal reconciliation releases permits whose processes died. |
 
+## Containers / WSL2
+
+### Docker — verified
+
+Verified 2026-10-16 with Docker Engine 29.1.3 on Linux (amd64) and
+`node:24-bookworm-slim`, running load-lock 0.1.2 installed from the packed
+tarball (`npm pack`, then `npm install -g --omit=dev <tgz>` inside the
+container). Two runs, both in containers started with `--cpus=1.5
+--memory=2g`:
+
+- a sanity-check container (`load-lock doctor`, `load-lock inspect`,
+  auto-spawn proof, `attach-pid` round trip), and
+- the full `demo/demo.sh` (which needs bash + git + node; the slim image
+  needs `apt-get install -y git` first).
+
+**Cgroup v2 quota detection.** `load-lock inspect` inside the constrained
+container reported the *container* limits, not the host's:
+
+```json
+"cpu": { "logicalCores": 2, "cgroupVersion": "v2", "cgroupCpuQuota": 150000,
+         "cgroupCpuPeriod": 100000, "effectiveCores": 1 },
+"memory": { "totalBytes": 8195100672, "cgroupMemoryLimitBytes": 2147483648,
+            "effectiveLimitBytes": 2147483648 }
+```
+
+`/sys/fs/cgroup/cpu.max` reads `150000 100000` inside the container; the 2
+logical cores are still visible (`os.cpus()`/`nproc` are not namespaced),
+but `effectiveCores` is 1 (floor of the 1.5-CPU quota) and
+`effectiveLimitBytes` is exactly the 2 GiB `--memory=2g` limit while
+`totalBytes` shows the ~8 GiB host view. Pressure and the inspect
+suggestion therefore scale to the container, not the host — exactly the
+"don't assume the host's cores" behavior the inspect output promises.
+
+**Auto-spawn + default state dir.** With no `LOAD_LOCK_*` environment
+variables set, the first CLI call auto-spawned the daemon on the
+container-default `~/.local/state/load-lock` (state dir contained
+`daemon.json`, `daemon.sock`, `journal.json`; `service status` reported
+`pid 35, protocol v1, config version 1`). No special env or volumes
+needed.
+
+**Process tracking.** `/proc`-based tracking works unchanged in the
+container: `attach-pid` recorded the target with its
+`/proc/<pid>/stat` start time (`pidStartTime`), `recover list` reported
+`tracked process (pid 3367) is running`, and after the process was killed
+the daemon's 5s sweep auto-released the permit (`pool "heavy": 0/1 in
+use`). `run_with_permit` and journal reconciliation use the same mechanism.
+
+**demo.sh.** The scripted three-agent demo ran to completion (exit 0)
+inside the same plain node:24 container. Its inventory line reflected
+container limits — `cpu: 2 logical / 1 effective (v2)`, `memory: 7.6 GiB
+total / 2.0 GiB effective limit` — and the full flow played out: A
+granted, B and C queued, strict FIFO hand-off, C's offer expired →
+`paused` (not recycled), explicit `rejoin` → claim → run → release; 21
+durable events.
+
+Limitations observed (all inherent to containers, not load-lock bugs):
+
+- `/proc/loadavg` and CPU inventory are not namespaced: `loadPerEffectiveCore`
+  reflects host load, so a quiet container on a busy host can still show
+  "high" load pressure, and `nproc` shows the host CPU set. The cgroup quota
+  (`effectiveCores`) is the honest number to reason with.
+- State dir is per-container: with `docker run --rm` the daemon, config
+  history and journal vanish with the container; the next use just
+  respawns with defaults (fine for ephemeral CI containers; volume-mount
+  `~/.local/state/load-lock` if you want persistence).
+
+Reproduce from a checkout (needs `dist/` built; tarball from `npm pack`):
+
+```sh
+npm ci && npm run build && npm pack --pack-destination /tmp
+docker run --rm --cpus=1.5 --memory=2g \
+  -v "$PWD":/src:ro -v /tmp:/pkg:ro \
+  node:24 bash -c '
+    cp -a /src /work && cd /work
+    apt-get update -qq && apt-get install -y -qq git
+    npm install -g --omit=dev /pkg/aron98-load-lock-<version>.tgz
+    load-lock doctor && load-lock inspect
+    bash demo/demo.sh'
+```
+
+### WSL2 — procedure (NOT verified here)
+
+**No WSL2 environment was available on the verification machine** (the
+Docker results above were produced on a plain Linux VM). Nothing in this
+subsection has been executed by us; it is a ready-to-run procedure with
+*expected* outcomes, to be verified and recorded by someone with a WSL2
+setup.
+
+1. Use a WSL2 distro with Node 20+ (e.g. Ubuntu 24.04). Check the cgroup
+   layout inside the distro:
+
+   ```sh
+   stat -fc %T /sys/fs/cgroup      # expect cgroup2fs (cgroup v2)
+   cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max
+   ```
+
+2. Run load-lock on the distro itself (not in Docker):
+
+   ```sh
+   load-lock doctor && load-lock inspect
+   ```
+
+   Expected: WSL2 presents a full VM, so `inspect` reports the *WSL VM's*
+   resources, not the Windows host's. `.wslconfig` caps (`memory=`,
+   `processors=`) are enforced by the VM itself (vCPU count / VM RAM), not
+   via cgroup quotas — so `cgroupVersion` should read `v2` on a
+   systemd-enabled distro, `cgroupCpuQuota` typically `null` (`max`), and
+   `effectiveCores` = the `.wslconfig` `processors=` value with
+   `memory.totalBytes`/`effectiveLimitBytes` ≈ the `memory=` cap. If the
+   distro runs without systemd the cgroup controllers may not be mounted;
+   expect `cgroupVersion` to degrade to `none` and the raw VM numbers to be
+   reported — either way, no host overstating.
+
+3. With Docker inside WSL2 (docker-ce in the distro, or Docker Desktop's
+   WSL2 backend), re-run the constrained-container check from the verified
+   Docker procedure above. Expected: containers get their own nested
+   cgroup, so `inspect` should report the container quota exactly as in the
+   verified results above, regardless of the extra nesting level.
+
+4. Run `demo/demo.sh` in the distro (needs bash, git, node) and in a plain
+   `node:24` container under WSL2's Docker.
+
+Caveats to watch for (unverified expectations):
+
+- Nested cgroups (Docker Desktop's WSL2 backend adds a level) must not mask
+  the container's own `cpu.max`/`memory.max` — that's what `inspect` reads.
+- `/proc/loadavg` reflects the WSL VM, not Windows.
+- Keep the state dir on the Linux filesystem (`~/.local/state/load-lock`),
+  not on `/mnt/c` (drvfs/9p is slow and lock semantics differ).
+
 ## macOS / Windows notes
 
 - macOS: no cgroup limits; process-liveness checks fall back from
