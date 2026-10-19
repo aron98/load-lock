@@ -242,19 +242,19 @@ acquire→run→release in one command line.
 
 ## Live dashboard surfaces (issue #10)
 
-`load-lock top` is portable and harness-agnostic: any integration that
+`load-lock dashboard` is portable and harness-agnostic: any integration that
 spawns the daemon gets the same live dashboard in any terminal. The table
 below is deliberately honest about what each harness gets **inside its own
 UI** — where no UI surface exists, we say so rather than claim parity.
 
 | Harness | In-harness dashboard | Also available |
 | --- | --- | --- |
-| **OpenCode** | Native TUI panel: `/load-lock` opens `load-lock.dashboard` (session panel, full-screen) with pools, holder cards, offer claim-window countdowns, queue, paused, event feed, `inspect_machine`; home-footer `lock 1/1` indicator; `x` force-release behind select + confirm. Implemented as the package's `./tui` companion plugin (main plugin unchanged). Live-verified against opencode 2.0.29: panel render + palette/slash command + confirm-gated force-release exercised in the real TUI. | `load-lock top` |
-| **Claude Code** | None in-app — Claude Code has no plugin UI surface. The model can report status via the `load_lock_status` MCP tool at tool boundaries, and each `SessionStart` hook injects a one-line machine summary. | `load-lock top` (any terminal) |
-| **Codex CLI** | None in-app — same reason. `load_lock_status` MCP tool; `SessionStart`/`SubagentStart` machine summary. | `load-lock top` |
-| **Gemini CLI** | None in-app (no hooks, no UI plugin surface). `load_lock_status` MCP tool at tool boundaries. | `load-lock top` |
-| **Copilot CLI, Cursor, Cline, Roo Code, Goose** | None in-app. MCP `status` tool where the MCP server is configured. | `load-lock top` |
-| **Aider** | None (no MCP either). | `load-lock top` |
+| **OpenCode** | Native TUI panel: `/load-lock` opens `load-lock.dashboard` (session panel, full-screen) with pools, holder cards, offer claim-window countdowns, queue, paused, event feed, `inspect_machine`; home-footer `lock 1/1` indicator; `x` force-release behind select + confirm. Implemented as the package's `./tui` companion plugin (main plugin unchanged). Live-verified against opencode 2.0.29: panel render + palette/slash command + confirm-gated force-release exercised in the real TUI. | `load-lock dashboard` (alias `top`) |
+| **Claude Code** | None in-app — Claude Code has no plugin UI surface. The model can report status via the `load_lock_status` MCP tool at tool boundaries, and each `SessionStart` hook injects a one-line machine summary. | `load-lock dashboard` (any terminal) |
+| **Codex CLI** | None in-app — same reason. `load_lock_status` MCP tool; `SessionStart`/`SubagentStart` machine summary. | `load-lock dashboard` (alias `top`) |
+| **Gemini CLI** | None in-app (no hooks, no UI plugin surface). `load_lock_status` MCP tool at tool boundaries. | `load-lock dashboard` (alias `top`) |
+| **Copilot CLI, Cursor, Cline, Roo Code, Goose** | None in-app. MCP `status` tool where the MCP server is configured. | `load-lock dashboard` (alias `top`) |
+| **Aider** | None (no MCP either). | `load-lock dashboard` (alias `top`) |
 
 All dashboard surfaces are **read-only viewers that never acquire a
 permit**; the single admin action (force-release) is gated behind an
@@ -297,7 +297,7 @@ reconnect, view-model shaping, frame rendering) is covered by
 - Core daemon/protocol/CLI: 68 automated tests + scripted 3-worktree demo
   (three independent agent processes, real git worktrees, one pool), including
   9 dashboard tests (view-model shaping, event-cursor resume across a daemon
-  restart, reconnect, and a `load-lock top --once` render smoke test) and
+  restart, reconnect, and a `load-lock dashboard --once` render smoke test) and
   9 bounded-wait tests (multi-process `wait_for_turn`: FIFO wake with
   auto-claim, timeout/pause/cancel/restart/abort paths, `maxTurnWaitMs` cap,
   MCP snake_case round trip).

@@ -1,6 +1,7 @@
 /**
- * Plain-text frame renderer for `load-lock top` — and for any other
- * terminal surface that wants the same dashboard without a TUI toolkit.
+ * Plain-text frame renderer for `load-lock dashboard` (alias `top`) — and
+ * for any other terminal surface that wants the same dashboard without a
+ * TUI toolkit.
  * Pure function: view-model in, string[] out (one line per row).
  *
  * Deliberately zero-dependency (ANSI handled by the caller): this keeps
@@ -63,7 +64,7 @@ export function renderFrame(view: DashboardView, width = 100, height = 40): stri
 
   const state = STATE_LABEL[view.state] ?? String(view.state);
   const syncAge = view.lastSyncAt ? fmtDuration(Math.max(0, view.now - view.lastSyncAt)) : "never";
-  push(`load-lock top — machine-wide heavy-work budget   ${state}   synced ${syncAge} ago`);
+  push(`load-lock dashboard — machine-wide heavy-work budget   ${state}   synced ${syncAge} ago`);
 
   if (view.daemon) {
     push(

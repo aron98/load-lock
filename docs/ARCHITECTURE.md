@@ -208,7 +208,7 @@ is configuration, not code.
 
 The read-only status surface also extends without protocol changes: the
 `status` + `events` (durable ids) + `watch` + `inspect` methods are enough
-to build live viewers. `load-lock top` and the OpenCode TUI panel
+to build live viewers. `load-lock dashboard` (alias `top`) and the OpenCode TUI panel
 (`src/dashboard/`) are exactly that — pure view-model shaping over the
 library client (`./shared/client`), never CLI-output scraping, and never
 acquiring a permit themselves. Any future harness UI can reuse the same

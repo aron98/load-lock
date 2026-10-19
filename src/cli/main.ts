@@ -62,7 +62,101 @@ function defaultAgent(): string {
   );
 }
 
+// ---------------------------------------------------------------- help text
+
+/**
+ * One-line description per command, grouped for `load-lock help`. The first
+ * name is the primary command; any further names are aliases. Keep in sync
+ * with the dispatch below and the actual flag requirements.
+ */
+interface HelpItem {
+  names: string[];
+  desc: string;
+}
+const HELP_GROUPS: { title: string; items: HelpItem[] }[] = [
+  {
+    title: "permit operations",
+    items: [
+      { names: ["acquire"], desc: "request a permit: --pool --op-key --reason [--wait-ms] [--no-queue]" },
+      { names: ["claim"], desc: "claim an offered permit before its window expires: --offer <token>" },
+      { names: ["release"], desc: "release a held permit: --permit <token> [--outcome success|failure]" },
+      { names: ["cancel"], desc: "cancel a queued/offered/paused request: --id <request-id> [--admin]" },
+      { names: ["rejoin"], desc: "rejoin the queue after your offer expired or you declined: --id <request-id>" },
+      { names: ["mark-started"], desc: "mark a permit as started when no pid can be attached: --permit <token>" },
+      { names: ["attach-pid"], desc: "tie a running process to a permit (auto-release on exit): --permit <token> --pid <pid>" },
+    ],
+  },
+  {
+    title: "waiting & running",
+    items: [
+      { names: ["wait"], desc: "sleep until a queued request's turn, then auto-claim the offer: --id <request-id> [--timeout <ms>]" },
+      { names: ["run"], desc: "acquire (or reuse) a permit and run a command under it: run [--permit <token> | acquire flags] -- <cmd>" },
+    ],
+  },
+  {
+    title: "read-only",
+    items: [
+      { names: ["status"], desc: "pools, holders, offers, queue — the machine-wide view" },
+      { names: ["pending"], desc: "your outstanding offers, queue entries and paused requests" },
+      { names: ["events"], desc: "durable event log: [--since <id>] [--follow]" },
+      { names: ["inspect", "machine"], desc: "machine resources (incl. cgroup limits) and current pressure" },
+      { names: ["config", "get-config"], desc: "current configuration" },
+      { names: ["configure"], desc: "change configuration (compare-and-swap): --reason required" },
+      { names: ["dashboard", "top"], desc: "full-screen live dashboard, read-only (never acquires): [--once]" },
+    ],
+  },
+  {
+    title: "service & diagnostics",
+    items: [
+      { names: ["service"], desc: "daemon lifecycle: start | stop | status" },
+      { names: ["doctor"], desc: "health report: state dir, socket, daemon, machine" },
+      { names: ["recover"], desc: "list held permits with diagnostics; recover force-release --id <request-id>" },
+    ],
+  },
+  {
+    title: "setup & docs",
+    items: [
+      { names: ["install"], desc: "install the load-lock adapter for a harness: --harness <name>" },
+      { names: ["uninstall"], desc: "remove what install added: --harness <name>" },
+      { names: ["hook"], desc: "harness hook handlers (called by integrations, not humans)" },
+      { names: ["agent-guide"], desc: "print the full agent guide" },
+      { names: ["help"], desc: "this usage; also bare load-lock, --help, -h; help <command> for one line" },
+    ],
+  },
+];
+
+function displayName(item: HelpItem): string {
+  return item.names[0] + (item.names.length > 1 ? ` (${item.names.slice(1).join(", ")})` : "");
+}
+const HELP_PAD = Math.max(...HELP_GROUPS.flatMap((g) => g.items.map((i) => displayName(i).length)));
+
+function helpLine(item: HelpItem): string {
+  return `  ${displayName(item).padEnd(HELP_PAD)} ${item.desc}`;
+}
+
+/** Grouped one-screen usage, printed by `help`, bare `load-lock`, `--help`/`-h`. */
+function usage(): void {
+  const lines: string[] = [
+    "load-lock — machine-wide heavy-work budget shared by all coding agents",
+    "usage: load-lock <command> [flags]        (--json works on read commands)",
+  ];
+  for (const g of HELP_GROUPS) {
+    lines.push("", `${g.title}:`);
+    for (const item of g.items) lines.push(helpLine(item));
+  }
+  lines.push(
+    "",
+    "exit codes: 0 ok, 64 usage, 65 protocol, 68 not granted yet, 69 offer/claim failed, 70 internal",
+  );
+  process.stdout.write(lines.join("\n") + "\n");
+}
+
 async function main(): Promise<void> {
+  // `--help`, `-h` and a bare `load-lock` all print the same usage as `help`.
+  if (f["help"] !== undefined || cmd === "-h" || (positional.length === 0 && argv.length === 0)) {
+    usage();
+    return;
+  }
   switch (cmd) {
     // ------------------------------------------------------------- read-only
     case "status": {
@@ -90,10 +184,27 @@ async function main(): Promise<void> {
     }
 
     // ------------------------------------------------------------- dashboard
+    case "dashboard":
     case "top": {
       // Full-screen live dashboard (read-only, never acquires a permit).
-      // Falls back to a single rendered frame when stdout is not a TTY.
+      // `dashboard` is the primary name; `top` stays as a hidden compat
+      // alias. Falls back to a single rendered frame when stdout is not a
+      // TTY (or with --once).
       await topCommand({ once: B("once") });
+      return;
+    }
+
+    case "help": {
+      // `load-lock help` — grouped one-screen usage. `help <command>` is
+      // the optional per-command form: just that command's one-liner.
+      const topic = rest[0];
+      if (topic === undefined) {
+        usage();
+        return;
+      }
+      const item = HELP_GROUPS.flatMap((g) => g.items).find((i) => i.names.includes(topic));
+      if (!item) fail(`help: unknown command "${topic}" — run "load-lock help" for the full list`);
+      process.stdout.write(`load-lock ${item.names[0]} — ${item.desc}\n`);
       return;
     }
 
@@ -354,7 +465,7 @@ async function main(): Promise<void> {
     }
 
     default:
-      fail(`unknown command "${cmd}". Commands: status, top, inspect, config, pending, events, acquire, claim, release, cancel, rejoin, mark-started, attach-pid, wait, run, service, doctor, recover, install, uninstall, hook, agent-guide`);
+      fail(`unknown command "${cmd}" — run "load-lock help" for the list of commands`);
   }
 }
 
