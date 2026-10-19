@@ -129,7 +129,6 @@ skills/         packaged skill
   rule file), config-tested via temp-HOME round-trips; fallback tier (no
   hooks, no async push — no idle wakeup).
 - Cursor, Aider: researched; generic snippet / manual CLI tier. See
->>>>>>> origin/main
   COMPATIBILITY.md for the matrix.
 
 Linux-first; macOS works with documented liveness-check limitations;
