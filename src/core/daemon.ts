@@ -41,6 +41,10 @@ export class Daemon {
   machine: Machine;
   server: Server | null = null;
   private watchers = new Set<Watcher>();
+  /** All open client connections — destroyed on stop() so a graceful
+   *  shutdown cuts waiting clients loose (they reconnect + detect the
+   *  restart via the event cursor) and the process can exit promptly. */
+  private conns = new Set<Socket>();
   private waiters = new Map<string, Waiter>();
   private sentEventId: number;
   private stateDirPath: string;
@@ -111,6 +115,11 @@ export class Daemon {
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
     for (const w of this.watchers) w.socket.destroy();
     this.watchers.clear();
+    // Cut every client loose too: a graceful stop must not leave a zombie
+    // serving already-connected clients while the socket path moves on.
+    // Clients see the disconnect, reconnect, and detect the restart.
+    for (const s of this.conns) s.destroy();
+    this.conns.clear();
     this.server?.close();
     try {
       if (existsSync(this.socketPath)) unlinkSync(this.socketPath);
@@ -127,6 +136,7 @@ export class Daemon {
   // ----------------------------------------------------------------- framing
 
   private onConnection(sock: Socket): void {
+    this.conns.add(sock);
     let buf = "";
     sock.on("data", (chunk) => {
       buf += chunk.toString("utf8");
@@ -139,6 +149,7 @@ export class Daemon {
     });
     sock.on("error", () => sock.destroy());
     sock.on("close", () => {
+      this.conns.delete(sock);
       for (const w of [...this.watchers]) if (w.socket === sock) this.watchers.delete(w);
     });
   }

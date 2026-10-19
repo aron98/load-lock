@@ -93,8 +93,9 @@ load-lock get-config
 ```
 
 Defaults: one pool `heavy` capacity 1 · offer window 30s · blocking wait 5s ·
+turn-wait cap (`maxTurnWaitMs`, bounds `wait_for_turn`/`load-lock wait`) 10min ·
 start deadline 120s · untracked lease 15min. Valid ranges:
-offer window 1s–10min, wait 0–10min, start deadline 1s–1h, lease 10s–24h.
+offer window 1s–10min, wait 0–10min, turn-wait cap 1s–1h, start deadline 1s–1h, lease 10s–24h.
 
 Semantics of changes:
 

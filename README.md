@@ -43,8 +43,11 @@ agent A (OpenCode)        agent B (Codex)         agent C (Claude Code)
   and auto-respawn transparently.
 - **Honest notifications** — tool-boundary offer delivery everywhere; real
   idle wakeup where the harness supports it (live-verified on OpenCode;
-  hook-based on Claude Code and Codex CLI); durable event ids for
-  reconnects. A notification never authorizes work — only `claim` does.
+  hook-based on Claude Code and Codex CLI); a bounded blocking
+  `wait_for_turn` (`load-lock wait` on the CLI) that sleeps until your
+  turn and auto-claims for harnesses without idle wakeup; durable event
+  ids for reconnects. A notification never authorizes work — only
+  `claim` does.
 - **Policy that actually reaches the model** — installed per harness via
   its real mechanism (plugin context hook, SessionStart hooks incl.
   compact matchers, global instruction files), plus a detailed skill/guide.
@@ -104,7 +107,7 @@ skills/         packaged skill
 
 ## Status
 
-- Core daemon/protocol/CLI: implemented, 59 automated tests passing
+- Core daemon/protocol/CLI: implemented, 68 automated tests passing
   (multi-process daemons, real processes, restarts, races, expiry,
   PID-reuse, subprocess survival; plus 9 dashboard tests — view-model
   shaping, event-cursor resume across a daemon restart, reconnect, and a

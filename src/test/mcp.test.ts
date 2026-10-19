@@ -32,7 +32,7 @@ test("mcp: tool listing + acquire/release/configure round trip", async () => {
   try {
     const tools = await c.listTools();
     const names = tools.tools.map((t) => t.name);
-    for (const expected of ["acquire", "claim", "release", "cancel", "rejoin", "pending", "status", "inspect_machine", "get_config", "configure", "run_with_permit", "job_status", "job_stop", "attach_pid", "mark_started"]) {
+    for (const expected of ["acquire", "claim", "release", "cancel", "rejoin", "pending", "wait_for_turn", "status", "inspect_machine", "get_config", "configure", "run_with_permit", "job_status", "job_stop", "attach_pid", "mark_started"]) {
       assert.ok(names.includes(expected), `tool ${expected} registered`);
     }
 
@@ -83,6 +83,44 @@ test("mcp: tool listing + acquire/release/configure round trip", async () => {
     const st = await callJson(c, "status", {});
     assert.equal(st.pools[0].capacity, 2);
     assert.ok(st.pools[0].holders.length <= 1);
+  } finally {
+    await c.close();
+    await d.stop();
+  }
+});
+
+test("mcp: wait_for_turn sleeps bounded and returns structured snake_case results", async () => {
+  const d = await startDaemon();
+  const c = await connectMcp(d);
+  try {
+    const a = await callJson(c, "acquire", { reason: "build", op_key: "wft-a", agent_id: "mcpWaitA" });
+    assert.equal(a.state, "granted");
+    const b = await callJson(c, "acquire", { reason: "tests", op_key: "wft-b", agent_id: "mcpWaitB" });
+    assert.equal(b.state, "queued");
+
+    // Timeout is a structured still_queued result — never a tool error.
+    const t0 = Date.now();
+    const out1 = await callJson(c, "wait_for_turn", { agent_id: "mcpWaitB", timeout_ms: 700 });
+    assert.equal(out1.state, "still_queued");
+    assert.equal(out1.request_id, b.request_id);
+    assert.equal(out1.queue_position, 1);
+    assert.equal(out1.queue_length, 1);
+    assert.ok(Array.isArray(out1.holders) && out1.holders.length >= 1, "holder info included");
+    assert.equal(out1.holders[0].agentId, "mcpWaitA");
+    assert.ok(out1.waited_ms >= 600 && Date.now() - t0 < 5_000, "wait respected the bound");
+
+    // The cap is discoverable via configure + get_config (snake_case surface).
+    const cfg = await callJson(c, "get_config", {});
+    assert.equal(cfg.config.maxTurnWaitMs, 600_000, "default turn-wait cap present in config");
+
+    // Wake path: release, sleep again, wake holding an auto-claimed permit.
+    await callJson(c, "release", { permit_token: a.permit_token });
+    const out2 = await callJson(c, "wait_for_turn", { agent_id: "mcpWaitB", timeout_ms: 10_000 });
+    assert.equal(out2.state, "granted");
+    assert.equal(out2.auto_claimed, true, "auto-claim is explicit in the response");
+    assert.ok(out2.permit_token, "granted result carries a top-level permit_token");
+    assert.equal(out2.request_id, b.request_id);
+    await callJson(c, "release", { permit_token: out2.permit_token });
   } finally {
     await c.close();
     await d.stop();

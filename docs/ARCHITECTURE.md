@@ -131,8 +131,18 @@ mechanisms, and labels exactly which apply per harness:
    offer at its next tool call, without polling.
 2. **Bounded blocking wait.** `acquire(wait_ms)` blocks briefly (default
    5s) inside the tool call and auto-claims if capacity frees during the
-   wait. The CLI `wait` command and MCP `wait` pattern provide longer
-   bounded waits. No model-authored busy-polling required.
+   wait. For longer sleeps there is one shared client-side
+   implementation, `waitForTurn` (`src/shared/wait-turn.ts`), surfaced as
+   the CLI `wait` command, the MCP `wait_for_turn` tool and the OpenCode
+   plugin's `load_lock_wait_for_turn` tool: it polls light
+   events+pending pulls on the local socket, auto-claims inside the
+   offer window, returns structured results on every path (granted /
+   still_queued with position / paused / cancelled / not_found), is
+   bounded by `timeout_ms` (capped by the `maxTurnWaitMs` config), and —
+   being purely client-side — holds no permit, consumes no capacity, and
+   can never orphan a daemon-side waiter when the harness cancels the
+   tool mid-sleep. Daemon restarts are detected via the event cursor and
+   resolve bounded. No model-authored busy-polling required.
 3. **Idle wakeup where the harness genuinely supports it.**
    - OpenCode (live-verified): the native plugin watches daemon events and
      calls `ctx.session.synthetic(...)`, delivering the offer (with token)
