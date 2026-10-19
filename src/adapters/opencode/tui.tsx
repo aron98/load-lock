@@ -13,8 +13,9 @@
  *    paused requests, the recent event feed, and the inspect_machine panel
  *  - a home.footer.status indicator summarizing the heavy pool
  *  - /load-lock (palette + slash command) opens the panel full-screen
- *  - 'r' resync and 'x' force-release while the panel is open; force-release
- *    is an admin action gated behind an explicit select + confirm dialog
+ *  - 'r' resync, 'x' force-release, and 'Esc' close while the panel is open;
+ *    force-release is an admin action gated behind an explicit select +
+ *    confirm dialog
  *
  * The viewer is read-only and light: it only ever READS daemon state
  * (status / events / inspect / watch) and never acquires a permit itself.
@@ -224,6 +225,18 @@ export default Plugin.define({
 
     const panelOpen = () => ctx.ui.panel.current()?.name === PANEL_NAME;
 
+    // Esc-close gate: only when OUR panel is the current one and no dialog is
+    // on top. Dialogs (select/confirm/command palette) push the host's "modal"
+    // keymap mode; in any mode other than the documented default "base"
+    // (KeymapLayer.mode), this command stays unreachable so Esc keeps its
+    // native meaning there — cancelling the dialog — instead of closing the
+    // panel underneath it. With the dashboard open and no dialog, the mode is
+    // exactly "base": the panel opens fullscreen, which the host treats as
+    // non-interactive for the session pane, so session-scoped modes (composer,
+    // autocomplete, menu) are all suspended. ctx.ui.panel.close() closes only
+    // this plugin's panel.
+    const escClosesPanel = () => panelOpen() && ctx.keymap.mode.current() === "base";
+
     // ------------------------------------------------------ force-release
     async function forceReleaseFlow(): Promise<void> {
       const holders = (feed.view().pools ?? []).flatMap((p) => p.holders);
@@ -268,6 +281,16 @@ export default Plugin.define({
           slash: { name: "load-lock", aliases: ["lock", "ll"] },
           run: () => {
             ctx.ui.panel.open(PANEL_NAME, { presentation: "fullscreen" });
+          },
+        },
+        {
+          id: "load-lock.dashboard.close",
+          title: "load-lock: close the lock-status dashboard",
+          group: "load-lock",
+          bind: "escape",
+          enabled: escClosesPanel,
+          run: () => {
+            ctx.ui.panel.close();
           },
         },
         {
