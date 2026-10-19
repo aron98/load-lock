@@ -13,6 +13,10 @@ import { startDaemon, runCli, delay, cliMainPath, type DaemonHandle } from "./te
 
 const POLICY_MARK = "# load-lock: machine-wide heavy-work budget";
 
+// Same override as daemon.test.ts / testutil.ts: never touch the user's
+// real state dir; LL_TEST_TMP redirects where scratch dirs are created.
+const TMP_BASE = process.env.LL_TEST_TMP ?? join(tmpdir(), "opencode");
+
 function runHook(d: DaemonHandle, args: string[], input?: Record<string, unknown>, env?: Record<string, string>) {
   return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(process.execPath, [cliMainPath, "hook", ...args], {
@@ -63,7 +67,7 @@ test("hooks: session-start events print the policy brief + machine state", async
 test("hooks: claude-code stop with a matching offer -> decision block carrying the offer token", async () => {
   const d = await startDaemon();
   try {
-    const cwd = mkdtempSync(join(tmpdir(), "opencode", "ll-hook-wt-"));
+    const cwd = mkdtempSync(join(TMP_BASE, "ll-hook-wt-"));
     const offer = await outstandingOffer(d, cwd);
     assert.ok(offer?.offerToken, "waiter has an outstanding offer");
 
@@ -91,7 +95,7 @@ test("hooks: claude-code stop with a matching offer -> decision block carrying t
 test("hooks: codex stop behaves the same (decision block JSON)", async () => {
   const d = await startDaemon();
   try {
-    const cwd = mkdtempSync(join(tmpdir(), "opencode", "ll-hook-wt-"));
+    const cwd = mkdtempSync(join(TMP_BASE, "ll-hook-wt-"));
     const offer = await outstandingOffer(d, cwd);
     assert.ok(offer?.offerToken);
     const r = await runHook(d, ["codex", "stop"], { session_id: "s1", cwd, stop_hook_active: false });
@@ -106,7 +110,7 @@ test("hooks: codex stop behaves the same (decision block JSON)", async () => {
 test("hooks: cursor stop with a matching offer -> followup_message carrying the offer token", async () => {
   const d = await startDaemon();
   try {
-    const cwd = mkdtempSync(join(tmpdir(), "opencode", "ll-hook-wt-"));
+    const cwd = mkdtempSync(join(TMP_BASE, "ll-hook-wt-"));
     const offer = await outstandingOffer(d, cwd);
     assert.ok(offer?.offerToken, "waiter has an outstanding offer");
 
@@ -157,7 +161,7 @@ test("hooks: cursor stop with a matching offer -> followup_message carrying the 
 test("hooks: claude-code await-offer wakes (exit 2 + stderr, no token leak) on offer", async () => {
   const d = await startDaemon();
   try {
-    const cwd = mkdtempSync(join(tmpdir(), "opencode", "ll-hook-wt-"));
+    const cwd = mkdtempSync(join(TMP_BASE, "ll-hook-wt-"));
     const c = d.client();
     await c.connect();
     // holder + waiter, offer NOT yet delivered
