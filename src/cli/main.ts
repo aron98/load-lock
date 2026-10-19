@@ -7,12 +7,13 @@
  */
 import { spawn, ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { LLClient, withClient } from "../shared/client.js";
 import { ProtocolError } from "../shared/protocol.js";
 import { waitForTurn } from "../shared/wait-turn.js";
+import { stateDir, socketPath } from "../core/persist.js";
+import { isWindows, probeTransport, killProcessGroup } from "../shared/transport.js";
 import { installCommand, uninstallCommand } from "./install.js";
 import { hookCommand } from "./hook.js";
 import { topCommand } from "./top.js";
@@ -252,7 +253,7 @@ async function main(): Promise<void> {
       const sub = rest[0] ?? "status";
       if (sub === "stop") {
         // Connect and ask... simplest: SIGTERM via daemon.json pid.
-        const dir = process.env.LOAD_LOCK_STATE_DIR || join(process.env.HOME ?? "~", ".local", "state", "load-lock");
+        const dir = stateDir();
         try {
           const info = JSON.parse(readFileSync(join(dir, "daemon.json"), "utf8"));
           process.kill(info.pid, "SIGTERM");
@@ -279,9 +280,13 @@ async function main(): Promise<void> {
       const report: Record<string, unknown> = {};
       report.node = process.version;
       report.platform = process.platform;
-      const dir = process.env.LOAD_LOCK_STATE_DIR || join(homedir(), ".local", "state", "load-lock");
+      const dir = stateDir();
       report.stateDir = dir;
-      report.socketExists = existsSync(join(dir, "daemon.sock"));
+      const sock = socketPath();
+      report.socket = sock;
+      // Named pipes are kernel objects, not filesystem entries — probe by
+      // connecting on Windows; on POSIX a file check is enough.
+      report.socketExists = isWindows() ? await probeTransport(sock) : existsSync(sock);
       report.configExists = existsSync(join(dir, "config.json"));
       report.journalExists = existsSync(join(dir, "journal.json"));
       try {
@@ -410,19 +415,11 @@ async function runWithPermit(jobArgv: string[]): Promise<void> {
     try {
       await client.request("start_job", { permitToken, pid: child.pid, pgid });
     } catch (err) {
-      try {
-        process.kill(-pgid, "SIGKILL");
-      } catch {
-        /* already gone */
-      }
+      killProcessGroup(pgid, "SIGKILL");
       fail(`permit no longer startable (${(err as Error).message}); job not started`, 69);
     }
-    const forward = (sig: NodeJS.Signals) => {
-      try {
-        process.kill(-pgid, sig);
-      } catch {
-        /* already gone */
-      }
+    const forward = (sig: "SIGTERM" | "SIGINT") => {
+      killProcessGroup(pgid, sig);
     };
     process.on("SIGTERM", () => forward("SIGTERM"));
     process.on("SIGINT", () => forward("SIGINT"));

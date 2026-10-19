@@ -123,7 +123,7 @@ export function removeStaleEndpoint(path: string, platform: NodeJS.Platform = pr
  */
 export function killProcessGroup(
   pid: number,
-  signal: "SIGTERM" | "SIGKILL",
+  signal: "SIGTERM" | "SIGINT" | "SIGKILL",
   platform: NodeJS.Platform = process.platform,
 ): void {
   if (isWindows(platform)) {

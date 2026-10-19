@@ -21,6 +21,7 @@ import path from "node:path";
 import { LLClient } from "../../shared/client.js";
 import { POLICY_BRIEF } from "../../policy/text.js";
 import { waitForTurn, WaitAbortedError } from "../../shared/wait-turn.js";
+import { killProcessGroup } from "../../shared/transport.js";
 
 const client = new LLClient();
 const knownSessions = new Set<string>();
@@ -283,11 +284,7 @@ export default Plugin.define({
           try {
             await client.request("start_job", { permitToken: input.permit_token, pid: child.pid, pgid: child.pid });
           } catch (err) {
-            try {
-              process.kill(-child.pid!, "SIGKILL");
-            } catch {
-              /* already gone */
-            }
+            killProcessGroup(child.pid!, "SIGKILL");
             return { error: `permit no longer startable (${(err as Error).message}); job killed before doing work; acquire again` };
           }
           jobs.set(job.id, job);
@@ -311,18 +308,10 @@ export default Plugin.define({
         const job = jobs.get(input.job_id);
         if (!job) return { error: "unknown job_id" };
         if (!job.exited) {
-          try {
-            process.kill(-job.child.pid!, "SIGTERM");
-          } catch {
-            /* already gone */
-          }
+          killProcessGroup(job.child.pid!, "SIGTERM");
           setTimeout(() => {
             if (!job.exited) {
-              try {
-                process.kill(-job.child.pid!, "SIGKILL");
-              } catch {
-                /* already gone */
-              }
+              killProcessGroup(job.child.pid!, "SIGKILL");
             }
           }, 5000).unref?.();
         }
