@@ -143,12 +143,16 @@ construction: they only ever call `status` / `events` / `inspect` / `watch`.
 The one admin action they expose — force-release — sits behind an explicit
 select + confirm step and never runs automatically.
 
-### `load-lock top` (portable, any terminal)
+### `load-lock dashboard` (portable, any terminal)
 
 ```sh
-load-lock top          # full-screen live dashboard (q quit, r resync)
-load-lock top --once   # render one frame and exit (pipes, scripts, CI logs)
+load-lock dashboard          # full-screen live dashboard (q quit, r resync)
+load-lock dashboard --once   # render one frame and exit (pipes, scripts, CI logs)
 ```
+
+`top` still works as a hidden compatibility alias for `dashboard` (same
+command, same flags) — existing scripts keep running; new docs and muscle
+memory should use `dashboard`.
 
 Shows pools with capacity vs in-use, holder cards (label, reason, phase,
 pid/pgid, age, start-deadline or lease countdown), offer cards with the
@@ -166,7 +170,7 @@ The OpenCode installer also ships the package's `./tui` plugin export (a
 companion to the main plugin, which is unchanged). Inside the opencode TUI:
 
 - `/load-lock` (or the command palette) opens the **load-lock.dashboard**
-  session panel full-screen: same data as `load-lock top`, themed,
+  session panel full-screen: same data as `load-lock dashboard`, themed,
   live-updating.
 - The home footer gains a small `lock 1/1·Q2` indicator.
 - `r` resyncs; `x` opens force-release, which requires an explicit
@@ -184,13 +188,14 @@ plugins laid out like a package under `<project>/.opencode/plugins/<name>/`
 
 ### Notes for other harnesses
 
-`load-lock top` is the dashboard for every harness (it only needs the
-daemon, which every integration spawns). Harnesses without an in-app UI
-surface get exactly that — no parity claims; see `docs/COMPATIBILITY.md`.
+`load-lock dashboard` is the dashboard for every harness (it only needs
+the daemon, which every integration spawns). Harnesses without an in-app
+UI surface get exactly that — no parity claims; see `docs/COMPATIBILITY.md`.
 
 ## Diagnostics & recovery
 
 ```sh
+load-lock help             # one-screen usage of every command
 load-lock doctor            # state dir, socket, daemon reachability, effective cores, pressure
 load-lock status            # human view: usage, holders w/ phase+pid, offers, queue, paused
 load-lock pending           # your own offers/queue entries (JSON)
@@ -401,7 +406,7 @@ What the adapter does:
    reaches the daemon over the pipe (it probes by connecting, since a pipe
    is not a filesystem entry).
 
-2. Run two `load-lock acquire` in separate shells, then `load-lock top --once`.
+2. Run two `load-lock acquire` in separate shells, then `load-lock dashboard --once`.
 
    Expected: the same queue/permit behavior as on Linux — the pipe carries
    the identical NDJSON protocol.

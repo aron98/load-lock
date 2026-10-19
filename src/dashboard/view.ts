@@ -2,7 +2,8 @@
  * Dashboard view-model: pure shaping of daemon data (status / inspect /
  * durable events) into the cards every dashboard surface renders.
  *
- * Shared by `load-lock top` (src/cli/top.ts) and the OpenCode TUI plugin
+ * Shared by `load-lock dashboard` (alias `top`, src/cli/top.ts) and the
+ * OpenCode TUI plugin
  * (src/adapters/opencode/tui.tsx) so both show exactly the same state and
  * only differ in rendering. Everything here is pure and synchronous —
  * "now" is always an explicit parameter, which makes countdowns testable.

@@ -1,6 +1,6 @@
 /**
- * Dashboard tests (issue #10): the data plumbing behind `load-lock top`
- * and the OpenCode TUI plugin panel.
+ * Dashboard tests (issue #10): the data plumbing behind `load-lock
+ * dashboard` (alias `top`) and the OpenCode TUI plugin panel.
  *
  *  - view-model shaping (buildDashboardView) against protocol fixtures,
  *    with "now" pinned so countdowns are deterministic
@@ -10,7 +10,8 @@
  *  - DashboardFeed against a REAL daemon: live view, queue visibility,
  *    release, resync idempotence, and reconnect + event-cursor resume
  *    across a daemon SIGKILL -> fresh-daemon-on-the-same-socket restart
- *  - `load-lock top --once` smoke test (read-only, never acquires)
+ *  - `load-lock top --once` smoke test (read-only, never acquires; `top`
+ *    is the compat alias of the same `dashboard` command)
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -462,7 +463,7 @@ test("load-lock top --once renders one frame and exits clean", async () => {
   try {
     const r = await runCli(d, ["top", "--once"]);
     assert.equal(r.code, 0);
-    assert.ok(r.stdout.includes("load-lock top"), "banner present");
+    assert.ok(r.stdout.includes("load-lock dashboard"), "banner present");
     assert.ok(r.stdout.includes("POOL heavy"), "pool line present");
     assert.ok(r.stdout.includes("q quit"), "footer present");
     assert.ok(r.stdout.includes("never acquires a permit"), "read-only note present");

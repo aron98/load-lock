@@ -71,7 +71,8 @@ use the generic stdio server; plain shells use the CLI:
 ```sh
 load-lock run --reason "nightly build" -- npm run build   # acquire→run→release
 load-lock status                                          # machine-wide view
-load-lock top                                             # live read-only dashboard (q quits)
+load-lock dashboard                                       # live read-only dashboard (q quits)
+load-lock help                                            # one-screen usage of every command
 load-lock configure --capacity 2 --reason "16-core host" --author me
 ```
 
@@ -111,7 +112,7 @@ skills/         packaged skill
   (multi-process daemons, real processes, restarts, races, expiry,
   PID-reuse, subprocess survival; plus 9 dashboard tests — view-model
   shaping, event-cursor resume across a daemon restart, reconnect, and a
-  `load-lock top --once` render smoke test).
+  `load-lock dashboard --once` render smoke test).
 - OpenCode adapter: implemented and **live-verified** (tools, policy
   injection, compaction-proof context hook, execution-boundary wakeup
   with tokens, skill).

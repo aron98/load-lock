@@ -137,6 +137,7 @@ load-lock run --permit <permit-token> -- cargo test --quiet       # tracks + rel
 # or acquire+run in one go:
 load-lock run --reason "nightly build" -- npm run build
 load-lock wait --id <request-id> --timeout 120000                # sleep until your turn → auto-claim
+load-lock help                                                    # one-screen usage of every command
 ```
 
 ## 4. Reading state

@@ -1,6 +1,7 @@
 /**
- * `load-lock top` — portable, zero-dependency full-screen terminal dashboard
- * for the machine-wide budget. Uses the library's own client + protocol
+ * `load-lock dashboard` (hidden compat alias: `load-lock top`) — portable,
+ * zero-dependency full-screen terminal dashboard for the machine-wide
+ * budget. Uses the library's own client + protocol
  * (never scrapes CLI output); live updates come from the `watch` event
  * stream, with reconnect + event-cursor resume across daemon restarts.
  *
