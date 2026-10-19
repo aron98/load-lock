@@ -24,6 +24,14 @@ load-lock install --harness generic   # prints MCP snippets for other harnesses
 What each installer does (all merges are non-destructive; uninstall removes
 exactly the entries it added):
 
+Hook-bearing installers (claude-code, codex, cursor) recognize their own
+hook entries by the JSON-quoted CLI path embedded in the hook command, so
+re-running an installer is idempotent and uninstall removes exactly our
+entries, leaving user hooks alone. This is contract-tested via temp-HOME
+round-trips in `src/test/install.test.ts` for all three (an earlier matcher
+never matched its own entries — duplicate installs and hooks that survived
+uninstall — see issue #19); not live-verified inside the real CLIs.
+
 - **opencode** — writes a plugin stub to
   `~/.config/opencode/plugins/load-lock/` (npm-installed against the global
   package), registers it in `~/.config/opencode/opencode.json`.
