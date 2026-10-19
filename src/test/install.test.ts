@@ -475,3 +475,129 @@ test("goose: uninstall with nothing installed is a harmless no-op", async () => 
   assert.ok(!existsSync(join(home, ".config", "goose")), "no files created by uninstall");
   rmSync(home, { recursive: true, force: true });
 });
+
+// ------------------------------------------------------------------ cursor
+
+test("cursor: project install/uninstall round-trip preserves user config", async () => {
+  const home = tempHome();
+  const proj = join(home, "proj");
+  mkdirSync(proj, { recursive: true });
+  const cursorDir = join(proj, ".cursor");
+  mkdirSync(cursorDir, { recursive: true });
+  // pre-existing user config that must survive untouched
+  writeFileSync(
+    join(cursorDir, "mcp.json"),
+    JSON.stringify({ mcpServers: { fetch: { command: "uvx", args: ["mcp-server-fetch"] } } }, null, 2) + "\n",
+  );
+  writeFileSync(
+    join(cursorDir, "hooks.json"),
+    JSON.stringify(
+      {
+        version: 1,
+        hooks: {
+          stop: [{ type: "command", command: "/usr/local/bin/my-checker --staged" }],
+          PreToolUse: [{ type: "command", command: "/usr/local/bin/guard" }],
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  mkdirSync(join(cursorDir, "rules"), { recursive: true });
+  writeFileSync(join(cursorDir, "rules", "user-rule.mdc"), "---\nalwaysApply: true\n---\n# User rule\n");
+
+  const mcpFile = join(cursorDir, "mcp.json");
+  const hooksFile = join(cursorDir, "hooks.json");
+  const ruleFile = join(cursorDir, "rules", "load-lock.mdc");
+
+  // -- install
+  let r = await runCli(home, ["install", "--harness", "cursor", "--project", proj]);
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+  // honest tier statement: wakeup yes, but contract-tested only
+  assert.match(r.stdout, /stop-hook wakeup/i, "installer output must state the wakeup tier");
+  assert.match(r.stdout, /not live-verified/i, "installer output must be honest about verification");
+
+  const m = JSON.parse(readFileSync(mcpFile, "utf8"));
+  assert.deepEqual(m.mcpServers.fetch, { command: "uvx", args: ["mcp-server-fetch"] }, "unrelated MCP server preserved");
+  assert.deepEqual(m.mcpServers["load-lock"], { command: process.execPath, args: [mcpMain] }, "load-lock stdio entry with absolute paths");
+
+  const h = JSON.parse(readFileSync(hooksFile, "utf8"));
+  assert.equal(h.version, 1, "hooks v1 version preserved");
+  assert.equal(h.hooks.stop.length, 2, "user's stop hook preserved, ours appended");
+  assert.equal(h.hooks.stop[0].command, "/usr/local/bin/my-checker --staged", "user's stop hook untouched");
+  assert.equal(h.hooks.stop[1].type, "command");
+  assert.ok(h.hooks.stop[1].command.includes(JSON.stringify(cliMain)), "our stop hook invokes the load-lock CLI");
+  assert.ok(h.hooks.stop[1].command.endsWith("hook cursor stop"), "our stop hook is the cursor stop handler");
+  assert.ok(Array.isArray(h.hooks.PreToolUse) && h.hooks.PreToolUse.length === 1, "unrelated event untouched");
+
+  const rule = readFileSync(ruleFile, "utf8");
+  assert.ok(rule.startsWith("---\n"), ".mdc YAML frontmatter present");
+  assert.ok(rule.includes("alwaysApply: true"), "Always-apply rule (plain .md is ignored by Cursor)");
+  assert.ok(rule.includes("load-lock"), "rule teaches load-lock");
+  assert.ok(existsSync(join(cursorDir, "rules", "user-rule.mdc")), "user rule untouched");
+
+  // -- idempotent re-install: no duplicate hooks, no config damage
+  r = await runCli(home, ["install", "--harness", "cursor", "--project", proj]);
+  assert.equal(r.code, 0, `re-install failed: ${r.stderr}`);
+  assert.equal(JSON.parse(readFileSync(hooksFile, "utf8")).hooks.stop.length, 2, "re-install must not duplicate our hook");
+  assert.deepEqual(JSON.parse(readFileSync(mcpFile, "utf8")).mcpServers["load-lock"], {
+    command: process.execPath,
+    args: [mcpMain],
+  });
+
+  // -- uninstall removes exactly our entries
+  r = await runCli(home, ["uninstall", "--harness", "cursor", "--project", proj]);
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+
+  const m2 = JSON.parse(readFileSync(mcpFile, "utf8"));
+  assert.ok(!("load-lock" in m2.mcpServers), "our MCP key removed");
+  assert.deepEqual(m2.mcpServers.fetch, { command: "uvx", args: ["mcp-server-fetch"] }, "user MCP untouched");
+
+  const h2 = JSON.parse(readFileSync(hooksFile, "utf8"));
+  assert.equal(h2.version, 1, "user's version key preserved");
+  assert.equal(h2.hooks.stop.length, 1, "only the user's stop hook remains");
+  assert.equal(h2.hooks.stop[0].command, "/usr/local/bin/my-checker --staged");
+  assert.ok(Array.isArray(h2.hooks.PreToolUse) && h2.hooks.PreToolUse.length === 1, "unrelated event preserved");
+  assert.ok(!existsSync(ruleFile), "our rule file removed");
+  assert.ok(existsSync(join(cursorDir, "rules", "user-rule.mdc")), "user rule preserved");
+  assert.ok(existsSync(cursorDir), "non-empty .cursor dir preserved");
+
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("cursor: bare project install creates all files; uninstall cleans them completely", async () => {
+  const home = tempHome();
+  const proj = join(home, "proj");
+  mkdirSync(proj, { recursive: true });
+
+  let r = await runCli(home, ["install", "--harness", "cursor", "--project", proj]);
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+  const cursorDir = join(proj, ".cursor");
+  const mcpFile = join(cursorDir, "mcp.json");
+  const hooksFile = join(cursorDir, "hooks.json");
+  const ruleFile = join(cursorDir, "rules", "load-lock.mdc");
+  assert.ok(existsSync(mcpFile) && existsSync(hooksFile) && existsSync(ruleFile), "all three files created");
+  const h = JSON.parse(readFileSync(hooksFile, "utf8"));
+  assert.equal(h.version, 1, "hooks v1 version written");
+  assert.ok(Array.isArray(h.hooks.stop) && h.hooks.stop.length === 1, "exactly one stop hook");
+  assert.ok(JSON.parse(readFileSync(mcpFile, "utf8")).mcpServers["load-lock"], "server entry present");
+
+  r = await runCli(home, ["uninstall", "--harness", "cursor", "--project", proj]);
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+  assert.ok(!existsSync(ruleFile), "rule file removed");
+  assert.ok(!existsSync(hooksFile), "hooks.json removed (nothing else was in it)");
+  assert.ok(!existsSync(mcpFile), "mcp.json removed (nothing else was in it)");
+  assert.ok(!existsSync(cursorDir), "empty .cursor dir pruned");
+  assert.ok(existsSync(proj), "the project directory itself is never removed");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("cursor: uninstall with nothing installed is a harmless no-op", async () => {
+  const home = tempHome();
+  const proj = join(home, "proj");
+  mkdirSync(proj, { recursive: true });
+  const r = await runCli(home, ["uninstall", "--harness", "cursor", "--project", proj]);
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+  assert.ok(!existsSync(join(proj, ".cursor")), "no files created by uninstall");
+  rmSync(home, { recursive: true, force: true });
+});

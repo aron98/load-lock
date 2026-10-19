@@ -103,6 +103,57 @@ test("hooks: codex stop behaves the same (decision block JSON)", async () => {
   }
 });
 
+test("hooks: cursor stop with a matching offer -> followup_message carrying the offer token", async () => {
+  const d = await startDaemon();
+  try {
+    const cwd = mkdtempSync(join(tmpdir(), "opencode", "ll-hook-wt-"));
+    const offer = await outstandingOffer(d, cwd);
+    assert.ok(offer?.offerToken, "waiter has an outstanding offer");
+
+    // Cursor hooks v1 input: workspace_roots (no cwd), loop_count, status.
+    const r = await runHook(d, ["cursor", "stop"], {
+      conversation_id: "c1",
+      hook_event_name: "stop",
+      workspace_roots: [cwd],
+      loop_count: 0,
+      status: "completed",
+    });
+    assert.equal(r.code, 0);
+    const out = JSON.parse(r.stdout);
+    assert.equal(typeof out.followup_message, "string", "Cursor Stop continues via followup_message");
+    assert.ok(out.followup_message.includes(offer.offerToken), "message tells the agent which offer_token to claim");
+    assert.ok(out.followup_message.includes("claim"), "message instructs claiming");
+    assert.ok(out.followup_message.includes(offer.opKey));
+    assert.equal(out.decision, undefined, "Cursor does not use the Claude/Codex decision shape");
+
+    // loop_count > 0: never chain followups (Cursor's loop guard)
+    const quiet = await runHook(d, ["cursor", "stop"], {
+      conversation_id: "c1",
+      workspace_roots: [cwd],
+      loop_count: 1,
+      status: "completed",
+    });
+    assert.equal(quiet.code, 0);
+    assert.equal(quiet.stdout, "", "already-continued stops are silent");
+
+    // workspace_roots elsewhere -> silent
+    const none = await runHook(d, ["cursor", "stop"], {
+      conversation_id: "c1",
+      workspace_roots: ["/definitely/not/a/worktree"],
+      loop_count: 0,
+      status: "completed",
+    });
+    assert.equal(none.stdout, "");
+
+    // empty stdin (missing/blank payload) must not break the hook
+    const blank = await runHook(d, ["cursor", "stop"]);
+    assert.equal(blank.code, 0);
+    assert.equal(blank.stdout, "");
+  } finally {
+    await d.stop();
+  }
+});
+
 test("hooks: claude-code await-offer wakes (exit 2 + stderr, no token leak) on offer", async () => {
   const d = await startDaemon();
   try {

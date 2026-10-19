@@ -39,7 +39,7 @@ Status labels mean exactly this:
 | **Codex CLI** | MCP `mcp__load-lock__*` (config.toml) | `SessionStart` + `SubagentStart` additionalContext; `~/.codex/AGENTS.md` | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook `decision:"block"` continuation | Partial: async background hooks do NOT start a new turn (documented limitation); stop-hook covers turn boundaries | Full via MCP `run_with_permit` + server heartbeats | **Implemented + live-verified** (interactive TUI in Docker; exec-mode MCP blocked upstream — see Tier 2 notes) |
 | **Gemini CLI** | Yes (`settings.json` mcpServers, first-class installer) | `GEMINI.md` global (config `context.fileName`) | Via global GEMINI.md (always loaded) | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **GitHub Copilot CLI** | Yes (`~/.copilot/mcp-config.json`, merge-only installer; verify with `copilot mcp list`) | `~/.copilot/copilot-instructions.md` (marked section) | Via global instructions file | Hooks reported in ecosystem content but **not verified in official docs** — none installed; `wait_for_turn` bounded sleep is the primary idle mechanism | Unverified | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
-| **Cursor** | Yes (`.cursor/mcp.json` + global) | `.cursor/rules/*.md` Always rules | Rules re-apply (Always) | `stop` hook exists but **beta** with a less-documented JSON contract — not shipped | Beta/unverified | Via MCP `run_with_permit` only | Proposed (MCP fallback; hook tier possible later) |
+| **Cursor** | Yes (project `.cursor/mcp.json`, merge-only installer) | `.cursor/rules/load-lock.mdc` (dedicated Always-apply rule file) | Rules re-apply (Always) | Yes — `stop` hook `{"followup_message":...}` continuation (hooks v1, officially documented) | No async watcher shipped; stop hook covers turn boundaries | Via MCP `run_with_permit` only | **Implemented + contract-tested** (hooks tier; not live-verified) |
 | **Cline** | Yes (`cline_mcp_settings.json`, merge-only installer) | `~/.cline/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **Roo Code** | Yes (project `.roo/mcp.json` + existing global `mcp_settings.json`, merge-only installer) | `~/.roo/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **Goose** | Yes (`~/.config/goose/config.yaml` `extensions` block, merge-only installer) | `.goosehints` (global, marked section) | Hints always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
@@ -129,15 +129,61 @@ Two upstream/provider constraints shaped the harness:
   response, and conversation history). This is a verification-harness
   workaround for the provider, not a change to load-lock itself.
 
+### Tier 2 (contract-tested) — Cursor (hooks + MCP)
+
+Cursor 1.7 (Sept 2025) introduced hooks as a beta with an under-documented
+JSON contract — the original reason Cursor sat on the MCP-fallback tier
+(issue #6: "do not ship against an unstable contract"). As of 2026-10-19 the
+official docs at https://cursor.com/docs/hooks fully document the hooks
+system with no beta caveats (per-event reference, common input schema, exit
+codes, config-source priority, cloud-agent support, third-party hook
+compatibility), so the contract is now treated as stable and the adapter
+below shipped (issue #6).
+
+`load-lock install --harness cursor --project <dir>` wires (all
+project-level, merge-only, reversible by uninstall):
+
+- **MCP server** — `mcpServers.load-lock` (stdio, absolute node path) in
+  `<project>/.cursor/mcp.json` (documented project MCP config).
+- **Stop hook** — flat hooks-v1 entry
+  `{"type":"command","command":"<node> <cli> hook cursor stop"}` in
+  `<project>/.cursor/hooks.json` (`{"version":1,"hooks":{"stop":[...]}}`;
+  `version` is added only if absent, user entries preserved).
+- **Rule** — dedicated `<project>/.cursor/rules/load-lock.mdc` with YAML
+  frontmatter `alwaysApply: true` (note: plain `.md` files in
+  `.cursor/rules` are ignored by Cursor — the rule must be `.mdc`).
+
+The handler's documented stop contract: stdin carries `workspace_roots`
+(no `cwd`) and `loop_count` (number of prior stop-hook followups for the
+conversation); stdout JSON `{"followup_message":"..."}` is auto-submitted as
+the next user message — Cursor's loop-style idle wakeup, analogous to
+Claude/Codex `decision:"block"`. The handler is silent unless the daemon has
+an offer matching `workspace_roots[0]`, and silent when `loop_count > 0`
+(Cursor's equivalent of `stop_hook_active` — prevents wakeup loops;
+Cursor's own `loop_limit` default of 5 per script is a second backstop).
+
+**Verification status: contract-tested, not live-verified.** The stdin
+parsing, followup payload, loop guard and silence paths are tested against
+the documented contract in `src/test/hook.test.ts`; the install/uninstall
+round-trip (user config preserved, idempotent re-install, clean bare-project
+uninstall) is tested in `src/test/install.test.ts`. No Cursor install
+exists on the verification machine, so end-to-end behavior inside the real
+editor is unverified — the installer output says so explicitly. Sources:
+official docs (https://cursor.com/docs/hooks, checked 2026-10-19), 1.7
+release announcement (forum.cursor.com, Sept 2025), GitButler deep-dive
+(Sept 2025), InfoQ coverage (Oct 2025).
+
 ### Tier 3 — MCP-only fallback (Gemini CLI, Copilot CLI, Cline, Roo Code, Goose)
 
 The MCP server itself carries the policy in its `instructions`, every tool
 result surfaces pending offers (tool-boundary delivery), and
 `inspect_machine`/`get_config`/`configure` work unchanged.
 
-**Every tier-3 MCP harness except Cursor ships a first-class merge-only
-installer** (Gemini CLI landed with issue #1; Copilot CLI, Cline, Roo Code
-and Goose with issue #2). Each merges into the harness's real config file
+**Every tier-3 MCP harness ships a first-class merge-only installer**
+(Gemini CLI landed with issue #1; Copilot CLI, Cline, Roo Code
+and Goose with issue #2). Cursor moved up to the hooks tier with its own
+installer in issue #6 (see the Cursor section above). Each installer merges
+into the harness's real config file
 and never deletes anything the user wrote; `load-lock uninstall` removes
 exactly the entries the installer added:
 
@@ -168,7 +214,7 @@ and validated against the harnesses' documented config schemas
 harnesses — hence *config-tested*.
 
 `load-lock install --harness generic` still prints snippets for harnesses
-without a dedicated installer (Cursor today).
+without a dedicated installer.
 Idle policy: these harnesses get no push notifications, so the PRIMARY
 idle mechanism is the MCP `wait_for_turn` tool — a bounded, honest sleep
 until it is the caller's turn. Queued agents call
@@ -223,6 +269,7 @@ reconnect, view-model shaping, frame rendering) is covered by
 | OpenCode | plugin context `sessionID` (also MCP `_meta` when used) | automatic |
 | Claude Code | hooks get `session_id`; MCP tools take explicit `agent_id` | policy instructs agents to pass it |
 | Codex | hooks get `session_id`; MCP tools take explicit `agent_id` | same |
+| Cursor | hooks get `conversation_id` (no `cwd` — `workspace_roots[0]` identifies the request); MCP tools take explicit `agent_id` | same |
 | Tier 3 | explicit `agent_id` argument | falls back to per-server-process id |
 
 ## Verified vs proposed — summary counts
@@ -233,6 +280,9 @@ reconnect, view-model shaping, frame rendering) is covered by
   (Docker, interactive TUI: policy injection, MCP round-trip, FIFO queueing
   behind a CLI holder, Stop-hook decision-block wakeup; exec-mode MCP
   injection blocked upstream — see Tier 2 notes).
+- Contract-tested: Cursor (hooks-v1 stop-hook adapter + installer, tested
+  against the officially documented hooks JSON contract; no Cursor install
+  on the verification machine — see the Cursor section under Tier 2).
 - Config-tested: Gemini CLI, Copilot CLI, Cline, Roo Code, Goose (installer
   round-trips, temp HOME; real harnesses not installed on the verification
   machine).
@@ -244,4 +294,4 @@ reconnect, view-model shaping, frame rendering) is covered by
   auto-claim, timeout/pause/cancel/restart/abort paths, `maxTurnWaitMs` cap,
   MCP snake_case round trip).
 - Proposed (researched capabilities, generic adapter only):
-  Cursor, Aider.
+  Aider.

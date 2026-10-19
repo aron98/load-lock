@@ -36,6 +36,12 @@
  *                   ~/.config/goose/config.yaml, marked section in the
  *                   global hints file ~/.config/goose/.goosehints.
  *                   MCP-fallback tier: no hooks.
+ *  - cursor       : project-level (per --project) .cursor/mcp.json
+ *                   (mcpServers.load-lock stdio), stop hook in
+ *                   .cursor/hooks.json (hooks v1: {"followup_message":...}
+ *                   continuation = idle wakeup), own Always-apply rule
+ *                   .cursor/rules/load-lock.mdc. Contract-tested against
+ *                   the documented hooks JSON; not live-verified.
  *  - generic      : prints an MCP stdio config snippet (any MCP-capable harness).
  */
 import fs from "node:fs";
@@ -885,6 +891,165 @@ function uninstallGoose(): string[] {
   return actions;
 }
 
+// ------------------------------------------------------------------ cursor
+
+/**
+ * Is this hooks.json entry ours? Our commands are
+ * `<node> "<...>/dist/cli/main.js" hook cursor stop` — matched on the quoted
+ * cli path plus the subcommand (NOT the LL_HOOK_TAG constant: the closing
+ * quote of the JSON-embedded path breaks that substring).
+ */
+function isOurCursorHook(e: unknown, cliPath: string): boolean {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    typeof (e as any).command === "string" &&
+    (e as any).command.includes(JSON.stringify(cliPath)) &&
+    (e as any).command.includes(" hook cursor ")
+  );
+}
+
+/**
+ * Policy text for the dedicated .cursor/rules/load-lock.mdc rule file
+ * (YAML frontmatter with alwaysApply: true — plain .md is ignored by Cursor).
+ */
+function cursorRuleText(): string {
+  return (
+    `---\nalwaysApply: true\n---\n` +
+    `# load-lock: machine-wide heavy-work budget\n\n` +
+    `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine via the \`load-lock\` MCP tools (acquire / claim / release / cancel / rejoin / pending / status / run_with_permit / attach_pid / mark_started / inspect_machine / configure). ` +
+    `Acquire before heavy work, keep doing light work while queued, claim offers promptly (they expire), release when done.\n\n` +
+    `When you are queued and idle, a load-lock stop hook wakes you: Cursor auto-submits a follow-up message telling you which offer_token to claim — claim it immediately (it expires) and start your heavy work right away.\n\n` +
+    `Full guide: \`load-lock agent-guide\`.\n`
+  );
+}
+
+/**
+ * Cursor (hooks v1, documented at https://cursor.com/docs/hooks — no longer
+ * beta). Everything is project-level under --project/.cursor/:
+ *  - mcp.json: mcpServers.load-lock stdio entry
+ *  - hooks.json: { version: 1, hooks: { stop: [ ... ] } } — FLAT entries
+ *    ({type:"command", command}), merged; only our own entries are replaced.
+ *  - rules/load-lock.mdc: our own Always-apply rule (clean uninstall).
+ */
+function installCursor(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
+  const actions: string[] = [];
+  const cursorDir = path.join(opts.project, ".cursor");
+
+  // 1. MCP server (stdio) in the project .cursor/mcp.json (documented path)
+  const mcpFile = path.join(cursorDir, "mcp.json");
+  actions.push(
+    ...mergeMcpServer(
+      mcpFile,
+      { command: P.node, args: [P.mcp] },
+      `MCP server "load-lock" (stdio) in ${mcpFile} (project-level)`,
+    ),
+  );
+
+  // 2. stop hook in the project .cursor/hooks.json (merge; replace only ours)
+  const hooksFile = path.join(cursorDir, "hooks.json");
+  const h = readJson(hooksFile) ?? {};
+  if (typeof h !== "object" || h === null || Array.isArray(h)) {
+    throw new Error(`${hooksFile} is not a JSON object; refusing to overwrite`);
+  }
+  if (h.version === undefined) h.version = 1; // required positive integer per docs
+  if (h.hooks === undefined) {
+    h.hooks = {};
+  } else if (typeof h.hooks !== "object" || h.hooks === null || Array.isArray(h.hooks)) {
+    throw new Error(`${hooksFile} has a non-object "hooks" key; refusing to overwrite`);
+  }
+  if (h.hooks.stop === undefined) {
+    h.hooks.stop = [];
+  } else if (!Array.isArray(h.hooks.stop)) {
+    throw new Error(`${hooksFile} has a non-array "hooks.stop" key; refusing to overwrite`);
+  }
+  h.hooks.stop = [
+    ...h.hooks.stop.filter((e: any) => !isOurCursorHook(e, P.cli)),
+    { type: "command", command: `${P.node} ${JSON.stringify(P.cli)} hook cursor stop` },
+  ];
+  writeJson(hooksFile, h);
+  actions.push(`stop hook in ${hooksFile} (hooks v1, project-level)`);
+
+  // 3. own Always-apply rule file (whole file is ours → trivially clean uninstall)
+  const ruleFile = path.join(cursorDir, "rules", "load-lock.mdc");
+  fs.mkdirSync(path.dirname(ruleFile), { recursive: true });
+  fs.writeFileSync(ruleFile, cursorRuleText());
+  actions.push(`Always-apply rule file ${ruleFile} (.cursor/rules, survives compaction)`);
+
+  // 4. be honest about the tier and verification status
+  actions.push(
+    "tier: MCP + stop-hook wakeup — the stop hook returns {\"followup_message\":...} so Cursor continues " +
+      "the session when a load-lock offer arrives; contract-tested against the documented Cursor hooks " +
+      "JSON (https://cursor.com/docs/hooks), not live-verified",
+  );
+  actions.push("restart Cursor (or reload the window) to pick up the MCP server and hooks");
+  return actions;
+}
+
+function uninstallCursor(opts: UninstallOptions): string[] {
+  const actions: string[] = [];
+  const cursorDir = path.join(opts.project, ".cursor");
+  const P = pkgPaths(); // only needed for our-entry matching below
+
+  // 1. MCP server
+  const mcpFile = path.join(cursorDir, "mcp.json");
+  actions.push(...removeMcpServer(mcpFile, `removed MCP server from ${mcpFile}`));
+  const mcpAfter = readJson(mcpFile);
+  if (
+    mcpAfter &&
+    typeof mcpAfter === "object" &&
+    Object.keys(mcpAfter).length === 1 &&
+    typeof mcpAfter.mcpServers === "object" &&
+    Object.keys(mcpAfter.mcpServers).length === 0
+  ) {
+    fs.rmSync(mcpFile); // we created it; nothing user-owned was ever in it
+    actions.push(`removed ${mcpFile} (nothing else was in it)`);
+  }
+
+  // 2. hooks: remove exactly our entries from every event
+  const hooksFile = path.join(cursorDir, "hooks.json");
+  const h = readJson(hooksFile);
+  if (h && typeof h === "object" && h !== null) {
+    let changed = false;
+    if (h.hooks && typeof h.hooks === "object" && !Array.isArray(h.hooks)) {
+      for (const ev of Object.keys(h.hooks)) {
+        if (!Array.isArray(h.hooks[ev])) continue;
+        const list: any[] = h.hooks[ev];
+        const kept = list.filter((e) => !isOurCursorHook(e, P.cli));
+        if (kept.length !== list.length) {
+          changed = true;
+          if (kept.length) h.hooks[ev] = kept;
+          else delete h.hooks[ev];
+        }
+      }
+      if (Object.keys(h.hooks).length === 0) delete h.hooks;
+    }
+    if (changed) {
+      // If only our bare-install shape remains ({version:1} or {}), the file
+      // is ours — remove it. Anything user-owned stays untouched.
+      if (Object.keys(h).length === 0 || (Object.keys(h).length === 1 && h.version === 1)) {
+        fs.rmSync(hooksFile);
+        actions.push(`removed ${hooksFile} (nothing else was in it)`);
+      } else {
+        writeJson(hooksFile, h);
+        actions.push(`removed stop hook from ${hooksFile}`);
+      }
+    }
+  }
+
+  // 3. our rule file
+  const ruleFile = path.join(cursorDir, "rules", "load-lock.mdc");
+  if (fs.existsSync(ruleFile)) {
+    fs.rmSync(ruleFile);
+    actions.push(`removed ${ruleFile}`);
+    pruneEmptyDirs(path.dirname(ruleFile), path.dirname(ruleFile)); // rules/ if now empty
+  }
+
+  // .cursor/ itself, if we left it empty
+  pruneEmptyDirs(cursorDir, cursorDir);
+  return actions;
+}
+
 // -------------------------------------------------------------------- public
 
 export async function installCommand(opts: InstallOptions): Promise<void> {
@@ -893,7 +1058,7 @@ export async function installCommand(opts: InstallOptions): Promise<void> {
     throw new Error(`compiled entry not found at ${P.mcp} — run \`npm run build\` inside the load-lock package first`);
   }
   const harness = opts.harness;
-  if (!harness) throw new Error("install: --harness <opencode|claude-code|codex|gemini-cli|copilot-cli|cline|roo-code|goose|generic> is required");
+  if (!harness) throw new Error("install: --harness <opencode|claude-code|codex|cursor|gemini-cli|copilot-cli|cline|roo-code|goose|generic> is required");
 
   let actions: string[];
   switch (harness) {
@@ -906,6 +1071,9 @@ export async function installCommand(opts: InstallOptions): Promise<void> {
       break;
     case "codex":
       actions = installCodex(opts, P);
+      break;
+    case "cursor":
+      actions = installCursor(opts, P);
       break;
     case "gemini-cli":
     case "gemini":
@@ -957,6 +1125,9 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<void> {
       break;
     case "codex":
       actions = uninstallCodex();
+      break;
+    case "cursor":
+      actions = uninstallCursor(opts);
       break;
     case "gemini-cli":
     case "gemini":

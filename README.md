@@ -128,8 +128,13 @@ skills/         packaged skill
   the harness's real config + a global instructions-file section/policy
   rule file), config-tested via temp-HOME round-trips; fallback tier (no
   hooks, no async push — no idle wakeup).
-- Cursor, Aider: researched; generic snippet / manual CLI tier. See
-  COMPATIBILITY.md for the matrix.
+- Cursor adapter: implemented (issue #6) — merge-only project-level installer
+  (`.cursor/mcp.json` MCP entry, `.cursor/hooks.json` stop hook per the now-
+  officially-documented hooks v1 contract, `.cursor/rules/load-lock.mdc`
+  Always-apply rule) + `hook cursor stop` handler emitting
+  `{"followup_message":...}` idle wakeup. **Contract-tested**, not
+  live-verified (no Cursor on the verification machine).
+- Aider: researched; manual CLI tier. See COMPATIBILITY.md for the matrix.
 
 Linux-first; macOS works with documented liveness-check limitations;
 Windows would need a named-pipe transport adapter (planned, not built).
