@@ -175,6 +175,10 @@ companion to the main plugin, which is unchanged). Inside the opencode TUI:
 - The home footer gains a small `lock 1/1·Q2` indicator.
 - `r` resyncs; `x` opens force-release, which requires an explicit
   select + confirm — the panel itself is read-only.
+- `Esc` closes the panel (the footer has always advertised this). It is
+  deliberately inactive while a dialog — force-release, the command
+  palette — is open, so Esc keeps cancelling the dialog instead of
+  closing the panel underneath it.
 
 Verified live against opencode 2.0.29: the panel renders pools, holder
 cards, queue positions and the event feed against the real daemon, and the
