@@ -16,7 +16,7 @@
  * All state mutations run on one event loop => every RPC is atomic wrt all
  * others; start_job is therefore atomic wrt reclamation.
  */
-import { connect, createServer, Server, Socket } from "node:net";
+import { createServer, Server, Socket } from "node:net";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -25,6 +25,7 @@ import { Machine } from "./state.js";
 import { loadState, saveState, loadJournal, saveJournal, socketPath as defaultSocket, stateDir as defaultStateDir } from "./persist.js";
 import { inspectMachine } from "./sysinfo.js";
 import { AcquireParams, MachineEvent, OwnerEntrySnapshot, ProtocolError } from "../shared/protocol.js";
+import { isWindows, probeTransport } from "../shared/transport.js";
 
 interface Watcher {
   socket: Socket;
@@ -93,10 +94,20 @@ export class Daemon {
     this.sweep(); // catch anything that expired while we were down
   }
 
-  /** Bind the socket, replacing it only if it is verifiably stale. */
+  /**
+   * Bind the endpoint, replacing it only if it is verifiably stale.
+   * Windows: named pipes are kernel objects — no stale file can exist, so
+   * just refuse if another daemon owns the pipe.
+   */
   private async claimSocket(): Promise<void> {
+    if (isWindows()) {
+      if (await probeTransport(this.socketPath)) {
+        throw new ProtocolError("denied", `another daemon is already listening on ${this.socketPath}`);
+      }
+      return;
+    }
     if (existsSync(this.socketPath)) {
-      const live = await probeUnixSocket(this.socketPath);
+      const live = await probeTransport(this.socketPath);
       if (live) {
         throw new ProtocolError("denied", `another daemon is already listening on ${this.socketPath}`);
       }
@@ -121,10 +132,14 @@ export class Daemon {
     for (const s of this.conns) s.destroy();
     this.conns.clear();
     this.server?.close();
-    try {
-      if (existsSync(this.socketPath)) unlinkSync(this.socketPath);
-    } catch {
-      /* ignore */
+    if (!isWindows()) {
+      // Windows: the named pipe is a kernel object and vanishes on close;
+      // touching the pipe path from the filesystem side can block.
+      try {
+        if (existsSync(this.socketPath)) unlinkSync(this.socketPath);
+      } catch {
+        /* ignore */
+      }
     }
     try {
       rmSync(join(this.stateDirPath, "daemon.json"), { force: true });
@@ -470,19 +485,31 @@ export class Daemon {
 
 // --------------------------------------------------------------------- helpers
 
-async function probeUnixSocket(path: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const sock = connect(path);
-    sock.once("connect", () => {
-      sock.end();
-      resolve(true);
-    });
-    sock.once("error", () => resolve(false));
-  });
+/**
+ * Liveness via signal 0 — the /proc-less fallback (macOS, Windows).
+ * EPERM counts as alive: the process exists but is not signalable by us.
+ */
+export function aliveBySignalZero(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === "EPERM";
+  }
 }
 
-/** Linux: /proc/<pid>/stat field 22 (starttime) defeats pid reuse. */
-export function isProcessAlive(pid: number, expectedStartTime?: string): boolean | null {
+/**
+ * Linux: /proc/<pid>/stat field 22 (starttime) defeats pid reuse.
+ * Windows: no /proc and no start time — signal-0 fallback only; the
+ * pid-reuse defense is unavailable there (documented limitation).
+ * macOS: /proc is absent, so the signal-0 fallback applies too.
+ */
+export function isProcessAlive(pid: number, expectedStartTime?: string, platform: NodeJS.Platform = process.platform): boolean | null {
+  if (isWindows(platform)) {
+    // Start time is unobtainable without native APIs; pid reuse is possible
+    // during this window (documented in docs/OPERATIONS.md).
+    return aliveBySignalZero(pid);
+  }
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     if (expectedStartTime !== undefined) {
@@ -496,12 +523,7 @@ export function isProcessAlive(pid: number, expectedStartTime?: string): boolean
     // /proc unavailable (macOS): fall back to signal 0. Pid reuse is possible
     // here; documented limitation — that is why adapters should prefer
     // run_with_permit / process-group tracking where available.
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
+    return aliveBySignalZero(pid);
   }
 }
 
@@ -511,13 +533,16 @@ export function isProcessAlive(pid: number, expectedStartTime?: string): boolean
  * subprocesses and background jobs that outlive their parent. Returns
  * true/false on Linux; on platforms without /proc the pgid scan is
  * unavailable and the result may be null (unknown => conservative keep).
+ * Windows: no process groups — only the main pid is checked, so a permit
+ * is released once the main pid dies even if children survive (documented
+ * limitation; adapters should kill the tree via taskkill /T).
  */
-export function jobAlive(pid?: number, pgid?: number, pidStartTime?: string): boolean | null {
+export function jobAlive(pid?: number, pgid?: number, pidStartTime?: string, platform: NodeJS.Platform = process.platform): boolean | null {
   if (pid !== undefined) {
-    const alive = isProcessAlive(pid, pidStartTime);
+    const alive = isProcessAlive(pid, pidStartTime, platform);
     if (alive === true) return true;
   }
-  if (pgid !== undefined) {
+  if (pgid !== undefined && !isWindows(platform)) {
     const scan = scanProcessGroup(pgid);
     if (scan !== null) return scan;
   }

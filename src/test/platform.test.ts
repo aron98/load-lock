@@ -25,6 +25,7 @@ import {
   killProcessGroup,
 } from "../shared/transport.js";
 import { stateDir, socketPath } from "../core/persist.js";
+import { isProcessAlive, jobAlive, aliveBySignalZero, processStartTime } from "../core/daemon.js";
 
 const TMP_BASE = process.env.LL_TEST_TMP ?? join(tmpdir(), "opencode");
 mkdirSync(TMP_BASE, { recursive: true });
@@ -170,6 +171,50 @@ test("killProcessGroup: win32 branch on Linux swallows taskkill failure", () => 
 
 test("killProcessGroup: POSIX path tolerates a dead pgid", () => {
   assert.doesNotThrow(() => killProcessGroup(999_999, "SIGKILL", "linux"));
+});
+
+// ------------------------------------------------------------- liveness (win32)
+
+test("isProcessAlive: win32 branch uses signal-0 semantics (injected platform)", () => {
+  assert.equal(isProcessAlive(process.pid, undefined, "win32"), true);
+  // A start time can't be verified without /proc — pid must still count as
+  // alive (conservative; the pid-reuse defense is documented as absent).
+  assert.equal(isProcessAlive(process.pid, "9999", "win32"), true);
+  // 4194303 is the Windows ceiling; a pid that high is never in use here.
+  assert.equal(isProcessAlive(4_194_303, undefined, "win32"), false);
+});
+
+test("aliveBySignalZero: own pid alive, pid 1 alive (ours or EPERM), huge pid dead", () => {
+  assert.equal(aliveBySignalZero(process.pid), true);
+  // On Linux init is owned by root: signal 0 yields EPERM, which must count
+  // as alive. On a container where we are root, it trivially succeeds.
+  assert.equal(aliveBySignalZero(1), true);
+  assert.equal(aliveBySignalZero(4_194_303), false);
+});
+
+test("isProcessAlive: Linux branch still checks /proc start time", () => {
+  const st = processStartTime(process.pid);
+  assert.ok(st !== undefined, "/proc start time must be readable on Linux");
+  assert.equal(isProcessAlive(process.pid, st, "linux"), true);
+  assert.equal(isProcessAlive(process.pid, "9999", "linux"), false); // mismatch = reuse
+});
+
+test("jobAlive: win32 skips the process-group scan", () => {
+  assert.equal(jobAlive(process.pid, undefined, undefined, "win32"), true);
+  // Dead main pid: released even though a group scan would have been
+  // possible on Linux — Windows has no process groups.
+  assert.equal(jobAlive(4_194_303, process.pid, undefined, "win32"), false);
+  // pgid-only on win32: unknown => conservative keep.
+  assert.equal(jobAlive(undefined, 12345, undefined, "win32"), null);
+});
+
+test("jobAlive: Linux still scans process groups", () => {
+  assert.equal(jobAlive(process.pid, undefined, undefined, "linux"), true);
+  // pgid 1 exists but a dead pid + live foreign pgid keeps the job "alive"
+  // via the group scan — semantics unchanged on Linux.
+  assert.equal(jobAlive(4_194_303, 1, undefined, "linux"), true);
+  // Both dead => false on Linux (group 999999 has no members).
+  assert.equal(jobAlive(4_194_303, 999_999, undefined, "linux"), false);
 });
 
 // Clean up once everything finished.
