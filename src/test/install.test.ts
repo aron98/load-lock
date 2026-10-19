@@ -476,6 +476,225 @@ test("goose: uninstall with nothing installed is a harmless no-op", async () => 
   rmSync(home, { recursive: true, force: true });
 });
 
+// --------------------------------------------------------------- claude-code
+
+test("claude-code: install/uninstall round-trip on a populated HOME; re-install never duplicates hooks", async () => {
+  const home = tempHome();
+  const claudeDir = join(home, ".claude");
+  mkdirSync(claudeDir, { recursive: true });
+  // pre-existing user config that must survive untouched
+  writeFileSync(
+    join(home, ".claude.json"),
+    JSON.stringify({ mcpServers: { fetch: { type: "stdio", command: "uvx", args: ["mcp-server-fetch"] } } }, null, 2) + "\n",
+  );
+  writeFileSync(
+    join(claudeDir, "settings.json"),
+    JSON.stringify(
+      {
+        theme: "dark",
+        hooks: {
+          PreToolUse: [{ hooks: [{ type: "command", command: "/usr/local/bin/guard" }] }],
+          Stop: [{ hooks: [{ type: "command", command: "/usr/local/bin/user-stop" }] }],
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  writeFileSync(join(claudeDir, "CLAUDE.md"), "# My rules\n\nBe terse.\n");
+
+  const claudeJson = join(home, ".claude.json");
+  const settingsFile = join(claudeDir, "settings.json");
+  const claudeMd = join(claudeDir, "CLAUDE.md");
+
+  // -- install
+  let r = await runCli(home, ["install", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+
+  const s = JSON.parse(readFileSync(settingsFile, "utf8"));
+  assert.equal(s.theme, "dark", "unrelated user settings preserved");
+  assert.equal(s.hooks.PreToolUse.length, 1, "unrelated event untouched");
+  assert.equal(s.hooks.SessionStart.length, 2, "our policy hook + await-offer watcher");
+  assert.ok(s.hooks.SessionStart[0].hooks[0].command.includes(JSON.stringify(cliMain)), "command embeds the JSON-quoted cli path");
+  assert.ok(s.hooks.SessionStart[0].hooks[0].command.endsWith("hook claude-code session-start"));
+  assert.equal(s.hooks.SessionStart[1].hooks[0].async, true, "await-offer watcher is async");
+  assert.ok(s.hooks.SessionStart[1].hooks[0].command.endsWith("hook claude-code await-offer"));
+  assert.equal(s.hooks.Stop.length, 2, "user Stop hook preserved, ours appended");
+  assert.equal(s.hooks.Stop[0].hooks[0].command, "/usr/local/bin/user-stop", "user's stop hook untouched");
+  assert.ok(s.hooks.Stop[1].hooks[0].command.endsWith("hook claude-code stop"));
+
+  const cj = JSON.parse(readFileSync(claudeJson, "utf8"));
+  assert.deepEqual(cj.mcpServers.fetch, { type: "stdio", command: "uvx", args: ["mcp-server-fetch"] }, "user MCP server preserved");
+  assert.deepEqual(cj.mcpServers["load-lock"], { type: "stdio", command: process.execPath, args: [mcpMain] }, "our MCP server shape");
+
+  const md = readFileSync(claudeMd, "utf8");
+  assert.ok(md.includes("# My rules"), "existing CLAUDE.md content preserved");
+  assert.equal(count(md, MARKER_BEGIN), 1, "exactly one marked section");
+  assert.ok(existsSync(join(claudeDir, "skills", "load-lock", "SKILL.md")), "skill installed");
+
+  // -- idempotent re-install: no duplicate hook entries (issue #19)
+  r = await runCli(home, ["install", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `re-install failed: ${r.stderr}`);
+  const s2 = JSON.parse(readFileSync(settingsFile, "utf8"));
+  assert.equal(s2.hooks.SessionStart.length, 2, "re-install must not duplicate SessionStart entries");
+  assert.equal(s2.hooks.Stop.length, 2, "re-install must not duplicate Stop entries");
+  assert.equal(count(readFileSync(claudeMd, "utf8"), MARKER_BEGIN), 1, "re-install must not duplicate the section");
+
+  // -- uninstall removes exactly our entries
+  r = await runCli(home, ["uninstall", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+
+  const s3 = JSON.parse(readFileSync(settingsFile, "utf8"));
+  assert.ok(!("SessionStart" in s3.hooks), "our SessionStart entries removed");
+  assert.equal(s3.hooks.Stop.length, 1, "only the user's Stop hook remains");
+  assert.equal(s3.hooks.Stop[0].hooks[0].command, "/usr/local/bin/user-stop");
+  assert.equal(s3.hooks.PreToolUse.length, 1, "user PreToolUse hook preserved");
+  assert.equal(s3.theme, "dark", "unrelated settings survive uninstall");
+
+  const cj2 = JSON.parse(readFileSync(claudeJson, "utf8"));
+  assert.ok(!("load-lock" in cj2.mcpServers), "our MCP server key removed");
+  assert.ok(cj2.mcpServers.fetch, "user MCP server untouched");
+
+  const md2 = readFileSync(claudeMd, "utf8");
+  assert.ok(!md2.includes(MARKER_BEGIN), "marked section removed");
+  assert.ok(md2.includes("# My rules"), "user markdown untouched");
+  assert.ok(!existsSync(join(claudeDir, "skills")), "our skill removed");
+
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("claude-code: bare HOME install then uninstall removes exactly what we added", async () => {
+  const home = tempHome();
+  let r = await runCli(home, ["install", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+  const settingsFile = join(home, ".claude", "settings.json");
+  assert.ok(existsSync(settingsFile), "settings.json created");
+
+  r = await runCli(home, ["uninstall", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+  assert.ok(!existsSync(settingsFile), "settings.json was ours alone — removed");
+  assert.ok(!existsSync(join(home, ".claude", "skills")), "our skill removed");
+  const cj = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+  assert.ok(!("load-lock" in cj.mcpServers), "our MCP server key removed");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("claude-code: uninstall with nothing installed is a harmless no-op", async () => {
+  const home = tempHome();
+  const r = await runCli(home, ["uninstall", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+  assert.ok(!existsSync(join(home, ".claude")), "no files created by uninstall");
+  assert.ok(!existsSync(join(home, ".claude.json")), "no files created by uninstall");
+  rmSync(home, { recursive: true, force: true });
+});
+
+// --------------------------------------------------------------------- codex
+
+test("codex: install/uninstall round-trip on a populated HOME; re-install never duplicates hooks", async () => {
+  const home = tempHome();
+  const codexDir = join(home, ".codex");
+  mkdirSync(codexDir, { recursive: true });
+  // pre-existing user config that must survive untouched
+  writeFileSync(
+    join(codexDir, "hooks.json"),
+    JSON.stringify(
+      {
+        hooks: {
+          PreToolUse: [{ hooks: [{ type: "command", command: "/usr/local/bin/guard" }] }],
+          Stop: [{ hooks: [{ type: "command", command: "/usr/local/bin/user-stop" }] }],
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  writeFileSync(join(codexDir, "config.toml"), 'model = "gpt-5.2"\n');
+  writeFileSync(join(codexDir, "AGENTS.md"), "# My codex rules\n");
+
+  const hooksFile = join(codexDir, "hooks.json");
+  const tomlFile = join(codexDir, "config.toml");
+  const agentsMd = join(codexDir, "AGENTS.md");
+
+  // -- install
+  let r = await runCli(home, ["install", "--harness", "codex"], { CODEX_HOME: codexDir });
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+
+  const h = JSON.parse(readFileSync(hooksFile, "utf8"));
+  assert.equal(h.hooks.PreToolUse.length, 1, "unrelated event untouched");
+  assert.equal(h.hooks.SessionStart.length, 1, "one SessionStart entry (ours)");
+  assert.equal(h.hooks.SessionStart[0].matcher, "startup|resume|clear|compact|fork", "SessionStart matcher preserved");
+  assert.ok(h.hooks.SessionStart[0].hooks[0].command.includes(JSON.stringify(cliMain)), "command embeds the JSON-quoted cli path");
+  assert.ok(h.hooks.SessionStart[0].hooks[0].command.endsWith("hook codex session-start"));
+  assert.equal(h.hooks.SubagentStart.length, 1, "one SubagentStart entry (ours)");
+  assert.equal(h.hooks.SubagentStart[0].matcher, "*");
+  assert.ok(h.hooks.SubagentStart[0].hooks[0].command.endsWith("hook codex subagent-start"));
+  assert.equal(h.hooks.Stop.length, 2, "user Stop hook preserved, ours appended");
+  assert.equal(h.hooks.Stop[0].hooks[0].command, "/usr/local/bin/user-stop", "user's stop hook untouched");
+  assert.ok(h.hooks.Stop[1].hooks[0].command.endsWith("hook codex stop"));
+
+  const toml = readFileSync(tomlFile, "utf8");
+  assert.ok(toml.includes('model = "gpt-5.2"'), "user toml keys preserved");
+  assert.equal(count(toml, "[mcp_servers.load-lock]"), 1, "exactly one toml block appended");
+
+  const md = readFileSync(agentsMd, "utf8");
+  assert.ok(md.includes("# My codex rules"), "existing AGENTS.md content preserved");
+  assert.equal(count(md, MARKER_BEGIN), 1, "exactly one marked section");
+
+  // -- idempotent re-install: no duplicate hook entries (issue #19)
+  r = await runCli(home, ["install", "--harness", "codex"], { CODEX_HOME: codexDir });
+  assert.equal(r.code, 0, `re-install failed: ${r.stderr}`);
+  const h2 = JSON.parse(readFileSync(hooksFile, "utf8"));
+  assert.equal(h2.hooks.SessionStart.length, 1, "re-install must not duplicate SessionStart entries");
+  assert.equal(h2.hooks.SubagentStart.length, 1, "re-install must not duplicate SubagentStart entries");
+  assert.equal(h2.hooks.Stop.length, 2, "re-install must not duplicate Stop entries");
+  assert.equal(count(readFileSync(agentsMd, "utf8"), MARKER_BEGIN), 1, "re-install must not duplicate the section");
+
+  // -- uninstall removes exactly our entries
+  r = await runCli(home, ["uninstall", "--harness", "codex"], { CODEX_HOME: codexDir });
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+
+  const h3 = JSON.parse(readFileSync(hooksFile, "utf8"));
+  assert.ok(!("SessionStart" in h3.hooks), "our SessionStart entries removed");
+  assert.ok(!("SubagentStart" in h3.hooks), "our SubagentStart entries removed");
+  assert.equal(h3.hooks.Stop.length, 1, "only the user's Stop hook remains");
+  assert.equal(h3.hooks.Stop[0].hooks[0].command, "/usr/local/bin/user-stop");
+  assert.equal(h3.hooks.PreToolUse.length, 1, "user PreToolUse hook preserved");
+
+  const toml2 = readFileSync(tomlFile, "utf8");
+  assert.ok(!toml2.includes("[mcp_servers.load-lock]"), "our toml block removed");
+  assert.ok(toml2.includes('model = "gpt-5.2"'), "user toml keys survive uninstall");
+
+  const md2 = readFileSync(agentsMd, "utf8");
+  assert.ok(!md2.includes(MARKER_BEGIN), "marked section removed");
+  assert.ok(md2.includes("# My codex rules"), "user markdown untouched");
+
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("codex: bare HOME install then uninstall removes exactly what we added", async () => {
+  const home = tempHome();
+  const codexDir = join(home, ".codex");
+  let r = await runCli(home, ["install", "--harness", "codex"], { CODEX_HOME: codexDir });
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+  const hooksFile = join(codexDir, "hooks.json");
+  assert.ok(existsSync(hooksFile), "hooks.json created");
+
+  r = await runCli(home, ["uninstall", "--harness", "codex"], { CODEX_HOME: codexDir });
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+  assert.ok(!existsSync(hooksFile), "hooks.json was ours alone — removed");
+  assert.ok(!readFileSync(join(codexDir, "config.toml"), "utf8").includes("[mcp_servers.load-lock]"), "toml block removed");
+  assert.ok(!readFileSync(join(codexDir, "AGENTS.md"), "utf8").includes(MARKER_BEGIN), "AGENTS.md section removed");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("codex: uninstall with nothing installed is a harmless no-op", async () => {
+  const home = tempHome();
+  const r = await runCli(home, ["uninstall", "--harness", "codex"], { CODEX_HOME: join(home, ".codex") });
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+  assert.ok(!existsSync(join(home, ".codex")), "no files created by uninstall");
+  rmSync(home, { recursive: true, force: true });
+});
+
 // ------------------------------------------------------------------ cursor
 
 test("cursor: project install/uninstall round-trip preserves user config", async () => {

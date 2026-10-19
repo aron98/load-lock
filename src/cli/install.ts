@@ -136,7 +136,36 @@ function removeMdSection(file: string, marker: string) {
   fs.writeFileSync(file, text.slice(0, start) + text.slice(end));
 }
 
-const LL_HOOK_TAG = "dist/cli/main.js hook"; // how we recognize our hook entries
+/**
+ * Collect every string value of `key` anywhere in a nested object/array
+ * (hook entries nest the command inside a `hooks` array for Claude Code and
+ * Codex; Cursor hooks v1 keep it at the top level).
+ */
+function collectCommandStrings(e: unknown, key = "command", out: string[] = []): string[] {
+  if (Array.isArray(e)) {
+    for (const v of e) collectCommandStrings(v, key, out);
+  } else if (typeof e === "object" && e !== null) {
+    for (const [k, v] of Object.entries(e)) {
+      if (k === key && typeof v === "string") out.push(v);
+      else collectCommandStrings(v, key, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * Is this hooks entry ours? Our hook commands are
+ * `<node> "<...>/dist/cli/main.js" hook <harness> <sub>`, matched on the
+ * JSON-quoted cli path plus the ` hook <harness> ` marker INSIDE the actual
+ * command string. Substring-matching a re-serialized entry with an un-quoted
+ * path never matches our own entries — re-serialization escapes the path's
+ * closing quote (`main.js\" hook`) — which made install duplicate hook
+ * entries and uninstall leave them behind (issue #19).
+ */
+function isOurHook(e: unknown, cliPath: string, harness: string): boolean {
+  const tag = ` hook ${harness} `;
+  return collectCommandStrings(e).some((c) => c.includes(JSON.stringify(cliPath)) && c.includes(tag));
+}
 
 // ------------------------------------------------------------------ opencode
 
@@ -223,10 +252,9 @@ function installClaudeCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>)
   const settingsFile = path.join(HOME, ".claude", "settings.json");
   const s = readJson(settingsFile) ?? {};
   if (!s.hooks || typeof s.hooks !== "object") s.hooks = {};
-  const ours = (list: any[]) => list.filter((e) => JSON.stringify(e).includes(LL_HOOK_TAG));
   const cc = (event: string, entries: any[]) => {
     const prev = Array.isArray(s.hooks[event]) ? s.hooks[event] : [];
-    const kept = prev.filter((e: any) => !ours([e]).length);
+    const kept = prev.filter((e: any) => !isOurHook(e, P.cli, "claude-code"));
     s.hooks[event] = [...kept, ...entries];
   };
   cc("SessionStart", [hookEntry(P, "session-start")]);
@@ -264,6 +292,7 @@ function installClaudeCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>)
 
 function uninstallClaudeCode(): string[] {
   const actions: string[] = [];
+  const P = pkgPaths(); // cli path for our-entry matching below
   const claudeJson = path.join(HOME, ".claude.json");
   const cj = readJson(claudeJson);
   if (cj?.mcpServers && typeof cj.mcpServers === "object" && "load-lock" in cj.mcpServers) {
@@ -274,21 +303,35 @@ function uninstallClaudeCode(): string[] {
   const settingsFile = path.join(HOME, ".claude", "settings.json");
   const s = readJson(settingsFile);
   if (s?.hooks && typeof s.hooks === "object") {
+    let changed = false;
     for (const ev of Object.keys(s.hooks)) {
       const list = s.hooks[ev];
       if (Array.isArray(list)) {
-        const kept = list.filter((e: any) => !JSON.stringify(e).includes(LL_HOOK_TAG));
-        if (kept.length) s.hooks[ev] = kept;
-        else delete s.hooks[ev];
+        const kept = list.filter((e: any) => !isOurHook(e, P.cli, "claude-code"));
+        if (kept.length !== list.length) {
+          changed = true;
+          if (kept.length) s.hooks[ev] = kept;
+          else delete s.hooks[ev];
+        }
       }
     }
-    writeJson(settingsFile, s);
-    actions.push(`removed hooks from ${settingsFile}`);
+    if (Object.keys(s.hooks).length === 0) delete s.hooks;
+    if (changed) {
+      // If nothing but our bare-install shape remains, the file is ours.
+      if (Object.keys(s).length === 0) {
+        fs.rmSync(settingsFile);
+        actions.push(`removed ${settingsFile} (nothing else was in it)`);
+      } else {
+        writeJson(settingsFile, s);
+        actions.push(`removed hooks from ${settingsFile}`);
+      }
+    }
   }
   const md = path.join(HOME, ".claude", "CLAUDE.md");
   removeMdSection(md, "<!-- load-lock:begin -->");
   actions.push(`removed CLAUDE.md section`);
   fs.rmSync(path.join(HOME, ".claude", "skills", "load-lock"), { recursive: true, force: true });
+  pruneEmptyDirs(path.join(HOME, ".claude", "skills"), path.join(HOME, ".claude"));
   actions.push("removed skill");
   return actions;
 }
@@ -316,7 +359,7 @@ function installCodex(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): str
   ];
   const mergeEv = (event: string, entries: any[]) => {
     const prev = Array.isArray(h.hooks[event]) ? h.hooks[event] : [];
-    h.hooks[event] = [...prev.filter((e: any) => !JSON.stringify(e).includes(LL_HOOK_TAG)), ...entries];
+    h.hooks[event] = [...prev.filter((e: any) => !isOurHook(e, P.cli, "codex")), ...entries];
   };
   mergeEv("SessionStart", [{ matcher: "startup|resume|clear|compact|fork", hooks: [{ type: "command", command: `${P.node} ${JSON.stringify(P.cli)} hook codex session-start` }] }]);
   mergeEv("SubagentStart", [{ matcher: "*", hooks: [{ type: "command", command: `${P.node} ${JSON.stringify(P.cli)} hook codex subagent-start` }] }]);
@@ -364,20 +407,34 @@ function installCodex(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): str
 
 function uninstallCodex(): string[] {
   const actions: string[] = [];
+  const P = pkgPaths(); // cli path for our-entry matching below
   const codexHome = process.env.CODEX_HOME ?? path.join(HOME, ".codex");
   const hooksFile = path.join(codexHome, "hooks.json");
   const h = readJson(hooksFile);
   if (h?.hooks && typeof h.hooks === "object") {
+    let changed = false;
     for (const ev of Object.keys(h.hooks)) {
       const list = h.hooks[ev];
       if (Array.isArray(list)) {
-        const kept = list.filter((e: any) => !JSON.stringify(e).includes(LL_HOOK_TAG));
-        if (kept.length) h.hooks[ev] = kept;
-        else delete h.hooks[ev];
+        const kept = list.filter((e: any) => !isOurHook(e, P.cli, "codex"));
+        if (kept.length !== list.length) {
+          changed = true;
+          if (kept.length) h.hooks[ev] = kept;
+          else delete h.hooks[ev];
+        }
       }
     }
-    writeJson(hooksFile, h);
-    actions.push(`removed hooks from ${hooksFile}`);
+    if (Object.keys(h.hooks).length === 0) delete h.hooks;
+    if (changed) {
+      // If nothing but our bare-install shape remains, the file is ours.
+      if (Object.keys(h).length === 0) {
+        fs.rmSync(hooksFile);
+        actions.push(`removed ${hooksFile} (nothing else was in it)`);
+      } else {
+        writeJson(hooksFile, h);
+        actions.push(`removed hooks from ${hooksFile}`);
+      }
+    }
   }
   const tomlFile = path.join(codexHome, "config.toml");
   if (fs.existsSync(tomlFile)) {
@@ -894,22 +951,6 @@ function uninstallGoose(): string[] {
 // ------------------------------------------------------------------ cursor
 
 /**
- * Is this hooks.json entry ours? Our commands are
- * `<node> "<...>/dist/cli/main.js" hook cursor stop` — matched on the quoted
- * cli path plus the subcommand (NOT the LL_HOOK_TAG constant: the closing
- * quote of the JSON-embedded path breaks that substring).
- */
-function isOurCursorHook(e: unknown, cliPath: string): boolean {
-  return (
-    typeof e === "object" &&
-    e !== null &&
-    typeof (e as any).command === "string" &&
-    (e as any).command.includes(JSON.stringify(cliPath)) &&
-    (e as any).command.includes(" hook cursor ")
-  );
-}
-
-/**
  * Policy text for the dedicated .cursor/rules/load-lock.mdc rule file
  * (YAML frontmatter with alwaysApply: true — plain .md is ignored by Cursor).
  */
@@ -964,7 +1005,7 @@ function installCursor(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): st
     throw new Error(`${hooksFile} has a non-array "hooks.stop" key; refusing to overwrite`);
   }
   h.hooks.stop = [
-    ...h.hooks.stop.filter((e: any) => !isOurCursorHook(e, P.cli)),
+    ...h.hooks.stop.filter((e: any) => !isOurHook(e, P.cli, "cursor")),
     { type: "command", command: `${P.node} ${JSON.stringify(P.cli)} hook cursor stop` },
   ];
   writeJson(hooksFile, h);
@@ -1015,7 +1056,7 @@ function uninstallCursor(opts: UninstallOptions): string[] {
       for (const ev of Object.keys(h.hooks)) {
         if (!Array.isArray(h.hooks[ev])) continue;
         const list: any[] = h.hooks[ev];
-        const kept = list.filter((e) => !isOurCursorHook(e, P.cli));
+        const kept = list.filter((e) => !isOurHook(e, P.cli, "cursor"));
         if (kept.length !== list.length) {
           changed = true;
           if (kept.length) h.hooks[ev] = kept;
