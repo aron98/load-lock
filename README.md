@@ -59,7 +59,8 @@ agent A (OpenCode)        agent B (Codex)         agent C (Claude Code)
 ```sh
 npm install -g @aron98/load-lock
 load-lock install --harness opencode     # or claude-code | codex | gemini-cli |
-                                         # copilot-cli | cline | roo-code | goose | generic
+                                         # copilot-cli | cline | roo-code | goose |
+                                         # omac (sandbox grants) | generic
 load-lock doctor
 ```
 
@@ -88,7 +89,7 @@ WSL2) share the host's budget instead of getting their own: bridge the
 daemon's Unix socket into the sandbox, set `LOAD_LOCK_NO_SPAWN=1` so the
 client never spawns a useless sandbox-local daemon, and optionally tag
 holds with `LOAD_LOCK_LABEL_PREFIX` (e.g. `bwrap:issue-42 build`).
-Ready-to-run per-sandbox recipes — live-verified for bubblewrap,
+Ready-to-run per-sandbox recipes — live-verified for bubblewrap and omac,
 contract-inspected for the rest, plus the cross-PID-namespace lease
 lifecycle — live in docs/OPERATIONS.md → "Sandboxes".
 

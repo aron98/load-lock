@@ -43,11 +43,22 @@
  *                   .cursor/rules/load-lock.mdc. Contract-tested against
  *                   the documented hooks JSON; not live-verified.
  *  - generic      : prints an MCP stdio config snippet (any MCP-capable harness).
+ *  - omac         : merges load-lock grants into omac's user-global sandbox
+ *                   profile (~/.config/omac/sandbox-profiles/default.json):
+ *                   filesystem.allow_unix_dir += the state dir (host-daemon
+ *                   socket bridge), filesystem.read += the installed package
+ *                   tree when load-lock lives outside any granted workdir
+ *                   (global bun/npm installs; gotcha verified live), and
+ *                   environment.allow_vars += "LOAD_LOCK_*". omac parses
+ *                   profiles strictly (unknown fields are errors) and never
+ *                   rewrites a profile it has created, so the installer only
+ *                   writes known fields and touches nothing else.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { POLICY_BRIEF } from "../policy/text.js";
+import { resolveStateDir } from "../shared/transport.js";
 
 export interface InstallOptions {
   harness: string;
@@ -1091,6 +1102,206 @@ function uninstallCursor(opts: UninstallOptions): string[] {
   return actions;
 }
 
+// --------------------------------------------------------------------- omac
+
+// omac (verified against 0.11.0) sandboxes agents with bubblewrap +
+// Landlock on Linux and strips the harness environment, allowing through
+// only what the user-global sandbox profile lists. Known profile fields
+// (strict parsing — unknown fields are hard errors): top-level `workdir`,
+// `network`, `filesystem`, `environment`; `workdir.access`,
+// `network.allow_domain`/`deny_domain`/`allow_tcp_connect`,
+// `filesystem.allow`/`read`/`write`/`allow_unix_dir`/`deny`,
+// `environment.allow_vars` — all lists of strings. omac never rewrites a
+// profile it has created, so the profile file is the whole extension
+// point and we only ever write known fields.
+const OMAC_LL_ENV_ENTRY = "LOAD_LOCK_*"; // allow_vars trailing-* prefix (verified: accepted by 0.11.0)
+
+/** omac's user-global sandbox profile (no project equivalent exists). */
+function omacProfileFile(): string {
+  return path.join(configHome(), "omac", "sandbox-profiles", "default.json");
+}
+
+/** Read + shape-check the profile; undefined when the file does not exist. */
+function omacReadProfile(file: string): Record<string, unknown> | undefined {
+  if (!fs.existsSync(file)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new Error(
+      `${file} is not valid JSON (${e instanceof Error ? e.message : String(e)}). omac parses ` +
+        `profiles strictly; load-lock refuses to overwrite it — fix or remove the file, then re-run install`,
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${file} is not a JSON object; refusing to overwrite`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** The profile sub-object `key`, created when absent; refuses non-objects. */
+function omacSection(profile: Record<string, unknown>, key: string): Record<string, unknown> {
+  const v = profile[key];
+  if (v === undefined) {
+    const section: Record<string, unknown> = {};
+    profile[key] = section;
+    return section;
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    throw new Error(`omac profile: "${key}" is not an object; refusing to overwrite`);
+  }
+  return v as Record<string, unknown>;
+}
+
+/**
+ * Merge string entries into section[key] (created only when something is
+ * added, so we never write empty arrays). Returns the entries actually
+ * added; refuses non-string-array values instead of mangling them.
+ */
+function omacMergeList(section: Record<string, unknown>, key: string, entries: string[]): string[] {
+  const v = section[key];
+  let list: string[];
+  if (v === undefined) list = [];
+  else if (Array.isArray(v) && v.every((x) => typeof x === "string")) list = [...v];
+  else throw new Error(`omac profile: "${key}" is not an array of strings; refusing to overwrite`);
+  const added = entries.filter((e) => !list.includes(e));
+  if (added.length) section[key] = [...list, ...added];
+  return added;
+}
+
+/**
+ * The installed package tree a sandboxed CLI must be able to *read*.
+ * Live-verified gotcha: a global bun/npm install grants the bin dir, but
+ * the launcher resolves the dist tree under `.../node_modules/@aron98/
+ * load-lock` — without a read grant the CLI dies with ERR_MODULE_NOT_FOUND
+ * before ever reaching the socket. Returns the realpath of the package
+ * root, or null when load-lock lives in a repo checkout / worktree (the
+ * nearest `.git`): there the agent's omac workdir grant already covers
+ * it, and a read grant would be noise.
+ */
+function omacReadGrant(P: ReturnType<typeof pkgPaths>): string | null {
+  let root = P.root;
+  try {
+    root = fs.realpathSync(root);
+  } catch {
+    /* keep the unresolved path — omac grants are not existence-filtered */
+  }
+  for (let dir = root; ; ) {
+    if (fs.existsSync(path.join(dir, ".git"))) return null; // repo checkout / git worktree
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return root;
+}
+
+/**
+ * Remove our entries (match-own-entries style: exact current state dir,
+ * the "LOAD_LOCK_*" prefix entry, and read entries pointing at the
+ * current package root or at a global `node_modules/@aron98/load-lock`
+ * tree — the shape the installer writes). Keys whose lists we emptied are
+ * dropped; sections that become empty are dropped; the file is removed
+ * (and dirs pruned) when nothing user-owned remains.
+ */
+function uninstallOmac(): string[] {
+  const actions: string[] = [];
+  const file = omacProfileFile();
+  const profile = omacReadProfile(file);
+  if (!profile) return actions; // nothing installed; uninstall never creates anything
+
+  const stateDir = resolveStateDir(process.platform, process.env);
+  const readTree = omacReadGrant(pkgPaths());
+  const globalPkgSuffix = path.join("node_modules", PKG_NAME);
+  let changed = false;
+  const drop = (sectionKey: string, key: string, isOurs: (entry: string) => boolean) => {
+    const section = profile[sectionKey];
+    if (!section || typeof section !== "object" || Array.isArray(section)) return;
+    const list = (section as Record<string, unknown>)[key];
+    if (!Array.isArray(list) || !list.every((x) => typeof x === "string")) return;
+    const kept = list.filter((e: string) => !isOurs(e));
+    if (kept.length === list.length) return;
+    changed = true;
+    if (kept.length) (section as Record<string, unknown>)[key] = kept;
+    else delete (section as Record<string, unknown>)[key];
+  };
+  drop("filesystem", "allow_unix_dir", (e) => e === stateDir);
+  drop("filesystem", "read", (e) => (readTree !== null && e === readTree) || e.endsWith(globalPkgSuffix));
+  drop("environment", "allow_vars", (e) => e === OMAC_LL_ENV_ENTRY);
+
+  // prune sections our removals emptied (never anything the user still has)
+  for (const key of ["filesystem", "environment"]) {
+    const section = profile[key];
+    if (section && typeof section === "object" && !Array.isArray(section) && Object.keys(section).length === 0) {
+      delete profile[key];
+    }
+  }
+  if (!changed) {
+    actions.push(`no load-lock grants found in ${file}`);
+    return actions;
+  }
+  if (Object.keys(profile).length === 0) {
+    fs.rmSync(file);
+    actions.push(`removed ${file} (nothing else was in it)`);
+    pruneEmptyDirs(path.dirname(file), path.join(configHome(), "omac"));
+  } else {
+    writeJson(file, profile);
+    actions.push(`removed load-lock grants from ${file}`);
+  }
+  return actions;
+}
+
+function installOmac(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
+  const actions: string[] = [];
+  const file = omacProfileFile();
+  const existed = fs.existsSync(file);
+  const profile = omacReadProfile(file) ?? {};
+  const stateDir = resolveStateDir(process.platform, process.env);
+
+  const grants: string[] = [];
+  const fsSection = omacSection(profile, "filesystem");
+  grants.push(...omacMergeList(fsSection, "allow_unix_dir", [stateDir]));
+  const readTree = omacReadGrant(P);
+  if (readTree) grants.push(...omacMergeList(fsSection, "read", [readTree]));
+  const envSection = omacSection(profile, "environment");
+  grants.push(...omacMergeList(envSection, "allow_vars", [OMAC_LL_ENV_ENTRY]));
+
+  // merge-only: never rewrite the file when nothing changed (idempotent
+  // re-install leaves the user's bytes untouched)
+  if (grants.length || !existed) writeJson(file, profile);
+
+  if (!existed) actions.push(`created ${file} (omac's user-global sandbox profile)`);
+  else if (grants.length) actions.push(`grants merged into ${file}`);
+  else actions.push(`all grants already present in ${file} — nothing to do`);
+
+  for (const g of grants) {
+    if (g === OMAC_LL_ENV_ENTRY) {
+      actions.push(`environment.allow_vars += "${OMAC_LL_ENV_ENTRY}" (prefix pattern; passes all four LOAD_LOCK_* vars through the sandbox env filter)`);
+    } else if (g === stateDir) {
+      actions.push(`filesystem.allow_unix_dir += ${stateDir} (AF_UNIX connect to the host daemon socket + read/write on the state dir)`);
+    } else {
+      actions.push(`filesystem.read += ${g} (installed package tree — the bin-dir grant alone is not enough; without this the CLI dies with ERR_MODULE_NOT_FOUND before reaching the socket)`);
+    }
+  }
+  if (!readTree) {
+    actions.push(`skipped filesystem.read: load-lock lives in a repo checkout (${P.root}) — the omac workdir grant already covers it`);
+  }
+  actions.push(
+    "set the values in your harness env (the grants only allow the names through): " +
+      "LOAD_LOCK_NO_SPAWN=1 (client-only; the daemon must run on the host, e.g. load-lock service start), " +
+      "LOAD_LOCK_LABEL_PREFIX=omac (dashboard shows holders as omac:<label>); " +
+      "LOAD_LOCK_SOCKET only if the default <state dir>/daemon.sock is not what the sandbox sees",
+  );
+  actions.push(
+    "label prefixes need load-lock >= 1.2.0 on BOTH ends: a daemon started before v1.2.0 " +
+      "silently strips the unknown labelPrefix field — upgrade and restart the daemon (load-lock service restart)",
+  );
+  actions.push(
+    "verified live against omac 0.11.0 (bubblewrap + Landlock): sandboxed client -> host daemon " +
+      "round-trip, prefixed labels, LOAD_LOCK_NO_SPAWN error contract",
+  );
+  return actions;
+}
+
 // -------------------------------------------------------------------- public
 
 export async function installCommand(opts: InstallOptions): Promise<void> {
@@ -1099,7 +1310,7 @@ export async function installCommand(opts: InstallOptions): Promise<void> {
     throw new Error(`compiled entry not found at ${P.mcp} — run \`npm run build\` inside the load-lock package first`);
   }
   const harness = opts.harness;
-  if (!harness) throw new Error("install: --harness <opencode|claude-code|codex|cursor|gemini-cli|copilot-cli|cline|roo-code|goose|generic> is required");
+  if (!harness) throw new Error("install: --harness <opencode|claude-code|codex|cursor|gemini-cli|copilot-cli|cline|roo-code|goose|omac|generic> is required");
 
   let actions: string[];
   switch (harness) {
@@ -1135,6 +1346,9 @@ export async function installCommand(opts: InstallOptions): Promise<void> {
       break;
     case "goose":
       actions = installGoose(opts, P);
+      break;
+    case "omac":
+      actions = installOmac(opts, P);
       break;
     case "generic":
     case "all":
@@ -1189,6 +1403,9 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<void> {
       break;
     case "goose":
       actions = uninstallGoose();
+      break;
+    case "omac":
+      actions = uninstallOmac();
       break;
     default:
       throw new Error(`uninstall: unknown harness "${opts.harness}"`);

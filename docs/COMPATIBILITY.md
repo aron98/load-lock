@@ -43,6 +43,7 @@ Status labels mean exactly this:
 | **Cline** | Yes (`cline_mcp_settings.json`, merge-only installer) | `~/.cline/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **Roo Code** | Yes (project `.roo/mcp.json` + existing global `mcp_settings.json`, merge-only installer) | `~/.roo/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **Goose** | Yes (`~/.config/goose/config.yaml` `extensions` block, merge-only installer) | `.goosehints` (global, marked section) | Hints always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
+| **omac** (agent sandbox; verified with 0.11.0) | N/A — omac is a sandbox runtime, not a harness: the agent inside it uses whichever harness adapter applies (OpenCode, Claude Code, …) | via the inner harness | via the inner harness | via the inner harness | via the inner harness | Full for the sandbox grants: `load-lock uninstall --harness omac` removes exactly the entries install added (match-own-entries, empty sections pruned) | **Sandbox-profile grants installed + live-verified** (`install --harness omac`: `filesystem.allow_unix_dir` += state dir, `filesystem.read` += package tree when needed, `environment.allow_vars` += `LOAD_LOCK_*`) |
 | **Aider** | **No MCP support** | CONVENTIONS.md / `.aider.conf.yml` | Read each run | N/A | N/A | CLI-only: same-shell `load-lock acquire ... && cmd; load-lock release ...` (manual) | Proposed (manual CLI tier) |
 
 ## How each integration tier works
@@ -236,6 +237,40 @@ push channel, so a woken agent relies on tool results (which carry
 pending offers) rather than harness messages. We do not pretend these
 harnesses got push notifications.
 
+### omac — sandbox-profile grants (live-verified, issue #32)
+
+omac runs agent harnesses inside a sandbox (bubblewrap + Landlock on
+Linux, seatbelt on macOS) and strips the harness environment, allowing
+through only what the user-global profile lists — so a load-lock client
+inside omac cannot reach the host daemon without explicit grants.
+`load-lock install --harness omac` merges three grants into
+`~/.config/omac/sandbox-profiles/default.json` (merge-only, idempotent,
+reversible by uninstall; omac parses profiles strictly so the installer
+writes only known fields and never rewrites the user's bytes when
+nothing changed):
+
+- `filesystem.allow_unix_dir` += the load-lock state dir (AF_UNIX connect
+  to the host daemon socket + read/write on the state dir);
+- `filesystem.read` += the installed package tree — **only when load-lock
+  lives outside an already-granted workdir** (a repo checkout needs
+  nothing: the sandbox workdir grant covers it; a global bun/npm install
+  does need it, see OPERATIONS.md gotcha #1);
+- `environment.allow_vars` += `"LOAD_LOCK_*"` — one trailing-`*` prefix
+  entry that passes all four client vars (`LOAD_LOCK_SOCKET`,
+  `LOAD_LOCK_STATE_DIR`, `LOAD_LOCK_NO_SPAWN`, `LOAD_LOCK_LABEL_PREFIX`)
+  through omac's env filter.
+
+Verified live against omac 0.11.0 (see OPERATIONS.md for the exact
+procedure and the two gotchas): profile accepted by omac's strict parser,
+sandboxed CLI → host daemon round-trip, prefixed holder labels
+(`omac:<label>`), client-only (`LOAD_LOCK_NO_SPAWN=1`) error contract, and
+the global-install read grant proven necessary and sufficient
+(ERR_MODULE_NOT_FOUND without it, working round-trip with it).
+Install/uninstall round-trips are contract-tested in
+`src/test/install.test.ts` (temp HOME: populated profile preserved,
+idempotent re-install byte-identical, missing-profile creation, global
+read grant, refusal on broken profiles).
+
 ### Tier 4 — Aider (manual CLI)
 
 No MCP/hooks; nothing to install. Agents (or humans) use the CLI directly in
@@ -256,6 +291,7 @@ UI** — where no UI surface exists, we say so rather than claim parity.
 | **Codex CLI** | None in-app — same reason. `load_lock_status` MCP tool; `SessionStart`/`SubagentStart` machine summary. | `load-lock dashboard` (alias `top`) |
 | **Gemini CLI** | None in-app (no hooks, no UI plugin surface). `load_lock_status` MCP tool at tool boundaries. | `load-lock dashboard` (alias `top`) |
 | **Copilot CLI, Cursor, Cline, Roo Code, Goose** | None in-app. MCP `status` tool where the MCP server is configured. | `load-lock dashboard` (alias `top`) |
+| **omac** | None added by the omac installer — it only edits the sandbox profile; the inner harness keeps whatever surface its own adapter provides. | `load-lock dashboard` (alias `top`) |
 | **Aider** | None (no MCP either). | `load-lock dashboard` (alias `top`) |
 
 All dashboard surfaces are **read-only viewers that never acquire a
@@ -272,6 +308,7 @@ reconnect, view-model shaping, frame rendering) is covered by
 | Claude Code | hooks get `session_id`; MCP tools take explicit `agent_id` | policy instructs agents to pass it |
 | Codex | hooks get `session_id`; MCP tools take explicit `agent_id` | same |
 | Cursor | hooks get `conversation_id` (no `cwd` — `workspace_roots[0]` identifies the request); MCP tools take explicit `agent_id` | same |
+| omac (sandbox) | inner harness identity + `LOAD_LOCK_LABEL_PREFIX=omac` | dashboard shows holders as `omac:<label>` |
 | Tier 3 | explicit `agent_id` argument | falls back to per-server-process id |
 
 ## Platform matrix
@@ -289,19 +326,25 @@ reconnect, view-model shaping, frame rendering) is covered by
   asyncRewake wakeup paths, subagents, background-job cleanup); Codex CLI
   (Docker, interactive TUI: policy injection, MCP round-trip, FIFO queueing
   behind a CLI holder, Stop-hook decision-block wakeup; exec-mode MCP
-  injection blocked upstream — see Tier 2 notes).
+  injection blocked upstream — see Tier 2 notes); omac 0.11.0 (sandbox
+  grants installer: profile accepted by omac's strict parser, sandboxed
+  client → host daemon round-trip, `omac:`-prefixed labels,
+  `LOAD_LOCK_NO_SPAWN=1` error contract, global-install read grant proven
+  necessary and sufficient — see the omac section above and OPERATIONS.md).
 - Contract-tested: Cursor (hooks-v1 stop-hook adapter + installer, tested
   against the officially documented hooks JSON contract; no Cursor install
   on the verification machine — see the Cursor section under Tier 2).
 - Config-tested: Gemini CLI, Copilot CLI, Cline, Roo Code, Goose (installer
   round-trips, temp HOME; real harnesses not installed on the verification
   machine).
-- Core daemon/protocol/CLI: 68 automated tests + scripted 3-worktree demo
+- Core daemon/protocol/CLI + adapters: 125 automated tests + scripted 3-worktree demo
   (three independent agent processes, real git worktrees, one pool), including
   9 dashboard tests (view-model shaping, event-cursor resume across a daemon
-  restart, reconnect, and a `load-lock dashboard --once` render smoke test) and
+  restart, reconnect, and a `load-lock dashboard --once` render smoke test),
   9 bounded-wait tests (multi-process `wait_for_turn`: FIFO wake with
   auto-claim, timeout/pause/cancel/restart/abort paths, `maxTurnWaitMs` cap,
-  MCP snake_case round trip).
+  MCP snake_case round trip) and 5 omac installer contract tests
+  (populated-profile preservation, idempotent re-install, missing-profile
+  creation, global-install read grant, broken-profile refusal).
 - Proposed (researched capabilities, generic adapter only):
   Aider.
