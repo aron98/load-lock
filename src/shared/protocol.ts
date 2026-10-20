@@ -160,6 +160,8 @@ export interface EntrySnapshot {
   leaseDeadline?: number;
   lastSeen?: number;
   heldFor?: number;
+  /** When execution started (start_job / mark_started), epoch ms. Absent before that. */
+  startedAt?: number;
 }
 
 /** Owner-scoped snapshot: includes tokens. Never returned to non-owners. */
@@ -477,6 +479,63 @@ export interface WaitForTurnResult {
   queueLength?: number;
   /** Who holds the pool's capacity (still_queued) — the agents ahead of you. */
   holders?: EntrySnapshot[];
+  nextAction: string;
+  detail?: string;
+}
+
+// ---------------------------------------------------------------------------
+// wait_for_completion (issue #36): bounded "sleep until the job finishes"
+// for the EXECUTION phase — the counterpart of wait_for_turn for work that
+// is already running under a permit. Two mechanisms share these semantics:
+//
+//  - adapter-parented jobs (run_with_permit children of the MCP server /
+//    OpenCode plugin): the adapter awaits the child's exit event directly
+//    (no polling, exact exit code + output tail).
+//  - daemon-tracked jobs (tracked by pid, daemon not the parent): the
+//    daemon holds the request server-side (mirroring wait_for_turn's
+//    bounded-sleep shape) and wakes it when the liveness sweep observes
+//    the pid gone — always AFTER the permit has been released.
+//
+// One shared client-side implementation (src/shared/wait-completion.ts)
+// serves the CLI `wait --job` command, the MCP `wait_for_completion` tool
+// and the OpenCode plugin tool. The wait holds no extra capacity, never
+// blocks unbounded (bounded timeout + checkpoint returns), and every
+// resolution path returns a structured result, not an error.
+
+export type WaitForCompletionState =
+  | "finished" // job done; permit released; exit_code/output_tail when adapter-parented
+  | "still_running" // timed out but job alive — a checkpoint; call again to keep sleeping
+  | "timeout" // caller aborted (AbortSignal) — job untouched; call again when ready
+  | "job_unknown" // no observable job (never started, untracked, reclaimed, pruned, daemon restart lost it)
+  | "stopped_by_request"; // permit was force-released by an admin while you were waiting
+
+export interface WaitForCompletionParams {
+  /** Request id whose tracked job to wait for. */
+  requestId: string;
+  /** Bounded wait budget for this call, ms. 0 = check-only (immediate return). */
+  timeoutMs?: number;
+}
+
+export interface WaitForCompletionResult {
+  state: WaitForCompletionState;
+  /** The job id (adapter-parented run_with_permit job). */
+  jobId?: string;
+  /** The request/permit id whose job was waited on. */
+  requestId?: string;
+  /** Adapter-parented jobs only: the child's exit code. */
+  exitCode?: number | null;
+  /** Adapter-parented jobs only: last lines of combined output. */
+  outputTail?: string;
+  /** Wall time from execution start to job end (ms). */
+  durationMs?: number;
+  /** True when the daemon confirms the permit is no longer held. */
+  permitReleased?: boolean;
+  /** How long the wait actually ran before resolving (ms). */
+  waitedMs: number;
+  /** The clamped budget actually applied, when it differed from the requested one. */
+  effectiveWaitMs?: number;
+  /** When execution started, when known (epoch ms). */
+  startedAt?: number;
   nextAction: string;
   detail?: string;
 }

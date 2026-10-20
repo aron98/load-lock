@@ -150,6 +150,19 @@ export class Machine {
     return this.nextEventId - 1;
   }
 
+  /**
+   * Newest event with id > `since` whose entry is the given request, or null.
+   * Scans backwards, so the first match is the most recent one.
+   */
+  lastEventForRequest(requestId: string, since: number): MachineEvent | null {
+    for (let i = this.events.length - 1; i >= 0; i--) {
+      const ev = this.events[i];
+      if (ev.id <= since) break;
+      if (ev.entry?.requestId === requestId) return ev;
+    }
+    return null;
+  }
+
   private emit(type: EventType, entry: Entry | null, extra?: Partial<MachineEvent>): void {
     const targetAgent = entry ? entry.agentId : "*";
     const ev: Omit<MachineEvent, "id" | "ts"> = {
@@ -190,6 +203,7 @@ export class Machine {
     if (e.startDeadline) s.startDeadline = e.startDeadline;
     if (e.leaseDeadline) s.leaseDeadline = e.leaseDeadline;
     if (e.lastSeen) s.lastSeen = e.lastSeen;
+    if (e.startedAt !== undefined) s.startedAt = e.startedAt;
     return s;
   }
 
