@@ -62,8 +62,8 @@ Global plugin (`load-lock install --harness opencode`) registers:
   `load-lock.dashboard` session panel in-window (issue #24: side panel,
   not full-screen) with pools, holder cards, offer countdowns, queue,
   paused, event feed, `inspect_machine`; a clickable sidebar widget
-  (`load-lock 0/3`, health-colored; `gl` as the mouse-free fallback) and
-  a home-footer `lock 1/1·Q2` indicator; and an `x` force-release flow
+  (`load-lock 0/3`, health-colored; `/load-lock` as the mouse-free
+  fallback) and a home-footer `lock 1/1·Q2` indicator; and an `x` force-release flow
   gated behind an explicit select + confirm (the panel itself is read-only
   and never acquires a permit).
 
@@ -251,7 +251,7 @@ UI** — where no UI surface exists, we say so rather than claim parity.
 
 | Harness | In-harness dashboard | Also available |
 | --- | --- | --- |
-| **OpenCode** | Native TUI panel: `/load-lock` opens `load-lock.dashboard` **in-window** as a side panel (also opened by the `gl` binding or a click on the sidebar widget) with pools, holder cards, offer claim-window countdowns, queue, paused, event feed, `inspect_machine`; home-footer `lock 1/1` indicator on the home screen plus a clickable, health-colored `load-lock 0/3` widget in the session sidebar; `x` force-release behind select + confirm. Implemented as the package's `./tui` companion plugin (main plugin unchanged). Live-verified: opencode 2.0.29 (panel render, palette/slash command, confirm-gated force-release) and opencode 2.0.32 in a real pty (sidebar widget render, click-to-open, `gl`, in-window presentation). | `load-lock dashboard` (alias `top`) |
+| **OpenCode** | Native TUI panel: `/load-lock` opens `load-lock.dashboard` **in-window** as a side panel (also opened by clicking the sidebar widget; deliberately **not** bound to any key — issue #28: the old `gl` sequence swallowed plain `g` typing, and the candidate `ctrl+g` is the host's `session.first` default) with pools, holder cards, offer claim-window countdowns, queue, paused, event feed, `inspect_machine`; home-footer `lock 1/1` indicator on the home screen plus a clickable, health-colored `load-lock 0/3` widget in the session sidebar; `x` force-release behind select + confirm. Implemented as the package's `./tui` companion plugin (main plugin unchanged). Live-verified: opencode 2.0.29 (panel render, palette/slash command, confirm-gated force-release) and opencode 2.0.32 in a real pty (sidebar widget render, click-to-open, in-window presentation, plain `g` reaches the composer, `ctrl+g` not intercepted by load-lock). | `load-lock dashboard` (alias `top`) |
 | **Claude Code** | None in-app — Claude Code has no plugin UI surface. The model can report status via the `load_lock_status` MCP tool at tool boundaries, and each `SessionStart` hook injects a one-line machine summary. | `load-lock dashboard` (any terminal) |
 | **Codex CLI** | None in-app — same reason. `load_lock_status` MCP tool; `SessionStart`/`SubagentStart` machine summary. | `load-lock dashboard` (alias `top`) |
 | **Gemini CLI** | None in-app (no hooks, no UI plugin surface). `load_lock_status` MCP tool at tool boundaries. | `load-lock dashboard` (alias `top`) |
