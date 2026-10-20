@@ -20,12 +20,23 @@ import { createServer, Server, Socket } from "node:net";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 
 import { Machine } from "./state.js";
 import { loadState, saveState, loadJournal, saveJournal, socketPath as defaultSocket, stateDir as defaultStateDir } from "./persist.js";
 import { inspectMachine } from "./sysinfo.js";
 import { AcquireParams, MachineEvent, OwnerEntrySnapshot, ProtocolError } from "../shared/protocol.js";
 import { isWindows, probeTransport } from "../shared/transport.js";
+import { packageVersion, compareVersions } from "../shared/version.js";
+
+/** Package version of the copy of load-lock this daemon process runs from. */
+const DAEMON_VERSION = packageVersion();
+/**
+ * Env marker set on the respawned daemon: the version this process already
+ * restarted for. Prevents restart loops when a newer client pings twice —
+ * only one respawn per version bump.
+ */
+const RESTARTED_FOR_ENV = "LOAD_LOCK_RESTARTED_FOR";
 
 interface Watcher {
   socket: Socket;
@@ -52,6 +63,7 @@ export class Daemon {
   private socketPath: string;
   private sweepTimer: NodeJS.Timeout | null = null;
   private expiryTimer: NodeJS.Timeout | null = null;
+  private restartTimer: NodeJS.Timeout | null = null;
   private stopped = false;
 
   constructor(opts: { stateDir?: string; socket?: string; machine?: Machine; recover?: boolean } = {}) {
@@ -124,6 +136,7 @@ export class Daemon {
     this.stopped = true;
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
+    if (this.restartTimer) clearTimeout(this.restartTimer);
     for (const w of this.watchers) w.socket.destroy();
     this.watchers.clear();
     // Cut every client loose too: a graceful stop must not leave a zombie
@@ -174,13 +187,15 @@ export class Daemon {
   }
 
   private async handleLine(sock: Socket, lineText: string): Promise<void> {
-    let msg: { id: number; method: string; params?: Record<string, unknown> };
+    let msg: { id: number; method: string; params?: Record<string, unknown>; clientVersion?: unknown };
     try {
       msg = JSON.parse(lineText);
     } catch {
       this.send(sock, { id: null, ok: false, error: { code: "invalid", message: "malformed JSON line" } });
       return;
     }
+    // Version handshake: remember the client's version for skew detection.
+    const clientVersion = typeof msg.clientVersion === "string" ? msg.clientVersion : undefined;
     let result: unknown;
     let agentId: string | undefined;
     try {
@@ -195,6 +210,9 @@ export class Daemon {
       } else {
         this.send(sock, { id: msg.id, ok: false, error: { code: "internal", message: String((err as Error)?.message ?? err) } });
       }
+      // Respond first, then consider a self-restart — even on errors, a
+      // newer client means this daemon is running stale on-disk code.
+      this.maybeScheduleSelfRestart(clientVersion);
       return;
     }
     // Tool-boundary delivery: surface this agent's outstanding offers/queue
@@ -203,6 +221,60 @@ export class Daemon {
       (result as Record<string, unknown>).pending = this.machine.pending(agentId);
     }
     this.send(sock, { id: msg.id, ok: true, result });
+    this.maybeScheduleSelfRestart(clientVersion);
+  }
+
+  // -------------------------------------------------------- version handshake
+
+  /**
+   * Self-restart handshake (issue #34): if a client identifies a NEWER
+   * package version than this daemon runs, schedule a respawn so the daemon
+   * picks up the updated on-disk code (e.g. after `npm i -g
+   * @aron98/load-lock` while the daemon kept running). Skew detection is
+   * entirely daemon-side and best-effort: pre-handshake clients that send
+   * no version never trigger a restart.
+   */
+  private maybeScheduleSelfRestart(clientVersion: string | undefined): void {
+    if (this.stopped || this.restartTimer || !clientVersion) return;
+    if (compareVersions(clientVersion, DAEMON_VERSION) <= 0) return;
+    const restartedFor = process.env[RESTARTED_FOR_ENV];
+    if (restartedFor && compareVersions(clientVersion, restartedFor) <= 0) return; // already tried
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      this.selfRestart(clientVersion);
+    }, 250);
+    this.restartTimer.unref?.();
+  }
+
+  /**
+   * Drain + respawn onto the updated on-disk code. Persists state and the
+   * journal FIRST, then stops (destroying all client connections — they
+   * reconnect to the fresh daemon), then spawns the replacement with the
+   * exact same argv so a daemon started via the old copy runs the new copy's
+   * code, and exits.
+   */
+  private selfRestart(clientVersion: string): void {
+    if (this.stopped) return;
+    // Best-effort persistence; a failed save must not block the restart.
+    try {
+      saveState(this.stateDirPath, this.machine.config, this.machine.history);
+      saveJournal(this.stateDirPath, this.machine.journalEntries());
+    } catch {
+      /* journal is best-effort */
+    }
+    this.stop();
+    try {
+      const child = spawn(process.execPath, process.argv.slice(1), {
+        detached: true,
+        stdio: "ignore",
+        cwd: process.cwd(),
+        env: { ...process.env, [RESTARTED_FOR_ENV]: clientVersion },
+      });
+      child.unref();
+    } catch {
+      /* if the respawn fails the next client contact re-triggers it */
+    }
+    process.exit(0);
   }
 
   // --------------------------------------------------------------- dispatch
@@ -216,7 +288,10 @@ export class Daemon {
     const m = this.machine;
     switch (method) {
       case "hello":
-        return [{ protocolVersion: 1, pid: process.pid, startedAt: m.startedAt, configVersion: m.config.version }, undefined];
+        return [
+          { protocolVersion: 1, pid: process.pid, startedAt: m.startedAt, configVersion: m.config.version, daemonVersion: DAEMON_VERSION },
+          undefined,
+        ];
 
       case "acquire": {
         const params = p as unknown as AcquireParams;
@@ -289,8 +364,11 @@ export class Daemon {
         return [res, String(p.agentId)];
       }
 
-      case "status":
-        return [m.status(p.pool ? String(p.pool) : undefined), undefined];
+      case "status": {
+        const res = m.status(p.pool ? String(p.pool) : undefined);
+        res.daemon.daemonVersion = DAEMON_VERSION;
+        return [res, undefined];
+      }
 
       case "get_config":
         return [m.get_config(), undefined];

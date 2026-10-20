@@ -95,14 +95,61 @@ uninstall — see issue #19); not live-verified inside the real CLIs.
   [Sandboxes](#sandboxes)).
 - Also honored by the shared client: `LOAD_LOCK_LABEL_PREFIX` (prefix for
   holder labels; see Sandboxes).
-- Files: `config.json` (settings + history), `journal.json` (held permits),
-  `daemon.json` (pid), `spawn.lock` (bootstrap race guard).
+- Files: `config.json` (settings + history), `journal.json` (held permits +
+  queued requests), `daemon.json` (pid), `spawn.lock` (bootstrap race guard).
 
 ```sh
-load-lock service status   # hello + pid
-load-lock service start    # ensure running (idempotent)
-load-lock service stop     # SIGTERM; next tool call respawns
+load-lock service status   # hello + pid + daemon version
+load-lock service start    # ensure running (idempotent); refusals name the conflicting pid
+load-lock service stop     # SIGTERM → bounded wait → SIGKILL; verifies the socket is free
 ```
+
+`service stop` is honest, not fire-and-forget: it signals the daemon
+(`--timeout <ms>` bounds the wait, default 5s), escalates to SIGKILL if the
+socket still answers, and only reports success once the endpoint is
+verifiably free (stale `daemon.json`/socket files are cleaned up either way).
+`service start` refuses loudly when something else owns the endpoint —
+naming the conflicting pid — instead of a bare "did not come up within 10s".
+
+## Update lifecycle
+
+The daemon is long-lived, so an update (`npm i -g @aron98/load-lock@latest`,
+or opencode refreshing its plugin copy) leaves the running daemon on stale
+code. The **version handshake** closes that gap (v1.3.0+):
+
+- Every client envelope carries `clientVersion`; `hello`/`status` replies
+  carry `daemonVersion` (the package version of the code the daemon runs).
+- When a **newer** client contacts an older daemon, the daemon finishes
+  answering, then **self-restarts**: it persists state + journal, drains all
+  connections, respawns itself with the same argv (`process.execPath` +
+  original arguments, so it runs whatever is now on disk at the same path),
+  and exits. The respawn inherits a `LOAD_LOCK_RESTARTED_FOR` marker so
+  repeated contact with the same version cannot cause a restart loop — one
+  respawn attempt per version.
+- Clients that were connected see a disconnect and simply reconnect to the
+  fresh daemon.
+- **What survives a restart:** held permits are journaled and reconciled
+  conservatively (tracked jobs re-checked for liveness, same permit tokens
+  valid; dead jobs released); queued *and offered* requests are journaled and
+  re-queued FIFO with the same request ids (idempotent re-acquire keeps
+  working). Offered entries restart as queued and are re-offered with fresh
+  tokens — pre-restart offer tokens are invalid, exactly as for any restart.
+- Skew is visible before it heals: `load-lock status`, `service status`,
+  `doctor`, and the dashboards show "daemon vX, installed vY" and note the
+  pending self-restart; `doctor` actively waits a few seconds to confirm the
+  daemon came back on the new version.
+
+Limits, stated honestly: the respawn re-runs the **same argv** — it picks up
+an updated copy only if the daemon's launching copy was updated *in place*
+(the normal `npm i -g` case). A daemon spawned from a different copy (e.g.
+opencode's private cache copy) keeps running that copy's code after a
+restart; see the multi-copy notes in
+[COMPATIBILITY.md](COMPATIBILITY.md#multiple-copies-of-load-lock-opencode).
+Pre-1.3.0 daemons do not answer the handshake and never self-restart —
+`service stop` followed by any load-lock command moves them onto current
+code. The restart behavior itself is live-verified on Linux by the test
+suite (`src/test/update.test.ts`); the in-place-update path beyond
+same-argv respawn is inspected, not live-tested.
 
 ## Configuration
 

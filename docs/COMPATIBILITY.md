@@ -73,6 +73,38 @@ tool round-trip (acquire → queued → wakeup → claim → release), execution
 boundary delivery without interrupting a running `sleep`, skill visible,
 and graceful handling of a deliberately missed offer (paused → cancel).
 
+#### Multiple copies of load-lock (opencode)
+
+`install --harness opencode` registers the **bare package name** in
+`~/.config/opencode/opencode.json`, so opencode maintains its own private
+copy of load-lock under
+`~/.cache/opencode/npm/@aron98/load-lock@latest/<timestamp>/node_modules/@aron98/load-lock/`,
+refreshed on opencode's schedule. That copy is *separate* from a globally
+installed CLI on PATH, and the two can drift (this was observed on a real
+machine with cache copies at 0.1.2, 1.0.0, 1.1.0 and 1.2.1 — issue #34).
+
+Which copy is authoritative for what:
+
+- **opencode plugin behavior** — the cache copy. Updated by opencode itself
+  (it refreshes the cache entry); you cannot reliably update it by hand.
+- **CLI commands** (`load-lock status`, `service`, `doctor`, …) — the copy on
+  PATH (typically a global install via npm/bun). Update it with your usual
+  global install command.
+- **The daemon's code** — whichever copy spawned it (usually the CLI copy,
+  since auto-spawn and `service start` run from the CLI client code). The
+  version handshake makes a daemon self-restart onto updated code when a
+  newer client contacts it — but the respawn reuses the daemon's original
+  argv, so it only picks up an update when its spawning copy was updated
+  *in place* (the normal global-upgrade case). A daemon spawned from a
+  different copy than the one you updated keeps running the old code until
+  `load-lock service stop` + any command re-spawns it from the new one.
+
+`load-lock doctor` lists every copy it can find (PATH-resolved CLI, this
+running copy, opencode cache copies) with versions and warns when they
+drift. Detection is best-effort (never crashes on missing paths) and was
+contract-tested with planted copies; the drift scenario itself was
+observed live on this machine before the feature existed.
+
 ### Tier 2 — Claude Code / Codex CLI (hooks + MCP, live-verified)
 
 `load-lock install --harness claude-code|codex` configures the MCP server

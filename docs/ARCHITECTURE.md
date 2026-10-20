@@ -112,11 +112,15 @@ permits are journaled: on daemon restart, tracked permits are reconciled
 against real process liveness (dead ⇒ released, alive ⇒ kept, same tokens
 still valid), claimed permits keep their original start deadline, untracked
 permits get a fresh lease window, and a release arriving late for an entry
-that was reconciled is idempotent. Queues and offers are *not* journaled:
-they are ephemeral by design — queued agents are still running, notice the
-missed offer via their next tool call, and re-acquire; the daemon
-auto-spawns on the next client connection, so an agent never needs to know
-the daemon restarted. This is documented, deliberate behavior, not a bug.
+that was reconciled is idempotent. Queued *and offered* requests are journaled
+too (issue #34): they are re-queued FIFO by original enqueue time with the
+same request ids (idempotent re-acquire keeps working), entries offered at
+crash time restart as queued and are re-offered with fresh tokens — so a
+restart no longer silently drops a queue position. The daemon auto-spawns on
+the next client connection, and a *self-ordered* restart (version handshake:
+a newer client than the daemon) respawns with the same argv after persisting
+state — see the update lifecycle in
+[OPERATIONS.md](OPERATIONS.md#update-lifecycle).
 
 ## Notification honesty
 
@@ -191,7 +195,7 @@ prompts.
 | Agent disconnects mid-heavy-work | Permit retained; tracked job keeps capacity until the real process finishes; untracked job's lease survives until heartbeats stop |
 | Agent process crashes | Tracked permit auto-releases on confirmed process death; untracked reclaims after lease expiry |
 | Background job outlives the tool call | pgid tracking retains the permit until the whole group exits |
-| Daemon crash/restart | Auto-respawn on next connect; journal reconciliation of held permits (conservative: dead ⇒ released, alive ⇒ kept); queues/offers ephemeral by design |
+| Daemon crash/restart | Auto-respawn on next connect; journal reconciliation of held permits (conservative: dead ⇒ released, alive ⇒ kept); queued/offered requests re-queued FIFO with same ids, offered entries re-offered with fresh tokens |
 | Stale/forged token | Opaque tokens; wrong-owner claim/release rejected; expired offers rejected with a precise error |
 | Forgotten release | start deadline (claimed), process death (tracked), lease expiry (untracked), plus human `recover force-release` |
 | PID reuse | `/proc` start-time comparison |

@@ -3,9 +3,11 @@
  * State dir: $XDG_STATE_HOME/load-lock (default ~/.local/state/load-lock;
  * Windows: %LOCALAPPDATA%\load-lock — see shared/transport.ts).
  *
- * Only *configuration* persists across daemon restarts. Permits and queue
- * are ephemeral by design (see docs/ARCHITECTURE.md — restart behavior):
- * tokens are daemon-instance-scoped, and agents re-acquire after a restart.
+ * Configuration persists across daemon restarts, plus the journal
+ * (journal.json): held permits AND queued/offered requests. Held permits
+ * are restored conservatively (tracked jobs re-checked for liveness, same
+ * permit tokens so late releases stay idempotent); queued requests are
+ * re-queued FIFO with the same requestIds (see docs/ARCHITECTURE.md).
  */
 import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";

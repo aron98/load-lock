@@ -6,6 +6,11 @@
  * receive unsolicited event lines.
  *
  * Request:  {"id": <number>, "method": "<name>", "params": {...}}
+ *           Newer clients also stamp the envelope with their package
+ *           version: {..., "clientVersion": "1.2.1"}. Old daemons ignore
+ *           the extra field (forward-compatible); newer daemons use it
+ *           for the update handshake: a client strictly newer than the
+ *           running daemon triggers a daemon self-restart (issue #34).
  * Response: {"id": <number>, "ok": true, "result": {...}}
  *           {"id": <number>, "ok": false, "error": {"code": "...", "message": "..."}}
  * Watch push: {"event": true, ...event fields...}
@@ -175,14 +180,44 @@ export interface JournalEntry {
   opKey: string;
   reason: string;
   weight: number;
-  permitToken: string;
-  phase: PermitPhase;
+  /** Held permits only; queued entries carry no token. */
+  permitToken?: string;
+  /** Held permits only. */
+  phase?: PermitPhase;
   pid?: number;
   pgid?: number;
   pidStartTime?: string;
+  /** When the permit was claimed (held) / the request was journaled. */
   claimedAt: number;
   startedAt?: number;
   leaseDeadline?: number;
+  /**
+   * Journaled lifecycle state (issue #34): "held" (permit — liveness is
+   * reconciled on restore) or "queued" (FIFO position preserved across
+   * restarts/self-restarts; offered entries are journaled as queued and
+   * re-offered with a fresh token after the restart). Absent in journals
+   * written before the update story => "held" (the original format).
+   */
+  state?: "held" | "queued";
+  /** Queue insertion time (queued only) — restores FIFO order. */
+  enqueuedAt?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Version handshake (issue #34)
+
+/**
+ * Result of `hello`. `daemonVersion` is the running daemon's package
+ * version. OPTIONAL in responses from daemons older than the handshake —
+ * clients must treat a missing value as "unknown (old daemon)" and warn
+ * instead of failing.
+ */
+export interface HelloResult {
+  protocolVersion: number;
+  pid: number;
+  startedAt: number;
+  configVersion: number;
+  daemonVersion?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +234,18 @@ export interface PoolStatus {
 }
 
 export interface StatusResult {
-  daemon: { pid: number; startedAt: number; protocolVersion: number };
+  daemon: {
+    pid: number;
+    startedAt: number;
+    protocolVersion: number;
+    /**
+     * Running daemon's package version (update handshake, issue #34).
+     * Optional because daemons older than the handshake never send it —
+     * clients must treat a missing value as "unknown, old daemon" and
+     * warn rather than fail.
+     */
+    daemonVersion?: string;
+  };
   config: {
     version: number;
     pools: Record<string, PoolConfig>;

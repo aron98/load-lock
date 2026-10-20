@@ -887,7 +887,7 @@ export class Machine {
 
   // ----------------------------------------------------------------- journal
 
-  /** Held permits to persist for conservative restart reconciliation. */
+  /** Held permits (first) and queued/offered requests to persist across restarts. */
   journalEntries(): JournalEntry[] {
     const out: JournalEntry[] = [];
     for (const e of this.entries.values()) {
@@ -901,7 +901,8 @@ export class Machine {
         opKey: e.opKey,
         reason: e.reason,
         weight: e.weight,
-        permitToken: e.permitToken!,
+        state: "held",
+        permitToken: e.permitToken,
         phase: e.phase ?? "claimed",
         pid: e.pid,
         pgid: e.pgid,
@@ -911,25 +912,49 @@ export class Machine {
         leaseDeadline: e.leaseDeadline,
       });
     }
+    for (const e of this.entries.values()) {
+      if (e.state !== "queued" && e.state !== "offered") continue;
+      out.push({
+        requestId: e.id,
+        pool: e.pool,
+        agentId: e.agentId,
+        agentLabel: e.agentLabel,
+        cwd: e.cwd,
+        opKey: e.opKey,
+        reason: e.reason,
+        weight: e.weight,
+        state: "queued",
+        enqueuedAt: e.enqueuedAt ?? e.since,
+        claimedAt: e.since,
+      });
+    }
     return out;
   }
 
   /**
-   * Restore held permits after a daemon restart (conservative reconciliation):
+   * Restore state after a daemon restart (conservative reconciliation):
+   *  - queued (incl. previously offered): re-queued FIFO by original enqueue
+   *    time, same requestIds so idempotent re-acquire still works; pools no
+   *    longer in the config are dropped. Offered entries restart as queued
+   *    and get a fresh offer (old offer tokens are invalid after restart).
    *  - tracked: re-check liveness via the supplied probe; dead => release,
    *    alive => keep (same token, so a late explicit release still works).
    *  - claimed: keep the start deadline (reclaimed by tick if already past).
    *  - untracked: keep, with a FRESH lease window from restore time.
-   * Queued/offered requests are deliberately NOT restored — queued agents
-   * re-acquire (documented restart behavior).
    */
   restore(journal: JournalEntry[], liveness: (e: { pid?: number; pgid?: number; pidStartTime?: string }) => boolean | null): {
     kept: number;
     releasedDead: number;
+    queued: number;
   } {
     let kept = 0;
     let releasedDead = 0;
+    const queuedEntries: Array<{ j: JournalEntry; at: number }> = [];
     for (const j of journal) {
+      if (j.state === "queued") {
+        queuedEntries.push({ j, at: j.enqueuedAt ?? j.claimedAt });
+        continue;
+      }
       const e: Entry = {
         id: j.requestId,
         pool: j.pool,
@@ -942,18 +967,18 @@ export class Machine {
         state: "held",
         since: j.claimedAt,
         permitToken: j.permitToken,
-        phase: j.phase,
+        phase: j.phase ?? "claimed",
         pid: j.pid,
         pgid: j.pgid,
         pidStartTime: j.pidStartTime,
         startedAt: j.startedAt,
         lastSeen: this.now(),
       };
-      if (j.phase === "claimed") {
+      if (e.phase === "claimed") {
         e.startDeadline = j.claimedAt + this.config.startTimeoutMs;
-      } else if (j.phase === "running_untracked") {
+      } else if (e.phase === "running_untracked") {
         e.leaseDeadline = this.now() + this.config.untrackedLeaseMs; // fresh window
-      } else if (j.phase === "running_tracked") {
+      } else if (e.phase === "running_tracked") {
         const alive = liveness(e);
         if (alive === false) {
           // Confirmed dead while we were down: release, but keep a terminal
@@ -971,11 +996,37 @@ export class Machine {
       this.byKey.set(`${e.agentId}\u0000${e.opKey}`, e.id);
       kept++;
     }
+    // Re-queue queued requests, oldest first, preserving FIFO fairness.
+    queuedEntries.sort((a, b) => a.at - b.at);
+    let queued = 0;
+    for (const { j } of queuedEntries) {
+      if (!this.config.pools[j.pool]) continue; // pool removed while down
+      const e: Entry = {
+        id: j.requestId,
+        pool: j.pool,
+        agentId: j.agentId,
+        agentLabel: j.agentLabel,
+        cwd: j.cwd,
+        opKey: j.opKey,
+        reason: j.reason,
+        weight: j.weight,
+        state: "queued",
+        since: this.now(),
+        enqueuedAt: j.enqueuedAt ?? j.claimedAt,
+      };
+      this.entries.set(e.id, e);
+      this.byKey.set(`${e.agentId}\u0000${e.opKey}`, e.id);
+      if (!this.queues.has(e.pool)) this.queues.set(e.pool, []);
+      this.queues.get(e.pool)!.push(e.id);
+      queued++;
+    }
+    // Admit newly-eligible waiters (capacity freed while we were down).
+    for (const name of this.poolNames()) this.admit(name);
     this.pushEvent({
       type: "daemon_recovered",
       targetAgent: "*",
-      detail: `restored ${kept} held permit(s) from journal (${releasedDead} confirmed dead and released)`,
+      detail: `restored ${kept} held permit(s) from journal (${releasedDead} confirmed dead and released); re-queued ${queued} waiting request(s)`,
     });
-    return { kept, releasedDead };
+    return { kept, releasedDead, queued };
   }
 }
