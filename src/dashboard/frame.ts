@@ -77,6 +77,7 @@ export function renderFrame(view: DashboardView, width = 100, height = 40): stri
   }
   if (view.daemonRestartNote) push(`note: ${view.daemonRestartNote}`);
   if (view.versionSkewNote) push(`note: ${view.versionSkewNote}`);
+  if (view.installDriftNote) push(`note: ${view.installDriftNote}`);
 
   if (view.machine) {
     const m = view.machine;

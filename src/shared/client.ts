@@ -30,6 +30,7 @@ import { ProtocolError } from "./protocol.js";
 import { socketPath as defaultSocket, stateDir as defaultStateDir } from "../core/persist.js";
 import { probeTransport } from "./transport.js";
 import { packageVersion } from "./version.js";
+import { resolveDaemonEntry } from "./installs.js";
 
 export interface ClientOptions {
   socket?: string;
@@ -246,7 +247,12 @@ function noSpawnError(sockPath: string): string {
 function daemonMainPath(): string {
   if (process.env.LOAD_LOCK_DAEMON_BIN) return process.env.LOAD_LOCK_DAEMON_BIN;
   const here = dirname(fileURLToPath(import.meta.url)); // .../dist/shared
-  return join(here, "..", "core", "daemon-main.js");
+  const own = join(here, "..", "core", "daemon-main.js");
+  // Issue #39: a harness (e.g. opencode's timestamped plugin cache) may
+  // prune this copy's directory while a session still executes it from
+  // memory — resolve to the PATH-installed CLI's daemon entry instead of
+  // spawning an ENOENT forever.
+  return resolveDaemonEntry(own);
 }
 
 /** Idempotently ensure a daemon is running and listening on `sockPath`. */
@@ -286,6 +292,10 @@ export async function ensureDaemon(stateDir: string, sockPath: string): Promise<
           stdio: "ignore",
           env: { ...process.env, LOAD_LOCK_DAEMON_SPAWNED: "1" },
         });
+        // Issue #39: an unreadable/vanished entry must surface as the
+        // "did not come up" probe failure below, not crash the host process
+        // with an uncaught ENOENT 'error' event.
+        child.on("error", () => {});
         child.unref();
       }
     }

@@ -141,6 +141,7 @@ function dashboardLines(v: DashboardView, width: number, f: ThemeFg): StyledLine
   }
   if (v.daemonRestartNote) push(`note: ${v.daemonRestartNote}`, f.warn);
   if (v.versionSkewNote) push(`note: ${v.versionSkewNote}`, f.warn);
+  if (v.installDriftNote) push(`note: ${v.installDriftNote}`, f.warn);
 
   if (v.machine) {
     const m = v.machine;
@@ -285,11 +286,14 @@ export default Plugin.define({
   id: "load-lock.tui",
   setup(ctx: Context) {
     const [view, setView] = createSignal<DashboardView | null>(null);
-    const feed = new DashboardFeed(new LLClient());
+    // driftSurface "opencode": when this session's copy is older than the
+    // PATH CLI, the hint says to restart opencode (plugins never hot-reload).
+    const feed = new DashboardFeed(new LLClient(), { driftSurface: "opencode" });
     feed.onChange = () => setView(feed.view());
     feed.onState = () => setView(feed.view());
     void feed.start().catch(() => {
-      /* daemon down or spawning; the feed keeps retrying and will go live */
+      /* daemon down or spawning; the reconnect loop keeps retrying and
+         will go live — start() only reports the FIRST connect failure */
     });
 
     // Local countdown tick: produces a fresh snapshot once per second so

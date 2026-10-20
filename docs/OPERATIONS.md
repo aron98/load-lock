@@ -205,6 +205,51 @@ planted copy**; no test ever contacts the real npm registry or installs
 anything, so the genuine `npm i -g` round trip is contract-tested, not
 live-tested.
 
+### Plugin in-memory staleness (issue #39)
+
+The daemon heals itself via the handshake, but the **opencode plugin does
+not**: opencode loads plugin code **once per process at startup** and never
+hot-reloads it. After `npm i -g @aron98/load-lock@latest` (or opencode
+refreshing its plugin cache for *new* sessions), an already-running opencode
+session keeps executing the **old copy in memory** — even though the panel
+and dashboards reconnect to the daemon just fine. A stale in-memory plugin
+is not a reconnect failure; restarting opencode is the only way to pick up
+the new plugin code.
+
+To make that visible instead of mysterious (v1.4.1+):
+
+- The dashboards (TUI panel and `load-lock dashboard`) periodically compare
+  the running copy's version with the PATH-resolved `load-lock` install.
+  When the PATH CLI is newer, the panel shows
+  `note: plugin updated — restart opencode to pick up vX (this session
+  still runs vY; opencode does not hot-reload plugins)`; the CLI surface
+  says the running copy is stale instead.
+- When the daemon itself restarts onto a **different version** (update
+  self-restart, or a manual restart of a newer install), the reconnect note
+  names it: `daemon restarted onto v1.5.0 (was v1.4.0; pid N); event
+  history re-synced`.
+- If a harness pruned the running copy's plugin-cache directory mid-session
+  (making the on-disk daemon entry vanish), client auto-spawn falls back to
+  the PATH-installed CLI's daemon instead of failing with ENOENT forever.
+- Recovery story: the daemon side is automatic (handshake self-restart);
+  the plugin side needs exactly one action — **restart opencode**. Until
+  then everything keeps working; only the plugin's code (and its notes)
+  is one version behind.
+
+The reverse direction — a *newer* adapter copy with an *older* CLI on PATH —
+is #38's [adapter-init drift notice](#adapter-init-drift-notice), above.
+
+Verification split (honest): live-verified on Linux by
+`src/test/reconnect.test.ts` against real daemons — the daemon-kill
+auto-respawn reconnect (the H1 repro), the failed-initial-connect recovery,
+and the vanished daemon entry not crashing the host (real ENOENT spawn
+through the compiled client). Contract-tested — mock client / planted
+fixture PATH layouts, no version is ever really upgraded in a test — the
+"restarted onto vX (was vY)" note wording, install-drift detection and its
+per-surface hints, and the `resolveDaemonEntry` fallback table. The genuine
+`npm i -g` + opencode-cache-refresh round trip is inspected, not
+live-tested.
+
 ## Configuration
 
 All configuration is agent-editable through tools (no file editing for
@@ -293,6 +338,14 @@ companion to the main plugin, which is unchanged). Inside the opencode TUI:
   deliberately inactive while a dialog — force-release, the command
   palette — is open, so Esc keeps cancelling the dialog instead of
   closing the panel underneath it.
+
+The panel surfaces two kinds of operational notes inline (issue #39): a
+`daemon restarted (onto vX)` line after the daemon restarts underneath the
+session (event history is re-synced automatically), and — because opencode
+never hot-reloads plugins — a `plugin updated — restart opencode to pick
+up vX` hint whenever the PATH `load-lock` install is newer than the copy
+this session is running. See "Plugin in-memory staleness" under
+[Update lifecycle](#update-lifecycle).
 
 The open command deliberately ships with **no global key binding** (issue
 #28). Never bind unmodified single letters or letter sequences (the old
