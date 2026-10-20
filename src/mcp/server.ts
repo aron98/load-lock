@@ -62,6 +62,7 @@ export function buildServer(opts: McpServerOptions): McpServer {
         reason: z.string().describe("Why you need the machine (shown to other agents, e.g. 'cargo test --all in worktree feat-x')"),
         op_key: z.string().describe("Stable key for the pending operation (idempotency; e.g. 'wt-feat-x/cargo-test')"),
         agent_id: z.string().optional().describe("Override agent identity (rarely needed)"),
+        label_prefix: z.string().optional().describe("Prefix prepended to your holder label so sandboxed clients are identifiable, e.g. 'omac' -> 'omac:<label>' (or set env LOAD_LOCK_LABEL_PREFIX)"),
         wait_ms: z.number().int().optional().describe("Bounded blocking wait for capacity, clamped by config (default 0)"),
         subscribe_if_busy: z.boolean().optional().describe("false = fail fast instead of queueing (default true)"),
         pool: z.string().optional().describe("Resource pool (default 'heavy')"),
@@ -71,6 +72,7 @@ export function buildServer(opts: McpServerOptions): McpServer {
       const res = await client.request("acquire", {
         pool: input.pool,
         agentId: agentIdOf(input),
+        labelPrefix: input.label_prefix,
         cwd: process.cwd(),
         opKey: input.op_key,
         reason: input.reason,

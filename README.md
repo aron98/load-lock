@@ -81,6 +81,17 @@ opens it in-window, every session screen shows a clickable at-a-glance
 widget in the right sidebar, and the home screen has a footer indicator —
 same data, themed. See docs/OPERATIONS.md → "Dashboard".
 
+## Sandboxed agents
+
+Agents running inside a sandbox (bubblewrap/omac, Docker, macOS seatbelt,
+WSL2) share the host's budget instead of getting their own: bridge the
+daemon's Unix socket into the sandbox, set `LOAD_LOCK_NO_SPAWN=1` so the
+client never spawns a useless sandbox-local daemon, and optionally tag
+holds with `LOAD_LOCK_LABEL_PREFIX` (e.g. `bwrap:issue-42 build`).
+Ready-to-run per-sandbox recipes — live-verified for bubblewrap,
+contract-inspected for the rest, plus the cross-PID-namespace lease
+lifecycle — live in docs/OPERATIONS.md → "Sandboxes".
+
 ## Layout
 
 ```
@@ -103,7 +114,7 @@ skills/         packaged skill
 - [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — per-harness capability
   matrix with implemented / contract-tested / proposed labels.
 - [docs/OPERATIONS.md](docs/OPERATIONS.md) — install, config,
-  troubleshooting, recovery, daemon lifecycle.
+  troubleshooting, recovery, daemon lifecycle, sandbox bridging.
 - [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — the playbook for agents.
 - [docs/ADAPTERS.md](docs/ADAPTERS.md) — how to write an adapter for a new
   harness, using the published library surface.

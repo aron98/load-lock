@@ -108,7 +108,14 @@ test("top stays a working compat alias for dashboard", async () => {
   assert.equal(alias.code, 0);
   assert.equal(primary.code, 0);
   // "synced N ago" and daemon uptime tick between runs; normalize before comparing.
+  // The MACHINE block is live host telemetry — load averages, available memory
+  // and the used-percentage in the pressure note move (and round across
+  // boundaries) between the two back-to-back runs — so collapse it wholesale;
+  // the alias check is that everything *else* renders identically.
   const norm = (s: string) =>
-    s.replace(/synced \S+ ago/g, "synced N ago").replace(/uptime \S+/g, "uptime N");
+    s
+      .replace(/synced \S+ ago/g, "synced N ago")
+      .replace(/uptime \S+/g, "uptime N")
+      .replace(/^MACHINE.*\n\s*pressure:.*\n/m, "MACHINE <live telemetry>\n");
   assert.equal(norm(alias.stdout), norm(primary.stdout), "identical rendering");
 });

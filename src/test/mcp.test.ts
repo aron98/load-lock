@@ -36,10 +36,11 @@ test("mcp: tool listing + acquire/release/configure round trip", async () => {
       assert.ok(names.includes(expected), `tool ${expected} registered`);
     }
 
-    const acq = await callJson(c, "acquire", { reason: "build", op_key: "mcp-rt", agent_id: "mcpAgentA" });
+    const acq = await callJson(c, "acquire", { reason: "build", op_key: "mcp-rt", agent_id: "mcpAgentA", label_prefix: "omac" });
     assert.equal(acq.state, "granted");
     assert.ok(acq.permit_token, "acquire result carries permit_token");
     assert.ok(acq.next_action, "structured next_action present");
+    assert.equal(acq.entry.agentLabel, "omac:mcpAgentA", "label_prefix composes the holder label");
 
     // idempotent acquire with the same op_key
     const acq2 = await callJson(c, "acquire", { reason: "build", op_key: "mcp-rt", agent_id: "mcpAgentA" });

@@ -84,7 +84,7 @@ normally touches:
 
 | Method | Purpose |
 | --- | --- |
-| `acquire {pool?, agentId, agentLabel?, cwd?, opKey, reason, weight?, waitMs?, subscribeIfBusy?}` | grant / queue (idempotent per agent+opKey) |
+| `acquire {pool?, agentId, agentLabel?, labelPrefix?, cwd?, opKey, reason, weight?, waitMs?, subscribeIfBusy?}` | grant / queue (idempotent per agent+opKey); labelPrefix composes `prefix:label` holder labels for sandboxed clients (env `LOAD_LOCK_LABEL_PREFIX` is injected by the shared client) |
 | `claim {offerToken}` | offer → permit (before starting heavy work) |
 | `release {permitToken, outcome?}` | idempotent |
 | `cancel {requestId}` / `rejoin {requestId}` / `decline {offerToken}` | queue hygiene |

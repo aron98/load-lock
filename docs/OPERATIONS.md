@@ -89,7 +89,12 @@ uninstall — see issue #19); not live-verified inside the real CLIs.
   override `LOAD_LOCK_STATE_DIR`).
 - Socket: `<state dir>/daemon.sock` (Windows: named pipe `\\.\pipe\load-lock`;
   override `LOAD_LOCK_SOCKET`).
-- **Auto-spawns** on first client connection; no service unit needed.
+- **Auto-spawns** on first client connection; no service unit needed. Set
+  `LOAD_LOCK_NO_SPAWN` to any non-empty value except `0` to forbid
+  spawning (client-only mode for sandboxes — see
+  [Sandboxes](#sandboxes)).
+- Also honored by the shared client: `LOAD_LOCK_LABEL_PREFIX` (prefix for
+  holder labels; see Sandboxes).
 - Files: `config.json` (settings + history), `journal.json` (held permits),
   `daemon.json` (pid), `spawn.lock` (bootstrap race guard).
 
@@ -333,6 +338,10 @@ Limitations observed (all inherent to containers, not load-lock bugs):
   respawns with defaults (fine for ephemeral CI containers; volume-mount
   `~/.local/state/load-lock` if you want persistence).
 
+The setup above gives the container its *own* daemon. To make a container
+a thin client of the **host's** daemon instead (bridged socket +
+`LOAD_LOCK_NO_SPAWN`), see the [Sandboxes](#sandboxes) section below.
+
 Reproduce from a checkout (needs `dist/` built; tarball from `npm pack`):
 
 ```sh
@@ -396,6 +405,356 @@ Caveats to watch for (unverified expectations):
 - `/proc/loadavg` reflects the WSL VM, not Windows.
 - Keep the state dir on the Linux filesystem (`~/.local/state/load-lock`),
   not on `/mnt/c` (drvfs/9p is slow and lock semantics differ).
+
+## Sandboxes
+
+Sandboxed agents (bubblewrap/omac, Docker, macOS seatbelt, WSL2) face one
+core problem: the budget belongs on the *host*, but a sandbox that cannot
+see the host's daemon will happily auto-spawn its own useless local daemon
+and fragment the budget. The recipes below all use the same two mechanisms:
+
+1. **Bridge the host daemon's socket into the sandbox.** The daemon listens
+   on an AF_UNIX *path* socket. Path sockets are scoped by the **mount**
+   namespace, not the network namespace — so a bind mount of the state dir
+   survives `--unshare-net` (bubblewrap), and only needs the right
+   filesystem mapping/allow rules elsewhere. Point the sandboxed client at
+   the bridged path with `LOAD_LOCK_SOCKET`.
+2. **Run the client in client-only mode** so it can never auto-spawn a
+   daemon inside the sandbox (see below).
+
+A third mechanism matters once the client is inside a PID namespace:
+**lease-mode (untracked) permits**, because the host daemon cannot
+`kill(pid, 0)` a sandbox pid it cannot see (lifecycle below).
+
+### Client-only mode: `LOAD_LOCK_NO_SPAWN`
+
+Set `LOAD_LOCK_NO_SPAWN=1` (any non-empty value except `0`) and the shared
+client will never spawn a daemon, no matter which adapter asks:
+`ensureDaemon` refuses before creating anything, and `connect` fails loudly
+instead of falling back to a spawn. The error is actionable and points
+here:
+
+```
+load-lock: load-lock daemon is not reachable at /run/load-lock/daemon.sock
+and auto-spawn is disabled (LOAD_LOCK_NO_SPAWN is set): this client is
+client-only and started no daemon. Run the daemon on the host machine
+(e.g. load-lock service start) and bridge its socket into this sandbox,
+then point LOAD_LOCK_SOCKET at the bridged path — see the "Sandboxes"
+section of docs/OPERATIONS.md for per-sandbox recipes (bubblewrap/omac,
+Docker, seatbelt, WSL2). To allow spawning a daemon here instead, unset
+LOAD_LOCK_NO_SPAWN. (code: unavailable)
+```
+
+The CLI exits with code 70 for this failure (unavailable transport). Use
+this mode inside every sandbox: it turns "mysteriously isolated budget"
+into a loud, documented failure, and it is what the tests in
+`src/test/sandbox.test.ts` enforce (no state dir is ever created, and the
+error names the docs).
+
+### Label prefixes: identifying sandboxed holders
+
+Sandboxed clients can prefix their holder labels so the dashboard shows
+*where* a permit came from, e.g. `omac:issue-42 build`. Three equivalent
+entry points, all composing `prefix:label` (or `prefix:<agentId>` when no
+label was given) daemon-side:
+
+- `LOAD_LOCK_LABEL_PREFIX` env var — the shared client injects it into
+  every `acquire` request (including CLI, MCP, plugin and hook paths)
+  unless a request already carries an explicit prefix. This is the natural
+  place for a sandbox wrapper (omac profile, Docker `-e`, bwrap
+  `--setenv`) to tag everything an agent does inside it.
+- CLI: `--label-prefix` on `acquire` and `run`.
+- MCP: the `label_prefix` input on the `acquire` tool; the RPC field is
+  `labelPrefix` (see `docs/ADAPTERS.md`).
+
+A present-but-empty prefix is rejected (`labelPrefix must be a non-empty
+string`); prefixes are trimmed.
+
+### Cross-PID-namespace permits: the lease-mode lifecycle
+
+With `--unshare-pid` (bubblewrap) or default Docker containers, the host
+daemon cannot see the sandboxed client's pid — verified live below: inside
+the sandbox `kill -0 <host-daemon-pid>` fails with "No such process" while
+the daemon is plainly running. That makes **tracked** permits
+(`start_job` / `attach_pid`, liveness via `kill(pid, 0)` +
+`/proc/<pid>/stat`) meaningless across PID namespaces. Worse, calling
+`attach_pid` from *inside* the sandbox passes a pid that is invisible or
+reused on the host; the daemon's liveness check fails immediately and the
+permit is auto-released. Only use tracked mode when the host sees the same
+pid you do (host-run jobs, or containers started with `--pid=host`).
+
+**Lease mode** is the cross-namespace lifecycle:
+
+1. `acquire` → permit granted (holder label visible in the dashboard).
+2. `mark_started` → permit moves to `running_untracked` with a lease
+   deadline of `now + untrackedLeaseMs` (default 15 minutes,
+   configurable — see Configuration). No host-side pid is recorded.
+3. **Heartbeats renew the lease.** Heartbeat sources: an MCP server
+   process heartbeats every 30s for its own agent (`agent_id` /
+   `defaultAgentId`); the OpenCode plugin heartbeats every 30s per known
+   session. The CLI has **no** automatic heartbeat — for a CLI-held
+   untracked permit the lease is a hard ceiling, so finish within
+   `untrackedLeaseMs` or release promptly.
+4. `release` → capacity freed immediately, whatever remains on the lease.
+5. **Lease expiry:** if no heartbeat arrives before the deadline, the
+   daemon reclaims the permit and admits queued waiters, journaling
+   `untracked lease expired: no heartbeat from the owning agent`. After a
+   daemon restart, `restore` grants surviving untracked permits a *fresh*
+   lease window from restore time.
+
+The same trap catches `load-lock run` / `run_with_permit`: those helpers
+use *tracked* mode (`start_job` with the spawned job's pid). Run from
+inside a PID-namespace sandbox, the pid is invisible to the host daemon,
+whose liveness sweep then auto-releases the permit while the job is still
+running. Inside sandboxes the recipe is therefore always:
+`acquire` → `mark_started` (+ heartbeats where the harness provides them)
+→ explicit `release` — never `run`, `attach-pid`, or `start-job` from the
+sandboxed side. Save `run` for host-side invocations where the daemon sees
+the job's pid.
+
+Tradeoff (deliberate, and the `recover list` output says so): an untracked
+permit whose owner is alive but silent is reclaimed after the lease, so
+overlap with an unobserved survivor is possible — e.g. two builds may run
+concurrently for up to `untrackedLeaseMs` after a sandbox stopped
+heartbeating. That is the price of not being able to see pids across
+namespaces; keep heartbeating (or release promptly) and size
+`untrackedLeaseMs` accordingly.
+
+### bubblewrap — live-verified
+
+Verified 2026-10-20 with bubblewrap 0.6.1 on Linux 6.8.0-138-generic,
+Node v22.23.2, load-lock 1.1.0 working tree (issue-29 branch). The daemon
+ran on the *host* in an isolated state dir; every client call below ran
+inside `bwrap --unshare-net --unshare-pid` and reached the **host** daemon.
+
+1. Start the daemon on the host, in a state dir you will bind into the
+   sandbox (here a temp dir; for real use `~/.local/state/load-lock`):
+
+   ```sh
+   LOAD_LOCK_STATE_DIR=/tmp/ll-bwrap-29 node dist/cli/main.js service start
+   # load-lock: daemon running on pid 2259769 (default socket)
+   ```
+
+   The socket appears at `/tmp/ll-bwrap-29/daemon.sock` with mode
+   `srwxrwxr-x` (775): connecting needs *write* on the socket inode, so a
+   sandbox running as the same user (or group) can talk to it.
+
+2. Run the CLI inside the sandbox, binding the state dir and pointing
+   `LOAD_LOCK_SOCKET` at it. Bind the **state dir**, not the socket file —
+   the socket inode is replaced when the daemon restarts, so a file-only
+   bind goes stale, while the dir bind follows the new socket
+   automatically. Binding to an existing path keeps this simple (see
+   caveats):
+
+   ```sh
+   bwrap --dev-bind / / --unshare-net --unshare-pid --proc /proc \
+     --bind /tmp/ll-bwrap-29 /tmp/ll-bwrap-29 \
+     --setenv LOAD_LOCK_SOCKET /tmp/ll-bwrap-29/daemon.sock \
+     --setenv LOAD_LOCK_NO_SPAWN 1 \
+     --setenv LOAD_LOCK_LABEL_PREFIX bwrap \
+     node dist/cli/main.js status --json
+   ```
+
+   Observed: `status --json` answered by the *host* daemon — same pid as
+   the host's `service status` (`2259769`, protocol v1, heavy pool
+   capacity 1, `untrackedLeaseMs` 900000). `--unshare-net` does not
+   interfere: the path socket is reached through the mount namespace.
+
+3. PID-namespace proof: inside the same sandbox,
+   `kill -0 2259769` → `No such process` — the host daemon pid is
+   invisible to the sandbox, confirming the client crossed namespaces via
+   the filesystem, and that lease mode (not tracked mode) is required for
+   long holds (below).
+
+4. Full permit round trip from inside the sandbox:
+
+   ```sh
+   # acquire (env LOAD_LOCK_LABEL_PREFIX=bwrap was set by bwrap):
+   node dist/cli/main.js acquire --op-key bwrap-check \
+     --reason "issue-29 live verification build" --label "issue-29 build"
+   # → permit prm_… ; entry.agentLabel = "bwrap:issue-29 build"
+
+   node dist/cli/main.js mark-started --permit prm_…
+   # → running_untracked (lease 900s)
+
+   node dist/cli/main.js release --permit prm_…
+   # → host pool "heavy": 0/1
+   ```
+
+   Host-side `status` while the permit was held:
+
+   ```
+   pool "heavy": 1/1 in use
+   held: bwrap:issue-29 build — issue-29 live verification build (5s) [untracked, leased]
+   ```
+
+   and `recover list` reported `[running_untracked] bwrap:issue-29 build`
+   with `heartbeat lease 895s remaining — reclaimed when the owning agent
+   stops heartbeating (overlap with an unobserved survivor is possible;
+   see docs)`. Five durable events on the host journal: `daemon_started`,
+   `daemon_recovered`, `granted bwrap:issue-29 build`, `started`,
+   `released`.
+
+Caveats observed (verified):
+
+- `bwrap` creates missing bind destinations by mkdir-ing them, so
+  `--bind <state-dir> /run/load-lock` failed here with
+  `bwrap: Can't mkdir /run/load-lock: Permission denied` (`/run` is
+  root-owned). Either bind at an existing path (as above), pre-create the
+  destination, or pick a parent you can write to.
+- Client-only mode matters: with `LOAD_LOCK_NO_SPAWN=1` unset, a sandbox
+  whose bind/env was misconfigured would silently spawn its own daemon
+  inside the sandbox and split the budget. The tests in
+  `src/test/sandbox.test.ts` pin the loud failure instead.
+
+### omac — contract-inspected
+
+**omac is not installed on the verification machine**, so nothing in this
+subsection was executed here; it is assembled from omac's documented
+behavior (the facts below are from omac's docs, not invented) and the
+bubblewrap recipe above, which omac wraps on Linux. Treat it as a
+ready-to-run procedure with expected outcomes, and record what you find.
+
+omac sandboxes agents with bubblewrap on Linux (seatbelt on macOS, WSL2
+elsewhere) and **strips the harness environment** before starting the
+agent, allowing through only variables listed in the sandbox profile's
+`environment.allow_vars` — `~/.config/omac/sandbox-profiles/default.json`
+by default. That file is the whole recipe:
+
+1. Make sure the load-lock state dir is visible inside omac's bubblewrap
+   sandbox (the `LOAD_LOCK_SOCKET` path must resolve inside it). How
+   omac's sandbox mounts map to bwrap `--bind`s is an omac sandbox-config
+   question — omac's own facade socket under `~/.local/state/omac/run/`
+   is the project's precedent for a sandbox process connecting to a
+   host-owned socket through its profile.
+2. Add the load-lock variables to the profile's `environment.allow_vars`:
+
+   ```json
+   {
+     "environment": {
+       "allow_vars": [
+         "LOAD_LOCK_SOCKET",
+         "LOAD_LOCK_STATE_DIR",
+         "LOAD_LOCK_NO_SPAWN",
+         "LOAD_LOCK_LABEL_PREFIX"
+       ]
+     }
+   }
+   ```
+
+   Set the values themselves in your harness env (or the profile's env
+   mechanism): `LOAD_LOCK_SOCKET` to the host daemon socket as seen inside
+   the sandbox, `LOAD_LOCK_NO_SPAWN=1`, and — recommended —
+   `LOAD_LOCK_LABEL_PREFIX=omac` so the dashboard shows holders as
+   `omac:<label>`.
+3. Watch out: **omac never rewrites a profile it has created**, so if your
+   `default.json` already exists, edit it by hand (adding the entries
+   above); and **unknown profile fields are errors**, so don't invent
+   other keys — `allow_vars` entries are plain variable names.
+
+Expected outcome (unverified here): with those four variables allowed and
+the state dir mounted, an agent inside omac behaves exactly like the
+verified bubblewrap case above — host daemon answers, labels carry the
+`omac:` prefix, and long holds need `mark_started` + heartbeats (lease
+mode) because of the PID namespace.
+
+### Docker — contract-inspected
+
+Docker *was* verified for in-container daemons (see the verified Docker
+subsection above). What was **not** verified here is the thin-client shape
+below: the verification machine has a `docker` binary but the verifying
+user cannot reach `/var/run/docker.sock`, so this recipe is
+contract-inspected — ready to run, expected outcomes marked, not executed
+by us.
+
+1. Run the daemon on the host (normal install, default state dir).
+2. Run the container as a thin client of the *host* daemon:
+
+   ```sh
+   docker run --rm -it \
+     -v ~/.local/state/load-lock:/run/load-lock \
+     -e LOAD_LOCK_SOCKET=/run/load-lock/daemon.sock \
+     -e LOAD_LOCK_NO_SPAWN=1 \
+     -e LOAD_LOCK_LABEL_PREFIX=docker \
+     node:24 bash
+   # inside: npm install -g <load-lock tarball> && load-lock status
+   ```
+
+   Expected: `load-lock status` reports the *host* daemon's pid and pool
+   counts, and holders created inside the container appear on the host
+   dashboard as `docker:<label>`.
+
+Notes and caveats (unverified expectations):
+
+- Bind the **state dir**, not the socket file (the socket inode is
+  replaced on daemon restart; the dir bind follows it — same reasoning as
+  bubblewrap above).
+- Connecting to the socket needs *write* on the socket inode (mode `775`,
+  user/group). Container root gets this via `CAP_DAC_OVERRIDE` when no user
+  namespace remapping is in play; for non-root containers run with
+  `--user "$(id -u):$(id -g)"` and rely on the group permission, or relax
+  the socket mode/group to match your setup.
+- Container pids are not host pids, so — exactly as in the bubblewrap
+  case — use `mark_started` + heartbeat lease mode for long holds, never
+  `attach_pid`/`start_job` from inside, unless the container runs with
+  `--pid=host`.
+- The verified caveats from the Docker subsection above still apply from
+  the client's point of view (`/proc/loadavg` and `nproc` reflect the
+  host; the container's own cgroup quota is what `inspect` reports).
+
+### macOS seatbelt — contract-inspected
+
+**No macOS machine was available** for this verification, so this is
+contract-inspected against the `sandbox-exec(5)`/seatbelt documentation,
+not executed here.
+
+On macOS the daemon listens on a Unix domain socket at
+`~/.local/state/load-lock/daemon.sock`, and connecting to a UDS is
+mediated by seatbelt as a *file* operation, not a network one — so a
+profile needs read and write access to the socket path, e.g.:
+
+```lisp
+(allow file-read-data
+  (literal "/Users/you/.local/state/load-lock/daemon.sock"))
+(allow file-write*
+  (literal "/Users/you/.local/state/load-lock/daemon.sock"))
+```
+
+(no `network-outbound` rules required for the path-socket transport;
+`allow network*` forms are not the mechanism a UDS connect goes through
+under seatbelt). Since the socket inode is recreated when the daemon
+restarts, allow the containing directory too if your profile is
+path-literal strict, or re-generate the profile. Expected outcome
+(unverified): with those file rules plus the env vars
+(`LOAD_LOCK_SOCKET`, `LOAD_LOCK_NO_SPAWN=1`,
+`LOAD_LOCK_LABEL_PREFIX=…`) passed through to the agent, a seatbelt-sandboxed
+client talks to the host daemon exactly as in the verified bubblewrap
+case. omac's macOS sandboxing uses seatbelt under the hood with the same
+`environment.allow_vars` env-stripping as on Linux, so the omac recipe
+above (profile `allow_vars` + bridged socket path) applies unchanged.
+
+### WSL2 — honest state
+
+There is no verified cross-boundary story for WSL2, and we won't pretend
+otherwise:
+
+- The Windows transport is a named pipe (`\\.\pipe\load-lock`); named
+  pipes are not reachable from inside a WSL2 distro. A WSL-side Unix
+  socket is likewise not reachable from Windows-native processes.
+- There is deliberately no TCP transport (a non-goal), so there is no
+  loopback bridge to fake one.
+
+The realistic shape: **the WSL2 Linux VM is the host.** Run the daemon
+inside the distro (`~/.local/state/load-lock`, normal install — see the
+WSL2 procedure subsection above for the unverified-but-expected resource
+reporting), and treat Windows-native agents as out of scope for now.
+Cross-distro bridging (two distros sharing one daemon via a `/mnt/wsl`
+shared directory bind-mounted as the state dir) is an *unverified
+expectation*: `/mnt/wsl` is shared across distros, so the same
+bind-the-state-dir recipe should apply, but nobody has run it — verify
+and record before relying on it. Keep the state dir on the Linux
+filesystem, not `/mnt/c` (drvfs/9p is slow and lock semantics differ, as
+in the WSL2 caveats above).
 
 ## macOS / Windows notes
 
