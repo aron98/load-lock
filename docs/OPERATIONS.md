@@ -174,16 +174,16 @@ alternate screen, so it works anywhere the CLI works.
 The OpenCode installer also ships the package's `./tui` plugin export (a
 companion to the main plugin, which is unchanged). Inside the opencode TUI:
 
-- `/load-lock` (or the command palette, or the `gl` keybinding) opens the
+- `/load-lock` (or the command palette) opens the
   **load-lock.dashboard** session panel **in-window** as a side panel —
   same data as `load-lock dashboard`, themed, live-updating, with the rest
   of the TUI layout still visible beside it.
 - Every session screen shows an at-a-glance widget at the bottom of the
   right sidebar: `load-lock 0/3` colored by pool health (green ok, yellow
   full/queued, red daemon down) plus a hint line. Clicking it opens the
-  dashboard; `gl` is the fallback for terminals that don't deliver mouse
-  events. The home screen keeps its `lock 1/1·Q2` footer indicator — the
-  sidebar widget only renders on session screens, so the two never
+  dashboard; `/load-lock` is the fallback for terminals that don't deliver
+  mouse events. The home screen keeps its `lock 1/1·Q2` footer indicator —
+  the sidebar widget only renders on session screens, so the two never
   double-render.
 - `r` resyncs; `x` opens force-release, which requires an explicit
   select + confirm — the panel itself is read-only.
@@ -192,15 +192,31 @@ companion to the main plugin, which is unchanged). Inside the opencode TUI:
   palette — is open, so Esc keeps cancelling the dialog instead of
   closing the panel underneath it.
 
+The open command deliberately ships with **no global key binding** (issue
+#28). Never bind unmodified single letters or letter sequences (the old
+`gl`) at global scope: while the keymap engine waits for the next key of a
+sequence it swallows the prefix, so plain `g` never reached the composer.
+The obvious modifier chord, `ctrl+g`, is already the host's documented
+default for `session.first` ("Navigate to first message") in opencode
+>= 2.0.32, so binding it would shadow a host feature; per the issue's
+fallback the command is unbound instead — the sidebar click, the command
+palette, and `/load-lock` are the entry points. (The panel-scoped `r` and
+`x` bindings are fine: they are `enabled` only while the dashboard panel
+itself is fullscreen, when the composer is suspended and no typing can be
+swallowed.)
+
 Verified live against opencode 2.0.32 (real pty session): the sidebar
 widget renders with live daemon data, a mouse press on the widget opens
-the dashboard in-window with the chat still visible beside it, `gl` opens
-it as well, and the `/load-lock` command appears in the slash suggestions.
+the dashboard in-window with the chat still visible beside it, plain `g`
+types into the composer with no keymap interception, `ctrl+g` is not
+intercepted by load-lock (the host's documented `session.first` default
+is left untouched), and the `/load-lock` command appears in the slash
+suggestions and opens the panel.
 Earlier live verification (2.0.29): panel render, palette/slash entry
 points, and the confirm-gated force-release flow. Click handling itself
 is contract-level from opentui (mouse reporting enabled by default,
 mouse-down events bubble to slot renderables) — the pty test above
-exercises the full path; the `gl` binding works regardless.
+exercises the full path; the `/load-lock` command works regardless.
 Plugins configured in `opencode.json` that expose `./tui` are loaded
 automatically by the CLI, so the published package needs no extra config.
 For local development against a checkout, opencode also auto-discovers
