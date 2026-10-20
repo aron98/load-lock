@@ -5,6 +5,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { startDaemon, delay, mcpMainPath, type DaemonHandle } from "./testutil.js";
@@ -32,7 +33,7 @@ test("mcp: tool listing + acquire/release/configure round trip", async () => {
   try {
     const tools = await c.listTools();
     const names = tools.tools.map((t) => t.name);
-    for (const expected of ["acquire", "claim", "release", "cancel", "rejoin", "pending", "wait_for_turn", "status", "inspect_machine", "get_config", "configure", "run_with_permit", "job_status", "job_stop", "attach_pid", "mark_started"]) {
+    for (const expected of ["acquire", "claim", "release", "cancel", "rejoin", "pending", "wait_for_turn", "status", "inspect_machine", "get_config", "configure", "run_with_permit", "job_status", "job_stop", "attach_pid", "mark_started", "wait_for_completion"]) {
       assert.ok(names.includes(expected), `tool ${expected} registered`);
     }
 
@@ -162,6 +163,127 @@ test("mcp: run_with_permit tracks a background job and auto-releases", async () 
     const st = await callJson(c, "status", {});
     assert.equal(st.pools[0].holders.length, 0, "permit auto-released after job exit");
   } finally {
+    await c.close();
+    await d.stop();
+  }
+});
+
+test("mcp: wait_for_completion wakes promptly on an adapter-parented job with exit code + output tail", async () => {
+  const d = await startDaemon();
+  const c = await connectMcp(d);
+  try {
+    const acq = await callJson(c, "acquire", { reason: "build", op_key: "mcp-wfc" });
+    assert.equal(acq.state, "granted");
+
+    const job = await callJson(c, "run_with_permit", {
+      permit_token: acq.permit_token,
+      command: `sh -c 'sleep 1 && echo done'`,
+    });
+    assert.ok(job.job_id, "returns a job handle for background execution");
+
+    // One bounded call sleeps through the execution phase.
+    const t0 = Date.now();
+    const res = await callJson(c, "wait_for_completion", { job_id: job.job_id, timeout_ms: 20_000 });
+    const elapsed = Date.now() - t0;
+    assert.equal(res.state, "finished");
+    assert.equal(res.exit_code, 0, "exact exit code on wake");
+    assert.ok(res.output_tail.includes("done"), "output tail included");
+    assert.equal(res.permit_released, true, "permit was freed before the wake");
+    assert.ok(elapsed < 8_000, `woke promptly on the child exit event (took ${elapsed}ms)`);
+    assert.ok(res.waited_ms >= 800, `waited_ms reported (got ${res.waited_ms})`);
+
+    const st = await callJson(c, "status", {});
+    assert.equal(st.pools[0].holders.length, 0, "capacity is free the moment we wake");
+  } finally {
+    await c.close();
+    await d.stop();
+  }
+});
+
+test("mcp: run_with_permit wait:true fire-and-waits in one call", async () => {
+  const d = await startDaemon();
+  const c = await connectMcp(d);
+  try {
+    const acq = await callJson(c, "acquire", { reason: "build", op_key: "mcp-wfc-wait" });
+    assert.equal(acq.state, "granted");
+
+    const job = await callJson(c, "run_with_permit", {
+      permit_token: acq.permit_token,
+      command: `sh -c 'sleep 0.5 && echo hi'`,
+      wait: true,
+      wait_timeout_ms: 20_000,
+    });
+    assert.equal(job.state, "finished", "wait:true resolves the whole lifecycle in one call");
+    assert.equal(job.exit_code, 0);
+    assert.ok(job.output_tail.includes("hi"));
+    assert.equal(job.permit_released, true);
+
+    const st = await callJson(c, "status", {});
+    assert.equal(st.pools[0].holders.length, 0);
+  } finally {
+    await c.close();
+    await d.stop();
+  }
+});
+
+test("mcp: wait_for_completion checkpoints on still_running and job_stop resolves stopped_by_request", async () => {
+  const d = await startDaemon();
+  const c = await connectMcp(d);
+  try {
+    const acq = await callJson(c, "acquire", { reason: "build", op_key: "mcp-wfc-stop" });
+    assert.equal(acq.state, "granted");
+    const job = await callJson(c, "run_with_permit", {
+      permit_token: acq.permit_token,
+      command: "sleep 30",
+    });
+    assert.ok(job.job_id);
+
+    // Short budget elapses -> structured checkpoint, job untouched.
+    const t0 = Date.now();
+    const ck = await callJson(c, "wait_for_completion", { job_id: job.job_id, timeout_ms: 500 });
+    assert.ok(Date.now() - t0 < 5_000, "checkpoint returns when the budget elapses");
+    assert.equal(ck.state, "still_running");
+    assert.ok(ck.waited_ms >= 400, `waited the budget (waited_ms=${ck.waited_ms})`);
+
+    // Stopping the job wakes any waiter as stopped_by_request.
+    await callJson(c, "job_stop", { job_id: job.job_id });
+    const res = await callJson(c, "wait_for_completion", { job_id: job.job_id, timeout_ms: 20_000 });
+    assert.equal(res.state, "stopped_by_request");
+    assert.match(res.next_action ?? "", /job_stop|re-run/i);
+    const st = await callJson(c, "status", {});
+    assert.equal(st.pools[0].holders.length, 0, "stopping the job released the permit");
+  } finally {
+    await c.close();
+    await d.stop();
+  }
+});
+
+test("mcp: wait_for_completion on a daemon-tracked request_id (attach_pid) and job_unknown for bad ids", async () => {
+  const d = await startDaemon();
+  const c = await connectMcp(d);
+  const child = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  child.unref();
+  try {
+    const acq = await callJson(c, "acquire", { reason: "build", op_key: "mcp-wfc-tracked" });
+    assert.equal(acq.state, "granted");
+
+    // Daemon-tracked (not parented by this MCP server): liveness-sweep wake.
+    await callJson(c, "attach_pid", { permit_token: acq.permit_token, pid: child.pid });
+    const waitP = callJson(c, "wait_for_completion", { request_id: acq.request_id, timeout_ms: 25_000 });
+    await delay(300);
+    const t0 = Date.now();
+    child.kill("SIGKILL");
+    const res = await waitP;
+    const elapsed = Date.now() - t0;
+    assert.equal(res.state, "finished", "sweep wake on the daemon-tracked job");
+    assert.equal(res.permit_released, true);
+    assert.ok(elapsed < 8_000, `woke within roughly one sweep interval (took ${elapsed}ms)`);
+
+    // Unknown ids are structured job_unknown results, never tool errors.
+    const bad = await callJson(c, "wait_for_completion", { job_id: "job_nope_123", timeout_ms: 2_000 });
+    assert.equal(bad.state, "job_unknown");
+  } finally {
+    if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
     await c.close();
     await d.stop();
   }

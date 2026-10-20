@@ -25,7 +25,7 @@ import { spawn } from "node:child_process";
 import { Machine } from "./state.js";
 import { loadState, saveState, loadJournal, saveJournal, socketPath as defaultSocket, stateDir as defaultStateDir } from "./persist.js";
 import { inspectMachine } from "./sysinfo.js";
-import { AcquireParams, MachineEvent, OwnerEntrySnapshot, ProtocolError } from "../shared/protocol.js";
+import { AcquireParams, MachineEvent, OwnerEntrySnapshot, ProtocolError, WaitForCompletionResult } from "../shared/protocol.js";
 import { isWindows, probeTransport } from "../shared/transport.js";
 import { packageVersion, compareVersions } from "../shared/version.js";
 
@@ -49,6 +49,20 @@ interface Waiter {
   timer: NodeJS.Timeout;
 }
 
+/**
+ * A blocked wait_for_completion call for a daemon-tracked job (issue #36).
+ * Mirrors Waiter (the queue-phase bounded sleep) for the execution phase:
+ * resolved when the liveness sweep / release path observes the job done —
+ * always AFTER the permit has been released, so the woken agent sees the
+ * pool freed.
+ */
+interface CompletionWaiter {
+  requestId: string;
+  resolve: (r: WaitForCompletionResult) => void;
+  timer: NodeJS.Timeout;
+  registeredAt: number;
+}
+
 export class Daemon {
   machine: Machine;
   server: Server | null = null;
@@ -58,6 +72,8 @@ export class Daemon {
    *  restart via the event cursor) and the process can exit promptly. */
   private conns = new Set<Socket>();
   private waiters = new Map<string, Waiter>();
+  /** wait_for_completion calls blocked on tracked jobs; multiple waiters per job are fine. */
+  private completionWaiters = new Map<string, CompletionWaiter[]>();
   private sentEventId: number;
   private stateDirPath: string;
   private socketPath: string;
@@ -134,6 +150,22 @@ export class Daemon {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    // Resolve blocked wait_for_completion calls first so no promise dangles.
+    // Responses may not make it out (conns are destroyed below) — that is
+    // fine: clients see the disconnect, reconnect, and re-issue the wait.
+    for (const [, waiters] of this.completionWaiters) {
+      for (const w of waiters) {
+        clearTimeout(w.timer);
+        w.resolve({
+          state: "job_unknown",
+          requestId: w.requestId,
+          waitedMs: this.machine.now() - w.registeredAt,
+          nextAction: "daemon is stopping — call wait_for_completion again after it is back",
+          detail: "daemon stopping",
+        });
+      }
+    }
+    this.completionWaiters.clear();
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     if (this.expiryTimer) clearTimeout(this.expiryTimer);
     if (this.restartTimer) clearTimeout(this.restartTimer);
@@ -424,6 +456,23 @@ export class Daemon {
         return [{ ok: true }, undefined];
       }
 
+      case "wait_for_completion": {
+        // Bounded "sleep until the job finishes" for a daemon-tracked job
+        // (issue #36) — the execution-phase counterpart of wait_for_turn.
+        const requestId = String(p.requestId ?? "");
+        if (!requestId) throw new ProtocolError("invalid", "wait_for_completion: requestId is required");
+        const requested = Number(p.timeoutMs ?? 0);
+        if (!Number.isFinite(requested) || requested < 0) {
+          throw new ProtocolError("invalid", "wait_for_completion: timeoutMs must be a non-negative number of milliseconds");
+        }
+        // Same bounded-sleep contract as wait_for_turn: one call is capped by
+        // maxTurnWaitMs; longer waits are checkpointed (still_running) and re-issued.
+        const timeoutMs = Math.min(requested, m.config.maxTurnWaitMs);
+        const res = await this.waitForJobCompletion(requestId, timeoutMs);
+        if (timeoutMs !== requested) res.effectiveWaitMs = timeoutMs;
+        return [res, undefined];
+      }
+
       default:
         throw new ProtocolError("invalid", `unknown method "${method}"`);
     }
@@ -443,6 +492,180 @@ export class Daemon {
       }, waitMs);
       this.waiters.set(requestId, { requestId, resolve, timer });
     });
+  }
+
+  // ---------------------------------------------- wait_for_completion (issue #36)
+
+  /**
+   * Bounded blocking wait for a daemon-tracked job's completion. Mirrors
+   * waitForAdmission: the call is held server-side and woken by
+   * resolveCompletionWaiters() when the job is observed done — which always
+   * happens AFTER the permit has been released (finish() frees capacity
+   * before the event is emitted, and waiters are resolved after that).
+   * timeoutMs 0 is check-only. Never blocks unbounded.
+   */
+  private async waitForJobCompletion(requestId: string, timeoutMs: number): Promise<WaitForCompletionResult> {
+    const m = this.machine;
+    let entry: { state: string; phase?: string; startedAt?: number };
+    try {
+      entry = m.entryById(requestId);
+    } catch {
+      return {
+        state: "job_unknown",
+        requestId,
+        waitedMs: 0,
+        nextAction: "no request with this id exists (yet) — check the id, or acquire first",
+        detail: "unknown request id",
+      };
+    }
+    if (entry.state === "held") {
+      if (entry.phase !== "running_tracked") {
+        const why =
+          entry.phase === "claimed"
+            ? "permit is held but no process is attached yet — start the job (run_with_permit / attach_pid / start_job) first"
+            : "permit is running untracked (no process association) — completion is not observable; attach a pid or poll your job directly";
+        return { state: "job_unknown", requestId, waitedMs: 0, startedAt: entry.startedAt, nextAction: why, detail: `held permit in phase "${entry.phase}"` };
+      }
+      if (timeoutMs === 0) {
+        return {
+          state: "still_running",
+          requestId,
+          waitedMs: 0,
+          startedAt: entry.startedAt,
+          nextAction: "job still running — call wait_for_completion again (with a timeout) to sleep until it finishes",
+          detail: "check-only",
+        };
+      }
+      // Register a completion waiter; woken by resolveCompletionWaiters()
+      // when the job ends, or checkpointed by the bounded timer below.
+      return await new Promise<WaitForCompletionResult>((resolve) => {
+        const registeredAt = m.now();
+        const waiter: CompletionWaiter = {
+          requestId,
+          resolve,
+          timer: null as unknown as NodeJS.Timeout,
+          registeredAt,
+        };
+        waiter.timer = setTimeout(() => {
+          const arr = this.completionWaiters.get(requestId);
+          if (arr) {
+            const idx = arr.indexOf(waiter);
+            if (idx >= 0) arr.splice(idx, 1);
+            if (arr.length === 0) this.completionWaiters.delete(requestId);
+          }
+          resolve({
+            state: "still_running",
+            requestId,
+            waitedMs: m.now() - registeredAt,
+            startedAt: entry.startedAt,
+            nextAction: "job still running — call wait_for_completion again to keep sleeping honestly",
+            detail: "wait budget elapsed",
+          });
+        }, timeoutMs);
+        waiter.timer.unref?.();
+        const arr = this.completionWaiters.get(requestId) ?? [];
+        arr.push(waiter);
+        this.completionWaiters.set(requestId, arr);
+      });
+    }
+    // Terminal or pre-execution states: classify from the entry's last event.
+    return this.classifyEntryCompletion(requestId, 0);
+  }
+
+  /**
+   * Classify a request whose entry is no longer held (released, reclaimed,
+   * cancelled, or never started) into a structured completion result, using
+   * the most recent event for the request.
+   */
+  private classifyEntryCompletion(requestId: string, waitedMs: number): WaitForCompletionResult {
+    const m = this.machine;
+    const ev = m.lastEventForRequest(requestId, 0);
+    const startedAt = ev?.entry?.startedAt;
+    if (!ev) {
+      return {
+        state: "job_unknown",
+        requestId,
+        waitedMs,
+        nextAction: "no completion is observable for this request id — verify the id or re-acquire",
+        detail: "entry is no longer held and no matching event was found",
+      };
+    }
+    switch (ev.type) {
+      case "released":
+      case "auto_released":
+        return {
+          state: "finished",
+          requestId,
+          durationMs: startedAt !== undefined ? ev.ts - startedAt : undefined,
+          permitReleased: true,
+          waitedMs,
+          startedAt,
+          nextAction: "job finished and the permit is released — capacity is free; proceed with the next step",
+          detail: ev.detail,
+        };
+      case "reclaimed":
+        if ((ev.detail ?? "").includes("admin")) {
+          return {
+            state: "stopped_by_request",
+            requestId,
+            waitedMs,
+            startedAt,
+            nextAction: "the permit was force-released by an admin while you were waiting — re-acquire before running more heavy work",
+            detail: ev.detail,
+          };
+        }
+        return {
+          state: "job_unknown",
+          requestId,
+          waitedMs,
+          startedAt,
+          nextAction: "the permit was reclaimed before completion could be observed — re-acquire before running more heavy work",
+          detail: ev.detail,
+        };
+      case "cancelled":
+        return {
+          state: "job_unknown",
+          requestId,
+          waitedMs,
+          startedAt,
+          nextAction: "the request was cancelled — re-acquire before running more heavy work",
+          detail: ev.detail,
+        };
+      default:
+        return {
+          state: "job_unknown",
+          requestId,
+          waitedMs,
+          startedAt,
+          nextAction: "no completion is observable for this request id — verify the id or re-acquire",
+          detail: `entry is in state "${ev.entry?.state ?? "unknown"}" (last event: ${ev.type})`,
+        };
+    }
+  }
+
+  /**
+   * Wake blocked wait_for_completion calls whose tracked job has ended.
+   * Called after every machine transition (afterOp, sweep, expiry timer) —
+   * always AFTER finish() has freed capacity and after the event flush, so
+   * a woken agent observes the pool as free. Entries still held are skipped.
+   */
+  private resolveCompletionWaiters(): void {
+    if (this.completionWaiters.size === 0) return;
+    const m = this.machine;
+    for (const [requestId, waiters] of [...this.completionWaiters]) {
+      let entry: { state: string } | undefined;
+      try {
+        entry = m.entryById(requestId);
+      } catch {
+        entry = undefined;
+      }
+      if (entry && entry.state === "held") continue; // job still running
+      this.completionWaiters.delete(requestId);
+      for (const w of waiters) {
+        clearTimeout(w.timer);
+        w.resolve(this.classifyEntryCompletion(requestId, m.now() - w.registeredAt));
+      }
+    }
   }
 
   // ------------------------------------------------------------- post-op pass
@@ -476,6 +699,10 @@ export class Daemon {
       this.sentEventId = m.latestEventId();
       for (const ev of fresh) this.broadcast(ev);
     }
+    // Wake completion waiters whose job ended in this op — after the events
+    // flushed, i.e. after finish() already freed the capacity (ordering
+    // guarantee: a woken agent sees the pool as free).
+    this.resolveCompletionWaiters();
     // Persist held permits for restart reconciliation.
     try {
       saveJournal(this.stateDirPath, m.journalEntries());
@@ -500,6 +727,8 @@ export class Daemon {
         this.sentEventId = this.machine.latestEventId();
         for (const ev of fresh) this.broadcast(ev);
       }
+      // Reclaims performed by the tick above must also wake waiters.
+      this.resolveCompletionWaiters();
       try {
         saveJournal(this.stateDirPath, this.machine.journalEntries());
       } catch {
@@ -558,6 +787,10 @@ export class Daemon {
       this.sentEventId = m.latestEventId();
       for (const ev of fresh) this.broadcast(ev);
     }
+    // Wake completion waiters woken by this sweep (tracked job confirmed
+    // dead => auto-released above) — after capacity was freed and events
+    // flushed, per the wake ordering guarantee.
+    this.resolveCompletionWaiters();
   }
 }
 

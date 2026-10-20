@@ -14,6 +14,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { LLClient, withClient } from "../shared/client.js";
 import { ProtocolError } from "../shared/protocol.js";
 import { waitForTurn } from "../shared/wait-turn.js";
+import { waitForTrackedJob } from "../shared/wait-completion.js";
 import { stateDir, socketPath } from "../core/persist.js";
 import { isWindows, probeTransport, killProcessGroup } from "../shared/transport.js";
 import { packageVersion, compareVersions } from "../shared/version.js";
@@ -174,7 +175,7 @@ const HELP_GROUPS: { title: string; items: HelpItem[] }[] = [
   {
     title: "waiting & running",
     items: [
-      { names: ["wait"], desc: "sleep until a queued request's turn, then auto-claim the offer: --id <request-id> [--timeout <ms>]" },
+      { names: ["wait"], desc: "sleep until a queued request's turn (--id <request-id>), auto-claiming the offer — or until a heavy job finishes (--job <request-id>): [--timeout <ms>]" },
       { names: ["run"], desc: "acquire (or reuse) a permit and run a command under it: run [--permit <token> | acquire flags] -- <cmd>" },
     ],
   },
@@ -416,19 +417,41 @@ async function main(): Promise<void> {
       return;
     }
 
-    // ------------------------------------------------------- wait (offer -> permit)
+    // ------------------------------------------------------- wait (offer -> permit / job -> done)
     case "wait": {
-      // Watches a queued request; auto-claims the offer when capacity is
-      // handed to it and prints the permit token. Honest bounded blocking
-      // for scriptable flows (aider, plain shell scripts). Shares the exact
-      // implementation with the MCP wait_for_turn tool and the OpenCode
-      // plugin (src/shared/wait-turn.ts).
-      const id = S("id") || fail("wait: --id <request-id> required");
+      // Two honest bounded sleeps sharing one command:
+      //   --id  : queue phase — watches a queued request, auto-claims the
+      //           offer when capacity reaches it, prints the permit token.
+      //   --job : execution phase — sleeps until the daemon-tracked job for
+      //           that request-id finishes (liveness sweep wake; the permit
+      //           is released before you are woken). Structured result on
+      //           every path; still_running = checkpoint, call again.
+      // Both share the exact implementations with the MCP tools and the
+      // OpenCode plugin (src/shared/wait-turn.ts / wait-completion.ts).
       const timeoutMs = N("timeout", 600_000);
-      const agent = S("agent", defaultAgent());
       const c = new LLClient();
       await c.connect();
       try {
+        const job = S("job");
+        if (job) {
+          const r = await waitForTrackedJob({ client: c, requestId: job, timeoutMs });
+          out({
+            state: r.state,
+            request_id: r.requestId ?? job,
+            exit_code: r.exitCode,
+            duration_ms: r.durationMs,
+            permit_released: r.permitReleased,
+            waited_ms: r.waitedMs,
+            effective_wait_ms: r.effectiveWaitMs,
+            started_at: r.startedAt,
+            detail: r.detail ?? r.nextAction,
+          });
+          if (r.state === "finished") return;
+          if (r.state === "still_running") fail(`wait: job still running after ${r.waitedMs}ms (checkpoint — call again)`, 68);
+          fail(`wait: job is ${r.state.replace(/_/g, " ")} — ${r.nextAction}`, 69);
+        }
+        const id = S("id") || fail("wait: --id <request-id> (queue wait) or --job <request-id> (job wait) required");
+        const agent = S("agent", defaultAgent());
         const r = await waitForTurn({ client: c, agentId: agent, requestId: id, timeoutMs });
         if (r.state === "granted" && r.entry?.permitToken) {
           out({ permit_token: r.entry.permitToken, state: r.state, request_id: r.requestId, auto_claimed: r.autoClaimed ?? false });

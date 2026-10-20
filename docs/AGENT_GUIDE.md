@@ -103,6 +103,50 @@ defaults to 600000 (10 minutes) and is clamped to the machine's
 range 1000–3600000 ms). `timeout_ms: 0` means check-only. The CLI form is
 `load-lock wait --id <request-id> --timeout <ms>`.
 
+### Sleeping through execution (`wait_for_completion`)
+
+The queue phase has `wait_for_turn`; the execution phase has its counterpart.
+After you start a heavy job, do not guess sleeps or poll `job_status` in a
+loop — sleep honestly: one bounded call that **wakes promptly when the job
+finishes**. There are two mechanisms, and the identifier picks the right one:
+
+- **`job_id` of a `run_with_permit` job** (the job belongs to your adapter
+  process): the wake is the child's exact `exit` event — no polling, prompt,
+  with the exact exit code and an output tail. The same thing in one call:
+  `run_with_permit(..., wait: true)` starts the job and sleeps through it.
+- **`request_id` of a daemon-tracked permit** (`attach_pid` etc. — the daemon
+  is not the parent): the daemon holds the wait server-side and wakes it when
+  its liveness sweep observes the process gone (worst case one sweep interval,
+  default 5s). The permit is **released before you are woken**, so a woken
+  agent sees the capacity freed. The CLI form is
+  `load-lock wait --job <request-id> --timeout <ms>`.
+
+Every resolution is a structured result, never an opaque error:
+
+- `finished` — exit code, output tail, duration, and the permit-release
+  state (`permit_released`; if the release round-trip was still in flight
+  the `detail` says so — verify with `status` if in doubt).
+- `still_running` — the bound expired mid-execution; this is a **checkpoint**,
+  not a failure. Call again; a long job is a handful of long sleeps, not a
+  poll loop.
+- `timeout` — this wait call was aborted/cancelled (harness tool timeout,
+  AbortSignal). The job is untouched; call again.
+- `job_unknown` — no such job/request, or the permit was reclaimed/expired
+  meanwhile (e.g. the daemon or adapter restarted); re-check before
+  proceeding.
+- `stopped_by_request` — the job or permit was stopped by an explicit
+  (admin) action; re-acquire before running more heavy work.
+
+The sleep is bounded and safe by construction: it holds no permit and no
+capacity itself, and for daemon-tracked waits `timeout_ms` is clamped to the
+machine's `maxTurnWaitMs` cap (same as `wait_for_turn`; adapter-parented
+waits default to 600000). `timeout_ms: 0` means check-only. A daemon restart
+mid-wait is handled transparently (tracked permits survive restarts via the
+journal); against an older daemon the client falls back to a light
+events-based poll with the same structured results. Cancelling the call
+never kills the job. If someone calls `job_stop` while you are waiting, you
+wake with `stopped_by_request`.
+
 ## 3. Running heavy work (lifecycle options)
 
 How you start the work determines how reliably the permit cleans up after
@@ -111,9 +155,11 @@ you — pick the best available:
 1. **`run_with_permit(permit_token, command)`** — the helper spawns your
    command in its own process group, atomically associates it with the
    permit, and auto-releases when the process group *actually finishes*
-   (including background children). Check `job_status(job_id)` for
-   completion/exit code/tail of output; `job_stop(job_id)` to kill it.
-   Do **not** manually release a permit you handed to `run_with_permit`.
+   (including background children). Sleep through the execution with
+   `wait_for_completion(job_id)` (or pass `wait: true` to fire-and-wait in
+   one call); quick-check with `job_status(job_id)`; kill with
+   `job_stop(job_id)`. Do **not** manually release a permit you handed to
+   `run_with_permit`.
 2. **`attach_pid(permit_token, pid)`** — you spawned the process yourself;
    the daemon now tracks that pid (and its process group) and releases when
    it is confirmed dead. Works for `... &` background jobs whose parent

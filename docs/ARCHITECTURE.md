@@ -148,6 +148,21 @@ mechanisms, and labels exactly which apply per harness:
    can never orphan a daemon-side waiter when the harness cancels the
    tool mid-sleep. Daemon restarts are detected via the event cursor and
    resolve bounded. No model-authored busy-polling required.
+   The execution phase has its mirror, `wait_for_completion`
+   (`src/shared/wait-completion.ts`), surfaced as the same CLI `wait`
+   command (`--job`), the MCP/OpenCode `wait_for_completion` tool and
+   `run_with_permit(wait: true)`. Two wake mechanisms: for
+   adapter-parented jobs (`run_with_permit`) the adapter awaits the
+   child's `exit` event directly — exact exit code, no polling; for
+   daemon-tracked permits (`attach_pid`) the daemon holds the wait
+   server-side and wakes it when the liveness sweep observes the pid
+   gone — mirroring `wait_for_turn`'s bounded-sleep shape (checkpoint
+   results on every path: finished / still_running / timeout /
+   job_unknown / stopped_by_request). Ordering guarantee: the permit is
+   released (capacity freed) *before* waiters are woken. Restarts are
+   transparent for tracked permits (journal restore), and against older
+   daemons the client degrades to a light events-based poll with the
+   same structured results.
 3. **Idle wakeup where the harness genuinely supports it.**
    - OpenCode (live-verified): the native plugin watches daemon events and
      calls `ctx.session.synthetic(...)`, delivering the offer (with token)

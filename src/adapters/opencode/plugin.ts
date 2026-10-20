@@ -4,7 +4,8 @@
  * Installed to ~/.config/opencode/plugins/load-lock/ (see cli/install.ts).
  * Provides:
  *  - native tools in the `load_lock` namespace (acquire/claim/release/...)
- *  - run_with_permit / job_status / job_stop: full execution lifecycle
+ *  - run_with_permit / job_status / job_stop / wait_for_completion:
+ *    full execution lifecycle incl. honest execution-phase sleeping
  *  - automatic policy injection on every model call via the session
  *    "context" hook (compaction-proof by construction)
  *  - idle wakeup: daemon watch -> ctx.session.synthetic when an offer
@@ -21,21 +22,29 @@ import path from "node:path";
 import { LLClient } from "../../shared/client.js";
 import { POLICY_BRIEF } from "../../policy/text.js";
 import { waitForTurn, WaitAbortedError } from "../../shared/wait-turn.js";
+import { waitForLocalJob, waitForTrackedJob, type WaitableAdapterJob } from "../../shared/wait-completion.js";
 import { killProcessGroup } from "../../shared/transport.js";
 
 const client = new LLClient();
 const knownSessions = new Set<string>();
 const jobs = new Map<string, Job>();
 
-interface Job {
+interface Job extends WaitableAdapterJob {
   id: string;
   child: ChildProcess;
   permitToken: string;
   command: string;
   sessionID: string;
+  startedAt: number;
   exited: boolean;
   exitCode: number | null;
   output: string[];
+  requestId?: string;
+  exitedAt?: number;
+  stopRequested?: boolean;
+  permitReleased?: boolean;
+  exitPromise?: Promise<number | null>;
+  releasePromise?: Promise<unknown>;
 }
 
 async function statusBrief(): Promise<string> {
@@ -243,11 +252,13 @@ export default Plugin.define({
 
       add(
         "run_with_permit",
-        "Run the heavy command you hold a permit for, with full lifecycle ownership: spawns it in its own process group, atomically associates it with the permit, returns a job_id immediately (background), and auto-releases the permit when the job exits. Do NOT release manually for these jobs. Poll job_status.",
+        "Run the heavy command you hold a permit for, with full lifecycle ownership: spawns it in its own process group, atomically associates it with the permit, returns a job_id immediately (background), and auto-releases the permit when the job exits. Do NOT release manually for these jobs. Set wait:true to sleep through execution in this one call; otherwise sleep via wait_for_completion(job_id), quick-check via job_status.",
         {
           permit_token: { type: "string" },
           command: { type: "string", description: "The heavy shell command (not unrelated light commands)" },
           cwd: { type: "string" },
+          wait: { type: "boolean", description: "true = sleep through execution in this one call; wake promptly when the job finishes (bounded by wait_timeout_ms)" },
+          wait_timeout_ms: { type: "number", description: "Bounded sleep for wait:true (ms, default 600000); still_running checkpoint on timeout" },
         },
         async (input, context) => {
           const child = spawn(input.command, {
@@ -257,15 +268,20 @@ export default Plugin.define({
             env: process.env,
             stdio: ["ignore", "pipe", "pipe"],
           });
+          let resolveExit!: (code: number | null) => void;
           const job: Job = {
             id: "job_" + child.pid + "_" + Math.random().toString(36).slice(2, 8),
             child,
             permitToken: input.permit_token,
             command: input.command,
             sessionID: context.sessionID,
+            startedAt: Date.now(),
             exited: false,
             exitCode: null,
             output: [],
+            exitPromise: new Promise<number | null>((resolve) => {
+              resolveExit = resolve;
+            }),
           };
           const push = (b: Buffer) => {
             job.output.push(b.toString("utf8"));
@@ -278,17 +294,45 @@ export default Plugin.define({
           // round-trip to the daemon, or the permit would never auto-release.
           child.on("exit", (code) => {
             job.exited = true;
+            job.exitedAt = Date.now();
             job.exitCode = code;
-            void client.request("release", { permitToken: job.permitToken, outcome: code === 0 ? "success" : "failure" }).catch(() => {});
+            // releasePromise is assigned BEFORE resolveExit so a woken waiter
+            // sees the release round-trip in flight (see waitForLocalJob).
+            job.releasePromise = client
+              .request("release", { permitToken: job.permitToken, outcome: code === 0 ? "success" : "failure" })
+              .then(
+                () => {
+                  job.permitReleased = true;
+                },
+                () => {},
+              );
+            resolveExit(code);
           });
           try {
-            await client.request("start_job", { permitToken: input.permit_token, pid: child.pid, pgid: child.pid });
+            const res: any = await client.request("start_job", { permitToken: input.permit_token, pid: child.pid, pgid: child.pid });
+            job.requestId = res.entry?.requestId;
           } catch (err) {
             killProcessGroup(child.pid!, "SIGKILL");
             return { error: `permit no longer startable (${(err as Error).message}); job killed before doing work; acquire again` };
           }
           jobs.set(job.id, job);
-          return { job_id: job.id, pid: child.pid, state: "running", note: "auto-releases when the job exits; poll job_status" };
+          if (!input.wait) {
+            return { job_id: job.id, pid: child.pid, state: "running", note: "auto-releases when the job exits; sleep via wait_for_completion(job_id), quick-check via job_status" };
+          }
+          const r = await waitForLocalJob(job, { timeoutMs: input.wait_timeout_ms, signal: context.signal });
+          return {
+            job_id: job.id,
+            pid: child.pid,
+            command: job.command,
+            state: r.state,
+            exit_code: r.exitCode,
+            output_tail: r.outputTail,
+            duration_ms: r.durationMs,
+            permit_released: r.permitReleased,
+            waited_ms: r.waitedMs,
+            next_action: r.nextAction,
+            detail: r.detail,
+          };
         },
       );
 
@@ -308,6 +352,7 @@ export default Plugin.define({
         const job = jobs.get(input.job_id);
         if (!job) return { error: "unknown job_id" };
         if (!job.exited) {
+          job.stopRequested = true;
           killProcessGroup(job.child.pid!, "SIGTERM");
           setTimeout(() => {
             if (!job.exited) {
@@ -317,6 +362,57 @@ export default Plugin.define({
         }
         return { job_id: job.id, stopping: true };
       });
+
+      add(
+        "wait_for_completion",
+        "Sleep honestly through the EXECUTION phase (replaces sleep-and-poll): bounded blocking wait that wakes promptly when the heavy job finishes. Pass job_id (run_with_permit job; exact exit-code wake) or request_id (daemon-tracked permit; liveness-sweep wake, permit released before you are woken). Structured result on every path: finished (exit_code/output_tail/duration/permit_released), still_running (checkpoint — call again), timeout (wait aborted, job untouched), job_unknown, stopped_by_request. timeout_ms bounds one call (default 600000; 0 = check-only).",
+        {
+          job_id: { type: "string", description: "A run_with_permit job_id" },
+          request_id: { type: "string", description: "A daemon-tracked permit's request_id" },
+          timeout_ms: { type: "number", description: "Bounded sleep (ms, default 600000); still_running checkpoint on timeout — re-call" },
+        },
+        async (input, context) => {
+          if (!input.job_id && !input.request_id) {
+            return {
+              state: "job_unknown",
+              waited_ms: 0,
+              next_action: "Pass job_id (a run_with_permit job) or request_id (a daemon-tracked permit).",
+              detail: "no identifier given",
+            };
+          }
+          if (input.job_id && jobs.has(input.job_id)) {
+            const job = jobs.get(input.job_id)!;
+            const r = await waitForLocalJob(job, { timeoutMs: input.timeout_ms, signal: context.signal });
+            return {
+              state: r.state,
+              job_id: job.id,
+              request_id: job.requestId,
+              exit_code: r.exitCode,
+              output_tail: r.outputTail,
+              duration_ms: r.durationMs,
+              permit_released: r.permitReleased,
+              waited_ms: r.waitedMs,
+              started_at: r.startedAt,
+              next_action: r.nextAction,
+              detail: r.detail,
+            };
+          }
+          const requestId = input.request_id ?? input.job_id;
+          const r = await waitForTrackedJob({ client, requestId, timeoutMs: input.timeout_ms, signal: context.signal });
+          return {
+            state: r.state,
+            request_id: r.requestId ?? requestId,
+            exit_code: r.exitCode,
+            duration_ms: r.durationMs,
+            permit_released: r.permitReleased,
+            waited_ms: r.waitedMs,
+            effective_wait_ms: r.effectiveWaitMs,
+            started_at: r.startedAt,
+            next_action: r.nextAction,
+            detail: r.detail,
+          };
+        },
+      );
 
       add(
         "attach_pid",

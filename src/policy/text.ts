@@ -37,6 +37,12 @@ Rules:
 5. Hold the permit until the heavy process actually finishes — including when
    it runs in the background beyond this tool call or session. Optionally
    attach its pid (load-lock attach_pid) so a dead process auto-releases.
+   Out of light work while it runs? Sleep honestly with wait_for_completion
+   (MCP/plugin: run_with_permit job_id or tracked request_id; or run_with_permit
+   with wait:true) or 'load-lock wait --job <request-id>' (CLI) — a bounded
+   sleep that wakes promptly when the job finishes (exit code + output tail;
+   the permit is freed before you are woken). On still_running it is a
+   checkpoint: call again. Do NOT guess sleeps or poll job_status in a loop.
 6. Release immediately when done (success or failure), and cancel queued
    requests you no longer need.
 7. Capacity is a cooperative budget, not an enforced one. If the budget seems

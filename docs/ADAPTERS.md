@@ -72,8 +72,9 @@ whatever global instructions file the harness reads (GEMINI.md / rules /
 hints...). Offers are surfaced in every tool result (tool-boundary
 delivery), so correctness is preserved; what you lose is idle wakeup —
 steer agents to `wait_for_turn` (bounded blocking sleep that auto-claims
-and returns a `permit_token`) as the primary idle mechanism, and document
-the remaining gap honestly (see docs/COMPATIBILITY.md).
+and returns a `permit_token`) as the primary idle mechanism, and to
+`wait_for_completion` (bounded execution-phase sleep) once a job runs.
+Document the remaining gap honestly (see docs/COMPATIBILITY.md).
 
 ## Protocol quick reference
 
