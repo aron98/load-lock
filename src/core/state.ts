@@ -293,6 +293,14 @@ export class Machine {
     if (!p.reason) throw new ProtocolError("invalid", "reason is required");
     const weight = p.weight ?? 1;
     if (!Number.isInteger(weight) || weight < 1) throw new ProtocolError("invalid", "weight must be a positive integer");
+    // Holder-label prefix (sandbox tagging): composed here so every adapter
+    // gets identical behavior; falls back to agentId when no label is given.
+    let agentLabel = p.agentLabel;
+    if (p.labelPrefix !== undefined) {
+      const prefix = p.labelPrefix.trim();
+      if (!prefix) throw new ProtocolError("invalid", "labelPrefix must be a non-empty string");
+      agentLabel = `${prefix}:${p.agentLabel ?? p.agentId}`;
+    }
 
     // Idempotency: a live request for the same (agent, op) returns its state
     // (including its offer/permit token for the owner).
@@ -316,7 +324,7 @@ export class Machine {
         id: rid(),
         pool,
         agentId: p.agentId,
-        agentLabel: p.agentLabel,
+        agentLabel,
         cwd: p.cwd,
         opKey: p.opKey,
         reason: p.reason,
@@ -340,7 +348,7 @@ export class Machine {
       id: rid(),
       pool,
       agentId: p.agentId,
-      agentLabel: p.agentLabel,
+      agentLabel,
       cwd: p.cwd,
       opKey: p.opKey,
       reason: p.reason,

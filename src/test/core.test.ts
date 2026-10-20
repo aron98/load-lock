@@ -303,3 +303,39 @@ test("diagnose reports holder info and flags long holds without revoking", () =>
   assert.equal(stateOf(m, a.requestId), "held", "long hold alone never revokes a running job");
   assert.ok(diags[0].diagnostics.note.includes("pid 333"));
 });
+
+// ------------------------------------------------------- labelPrefix (issue #29)
+
+test("labelPrefix composes the holder label; agentId fallback when unlabeled", () => {
+  const { m } = mk();
+  const a = grant(m, A, "op1", { agentLabel: "issue-42 build", labelPrefix: "omac" });
+  assert.equal(a.agentLabel, "omac:issue-42 build");
+  // queued entry composes too, falling back to agentId without a label
+  const b = m.acquire({ agentId: B, opKey: "op1", reason: "b", labelPrefix: "omac" });
+  assert.equal(b.state, "queued");
+  assert.equal(b.entry!.agentLabel, "omac:" + B);
+  // status (dashboard data source) shows the composed labels
+  const st = m.status();
+  assert.equal(st.pools[0].holders[0].agentLabel, "omac:issue-42 build");
+  assert.equal(st.pools[0].queue[0].agentLabel, "omac:" + B);
+  // events and journal carry the composed label (restart reconciliation)
+  assert.equal(m.eventsSince(0)[1].entry!.agentLabel, "omac:issue-42 build");
+  assert.equal(m.journalEntries()[0].agentLabel, "omac:issue-42 build");
+  // no prefix: unchanged behavior
+  const c = m.acquire({ agentId: C, opKey: "op1", reason: "c", agentLabel: "plain" });
+  assert.equal(c.entry!.agentLabel, "plain");
+});
+
+test("labelPrefix is trimmed and must be non-empty when present", () => {
+  const { m } = mk();
+  const a = grant(m, A, "op1", { agentLabel: "build", labelPrefix: " omac " });
+  assert.equal(a.agentLabel, "omac:build");
+  assert.throws(
+    () => m.acquire({ agentId: A, opKey: "op2", reason: "r", labelPrefix: "  " }),
+    (e: unknown) => e instanceof ProtocolError && e.code === "invalid",
+  );
+  assert.throws(
+    () => m.acquire({ agentId: A, opKey: "op3", reason: "r", labelPrefix: "" }),
+    (e: unknown) => e instanceof ProtocolError && e.code === "invalid",
+  );
+});

@@ -285,6 +285,14 @@ export interface AcquireParams {
   pool?: string; // default "heavy"
   agentId: string;
   agentLabel?: string;
+  /**
+   * Optional prefix prepended to the holder label (composed daemon-side) so
+   * sandboxed/thin clients are identifiable in the dashboard, e.g.
+   * labelPrefix "omac" + agentLabel "issue-42 build" -> "omac:issue-42
+   * build". Falls back to agentId when no agentLabel is given. Adapters may
+   * source it from LOAD_LOCK_LABEL_PREFIX (the shared client injects it).
+   */
+  labelPrefix?: string;
   cwd?: string;
   opKey: string; // idempotency key: identifies the pending operation
   reason: string;

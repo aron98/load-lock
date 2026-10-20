@@ -12,6 +12,13 @@
  * NTFS) and starts a detached daemon; losers wait for the endpoint to
  * appear. The freshly spawned daemon itself re-checks the endpoint before
  * binding, so a double-spawn is harmless (the loser exits).
+ *
+ * Client-only mode (LOAD_LOCK_NO_SPAWN): sandboxed clients must be thin
+ * clients of the HOST daemon. A sandbox-local daemon is useless (it cannot
+ * see host processes or host-wide load) and hides the failure — so when the
+ * env var is set (any non-empty value except "0"), no daemon is ever
+ * auto-spawned here or in ensureDaemon(); an unreachable endpoint fails
+ * loudly with a pointer to the Sandboxes section of docs/OPERATIONS.md.
  */
 import { connect, Socket } from "node:net";
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
@@ -57,6 +64,9 @@ export class LLClient {
       return;
     } catch {
       /* fall through to spawn */
+    }
+    if (noSpawnRequested()) {
+      throw new ProtocolError("unavailable", noSpawnError(this.socketPath()));
     }
     if (!this.opts.spawnDaemon) {
       throw new ProtocolError("unavailable", `load-lock daemon is not running on ${this.socketPath()}`);
@@ -143,6 +153,12 @@ export class LLClient {
 
   /** Issue one RPC. Reconnects once if the connection was lost. */
   async request<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = 20_000): Promise<T> {
+    if (method === "acquire" && params.labelPrefix === undefined) {
+      // Sandbox wrapper tagging (LOAD_LOCK_LABEL_PREFIX): applied by the
+      // shared client so every adapter (CLI, MCP, plugin, hooks) gets it.
+      const prefix = envLabelPrefix();
+      if (prefix) params = { ...params, labelPrefix: prefix };
+    }
     if (!this.sock || this.sock.destroyed) await this.connect();
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
@@ -192,6 +208,38 @@ export class LLClient {
 
 // ------------------------------------------------------------------- spawning
 
+/**
+ * Client-only mode: LOAD_LOCK_NO_SPAWN set to any non-empty value except
+ * "0" forbids auto-spawning a daemon. Set this inside OS-level sandboxes
+ * (bubblewrap/omac, Docker, ...) so a sandbox-local daemon is never
+ * silently spawned and an unreachable host socket fails loudly instead.
+ */
+export function noSpawnRequested(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.LOAD_LOCK_NO_SPAWN;
+  return v !== undefined && v !== "" && v !== "0";
+}
+
+/**
+ * Env-supplied holder-label prefix (LOAD_LOCK_LABEL_PREFIX), applied to
+ * every acquire so sandboxed clients are identifiable in the dashboard
+ * (e.g. "omac:issue-42 build"). An explicit labelPrefix param wins.
+ */
+export function envLabelPrefix(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const v = env.LOAD_LOCK_LABEL_PREFIX?.trim();
+  return v || undefined;
+}
+
+function noSpawnError(sockPath: string): string {
+  return (
+    `load-lock daemon is not reachable at ${sockPath} and auto-spawn is disabled (LOAD_LOCK_NO_SPAWN is set): ` +
+    `this client is client-only and started no daemon. Run the daemon on the host machine ` +
+    `(e.g. load-lock service start) and bridge its socket into this sandbox, ` +
+    `then point LOAD_LOCK_SOCKET at the bridged path — see the "Sandboxes" section of ` +
+    `docs/OPERATIONS.md for per-sandbox recipes (bubblewrap/omac, Docker, seatbelt, WSL2). ` +
+    `To allow spawning a daemon here instead, unset LOAD_LOCK_NO_SPAWN.`
+  );
+}
+
 function daemonMainPath(): string {
   if (process.env.LOAD_LOCK_DAEMON_BIN) return process.env.LOAD_LOCK_DAEMON_BIN;
   const here = dirname(fileURLToPath(import.meta.url)); // .../dist/shared
@@ -200,6 +248,10 @@ function daemonMainPath(): string {
 
 /** Idempotently ensure a daemon is running and listening on `sockPath`. */
 export async function ensureDaemon(stateDir: string, sockPath: string): Promise<void> {
+  if (noSpawnRequested()) {
+    // Client-only mode: never spawn, even for direct callers.
+    throw new ProtocolError("unavailable", noSpawnError(sockPath));
+  }
   if (await probe(sockPath)) return;
   const lockDir = join(stateDir, "spawn.lock");
   mkdirSync(stateDir, { recursive: true });

@@ -77,7 +77,7 @@ const HELP_GROUPS: { title: string; items: HelpItem[] }[] = [
   {
     title: "permit operations",
     items: [
-      { names: ["acquire"], desc: "request a permit: --pool --op-key --reason [--wait-ms] [--no-queue]" },
+      { names: ["acquire"], desc: "request a permit: --pool --op-key --reason [--label] [--label-prefix] [--wait-ms] [--no-queue]" },
       { names: ["claim"], desc: "claim an offered permit before its window expires: --offer <token>" },
       { names: ["release"], desc: "release a held permit: --permit <token> [--outcome success|failure]" },
       { names: ["cancel"], desc: "cancel a queued/offered/paused request: --id <request-id> [--admin]" },
@@ -272,6 +272,7 @@ async function main(): Promise<void> {
           pool: S("pool", "heavy"),
           agentId: S("agent", defaultAgent()),
           agentLabel: S("label") || undefined,
+          labelPrefix: S("label-prefix") || undefined,
           cwd: S("cwd", process.cwd()),
           opKey: S("op-key") || fail("acquire: --op-key is required"),
           reason: S("reason") || fail("acquire: --reason is required"),
@@ -493,6 +494,7 @@ async function runWithPermit(jobArgv: string[]): Promise<void> {
         pool: S("pool", "heavy"),
         agentId: S("agent", defaultAgent()),
         agentLabel: S("label") || "load-lock run",
+        labelPrefix: S("label-prefix") || undefined,
         cwd: process.cwd(),
         opKey: S("op-key") || `run/${command}/${Date.now()}`,
         reason: S("reason") || command,
