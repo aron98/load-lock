@@ -24,6 +24,8 @@ import { POLICY_BRIEF } from "../policy/text.js";
 import { waitForTurn, WaitAbortedError } from "../shared/wait-turn.js";
 import { waitForLocalJob, waitForTrackedJob, type WaitableAdapterJob } from "../shared/wait-completion.js";
 import { killProcessGroup } from "../shared/transport.js";
+import { detectCliDrift, type CliDrift } from "../shared/drift.js";
+import { packageVersion } from "../shared/version.js";
 
 const ACQUIRE_DESC = `Acquire a machine-wide permit before starting resource-intensive local work (full builds, test suites, big compiles/containers).
 
@@ -38,14 +40,26 @@ export interface McpServerOptions {
   serverName?: string;
   /** Overridden by OpenCode's per-request session metadata when present. */
   agentId?: string;
+  /**
+   * CLI-drift notice to surface (issue #38). Defaults to auto-detection at
+   * build time (this adapter copy vs. the PATH-resolved CLI copy);
+   * pass null to suppress / a value to inject in tests.
+   */
+  drift?: CliDrift | null;
 }
 
 export function buildServer(opts: McpServerOptions): McpServer {
   const client = opts.client;
   const defaultAgent = opts.agentId ?? "agt_" + process.pid.toString(36) + Math.random().toString(36).slice(2, 8);
+  // Drift notice (issue #38): one clear notice naming the exact command when
+  // this adapter copy is newer than the PATH-installed CLI. Notify only —
+  // never auto-install. Printed to stderr at init and embedded in the
+  // initialize instructions so any MCP client sees it exactly once.
+  const drift = opts.drift !== undefined ? opts.drift : detectCliDrift(packageVersion());
+  if (drift) process.stderr.write(drift.message + "\n");
   const server = new McpServer(
     { name: opts.serverName ?? "load-lock", version: "0.1.0" },
-    { instructions: POLICY_BRIEF },
+    { instructions: POLICY_BRIEF + (drift ? "\n\n" + drift.message : "") },
   );
 
   const json = (v: unknown) => ({

@@ -102,6 +102,7 @@ uninstall — see issue #19); not live-verified inside the real CLIs.
 load-lock service status   # hello + pid + daemon version
 load-lock service start    # ensure running (idempotent); refusals name the conflicting pid
 load-lock service stop     # SIGTERM → bounded wait → SIGKILL; verifies the socket is free
+load-lock service restart  # stop then start; both phases reported; failures name the phase
 ```
 
 `service stop` is honest, not fire-and-forget: it signals the daemon
@@ -110,6 +111,11 @@ socket still answers, and only reports success once the endpoint is
 verifiably free (stale `daemon.json`/socket files are cleaned up either way).
 `service start` refuses loudly when something else owns the endpoint —
 naming the conflicting pid — instead of a bare "did not come up within 10s".
+`service restart` (since #38) composes the same two hardened phases and
+reports both lines; a failure names the phase and reason
+(`restart failed in the STOP phase: ...` / `... in the START phase ...`).
+Stopping when nothing runs is not an error: the start phase simply spawns a
+fresh daemon.
 
 ## Update lifecycle
 
@@ -139,6 +145,48 @@ code. The **version handshake** closes that gap (v1.3.0+):
   pending self-restart; `doctor` actively waits a few seconds to confirm the
   daemon came back on the new version.
 
+### `load-lock update` (since #38)
+
+The update command checks npm for a newer version, classifies where *this*
+copy lives **before touching anything**, and applies the update via the
+detected package manager — or refuses honestly rather than guessing:
+
+| this copy is...                       | `load-lock update` does                                            |
+| ------------------------------------- | ------------------------------------------------------------------ |
+| bun global (`~/.bun/install/global/…`)  | `bun i -g @aron98/load-lock@latest`                                |
+| npm global (under `npm root -g`)        | `npm i -g @aron98/load-lock@latest`                                |
+| opencode's npm-cache copy               | refuses — opencode manages this copy and refreshes it on its own schedule |
+| a git checkout (nearest `.git`)         | refuses — update it via your git workflow (`git pull` etc.)        |
+| anything else                           | refuses — "cannot tell how this copy was installed"                 |
+
+After a successful apply it runs `service restart` explicitly, so the
+daemon moves onto the new code immediately (the version handshake remains
+the safety net, not the primary means). The package manager's output is
+shown live. `--check` is a dry run that touches nothing and uses
+script-friendly exit codes:
+
+- exit `0` — up to date (or this copy is ahead of the registry)
+- exit `1` — an update is available (including the honest refusals above:
+  the update *exists*, this copy just cannot self-apply it)
+- exit `70` — failure (registry unreachable, package manager failed, or a
+  refusal in apply mode)
+
+Reports are prose for humans and `--json` structured objects for agents
+(`state`: `up-to-date` | `update-available` | `refused` | `updated`).
+
+### Adapter-init drift notice
+
+The mirror problem is a *newer adapter copy* with an *older CLI on PATH*
+(typically: opencode refreshed its private cache copy, the global install
+was never updated). At init, the OpenCode plugin and the MCP server compare
+their own version with the PATH-resolved CLI copy's `package.json` and
+surface **one clear notice** naming the exact command (`load-lock update`),
+on stderr and in the injected context / MCP `instructions`. Notify only —
+**nothing is ever auto-installed**. Honest limitation: a harness session
+that was already running keeps the *old* adapter code in memory until the
+harness itself restarts, so the notice fires from the new copy at its init
+— sessions started before a refresh see it on their next restart.
+
 Limits, stated honestly: the respawn re-runs the **same argv** — it picks up
 an updated copy only if the daemon's launching copy was updated *in place*
 (the normal `npm i -g` case). A daemon spawned from a different copy (e.g.
@@ -146,10 +194,16 @@ opencode's private cache copy) keeps running that copy's code after a
 restart; see the multi-copy notes in
 [COMPATIBILITY.md](COMPATIBILITY.md#multiple-copies-of-load-lock-opencode).
 Pre-1.3.0 daemons do not answer the handshake and never self-restart —
-`service stop` followed by any load-lock command moves them onto current
-code. The restart behavior itself is live-verified on Linux by the test
-suite (`src/test/update.test.ts`); the in-place-update path beyond
-same-argv respawn is inspected, not live-tested.
+`service restart` (or `service stop` followed by any load-lock command)
+moves them onto current code. The restart behavior itself is live-verified
+on Linux by the test suite (`src/test/update.test.ts`); the in-place-update
+path beyond same-argv respawn is inspected, not live-tested. The `update`
+command's stop→start compositing, its refusals, `--check` exit codes, and
+the adapter-init drift notice are live-verified on Linux by
+`src/test/update-command.test.ts` — with a **stubbed npm on PATH and a
+planted copy**; no test ever contacts the real npm registry or installs
+anything, so the genuine `npm i -g` round trip is contract-tested, not
+live-tested.
 
 ## Configuration
 
@@ -697,9 +751,10 @@ unless you want the grants in your real profile):
 #    GOTCHA 2: the machine's real daemon was still v1.1.0 — a daemon
 #    started before v1.2.0 silently strips the unknown labelPrefix field
 #    (zod), so prefixed labels disappear without any error. Upgrade and
-#    restart: load-lock service stop && load-lock service start. This
-#    verification deliberately
-#    used its own daemon on a temp state dir.
+#    restart: load-lock service stop && load-lock service start (at
+#    verification time there was no `service restart` subcommand; it exists
+#    since issue #38 and is the shorter spelling today). This verification
+#    deliberately used its own daemon on a temp state dir.
 LOAD_LOCK_STATE_DIR=/tmp/ll-32-test node dist/cli/main.js service start
 
 # 1. install the grants (merge-only; prints exactly what it merged)
@@ -763,7 +818,7 @@ The two gotchas that shaped the installer:
 2. **Label prefixes need a current daemon on the host.** A daemon
    started before v1.2.0 strips the unknown `labelPrefix` field silently
    (zod); the dashboard shows the bare label with no error anywhere.
-   `load-lock service stop && load-lock service start` after upgrading.
+   `load-lock service restart` after upgrading.
 
 What was NOT verified: omac's macOS seatbelt path (same profile schema,
 per omac's docs, but the verification machine is Linux) and omac's agent

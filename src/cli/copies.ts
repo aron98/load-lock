@@ -10,9 +10,11 @@
  */
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { isWindows } from "../shared/transport.js";
+import { enclosingPackage, opencodeCacheRoot, PKG_NAME } from "../shared/pkginfo.js";
+
+export { enclosingPackage, opencodeCacheRoot } from "../shared/pkginfo.js";
 
 export interface InstalledCopy {
   /** Where this copy was found. */
@@ -21,38 +23,6 @@ export interface InstalledCopy {
   path: string;
   /** Version string, or null when the package.json could not be read. */
   version: string | null;
-}
-
-/** Package name of this package (used to find enclosing package roots). */
-const PKG_NAME = "@aron98/load-lock";
-
-/**
- * Find the package.json of the @aron98/load-lock copy that contains the
- * given file, by climbing parent directories. Best-effort: returns null if
- * no enclosing package.json matches (or is readable).
- */
-export function enclosingPackage(startDir: string, maxDepth = 12): { path: string; version: string | null } | null {
-  let dir = startDir;
-  for (let i = 0; i < maxDepth; i++) {
-    const pkgPath = join(dir, "package.json");
-    try {
-      if (existsSync(pkgPath)) {
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-        if (pkg?.name === PKG_NAME) {
-          return { path: dir, version: typeof pkg.version === "string" ? pkg.version : null };
-        }
-        // A foreign package.json terminates the climb (e.g. a PATH bin
-        // inside some other tool's package).
-        return null;
-      }
-    } catch {
-      return null;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-  return null;
 }
 
 /** The copy of load-lock this process runs from (its own package root). */
@@ -192,12 +162,4 @@ export function findInstalledCopies(platform: NodeJS.Platform = process.platform
   }
 
   return copies;
-}
-
-/** Cache root the way opencode resolves it (its npm cache lives under it). */
-function opencodeCacheRoot(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | null {
-  if (env.XDG_CACHE_HOME) return env.XDG_CACHE_HOME;
-  if (platform === "win32") return env.LOCALAPPDATA ?? null;
-  if (platform === "darwin") return join(env.HOME ?? homedir(), "Library", "Caches");
-  return join(env.HOME ?? homedir(), ".cache");
 }

@@ -24,6 +24,8 @@ import { POLICY_BRIEF } from "../../policy/text.js";
 import { waitForTurn, WaitAbortedError } from "../../shared/wait-turn.js";
 import { waitForLocalJob, waitForTrackedJob, type WaitableAdapterJob } from "../../shared/wait-completion.js";
 import { killProcessGroup } from "../../shared/transport.js";
+import { detectCliDrift } from "../../shared/drift.js";
+import { packageVersion } from "../../shared/version.js";
 
 const client = new LLClient();
 const knownSessions = new Set<string>();
@@ -68,6 +70,18 @@ function toolContent(v: unknown) {
 export default Plugin.define({
   id: "load-lock",
   setup(ctx) {
+    // Drift notice (issue #38): when this adapter copy is NEWER than the
+    // `load-lock` CLI that PATH resolves to (opencode refreshed its cache
+    // copy but the global install was never updated), surface one clear
+    // notice naming the exact command — on stderr at init, and once in the
+    // injected context. Notify only: nothing is ever auto-installed. Note
+    // the honest limitation (docs/OPERATIONS.md): a harness session that
+    // was already running keeps the OLD adapter code in memory until the
+    // harness itself restarts — this fires from the NEW copy at its init.
+    const cliDrift = detectCliDrift(packageVersion());
+    if (cliDrift) process.stderr.write(cliDrift.message + "\n");
+    const DRIFT_NOTE = cliDrift ? "\n\n" + cliDrift.message : "";
+
     // ------------------------------------------------------------- tools
     ctx.tool.transform((editor) => {
       editor.namespace({
@@ -431,7 +445,7 @@ export default Plugin.define({
 
     // ------------------------------------------- policy on every model call
     void ctx.session.hook("context", async (event) => {
-      event.system.push({ type: "text", text: POLICY_BRIEF + "\n\n" + (await statusBrief()) });
+      event.system.push({ type: "text", text: POLICY_BRIEF + "\n\n" + (await statusBrief()) + DRIFT_NOTE });
     });
 
     // -------------------------------------------------- idle wakeup via watch

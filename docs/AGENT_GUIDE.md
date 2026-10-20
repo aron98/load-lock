@@ -219,3 +219,15 @@ When you hold the permit, you own a share of the machine — bound your own
 work too: prefer e.g. `cargo test -j 2` or a bounded test-worker count over
 unbounded parallelism, and publish what you did via
 `configure(... guidance ...)` notes if it should become convention.
+
+## 7. Keeping load-lock itself current
+
+If load-lock tells you its adapter copy is newer than the installed CLI
+(`load-lock: this load-lock adapter copy (vX) is newer than the installed
+CLI (vY). Run \`load-lock update\` ...`), run it **as an ordinary command**
+(CLI: `load-lock update`; MCP/plugin: spawn the CLI or tell the user) —
+never try to install anything behind the notice; it is notify-only.
+`load-lock update --check` is the safe dry run: exit 0 = up to date,
+1 = update available (or this copy cannot self-apply it — repo checkouts
+and opencode-managed copies are refused honestly), 70 = failure. A
+successful apply restarts the service itself; you do not need to.

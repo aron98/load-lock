@@ -89,7 +89,11 @@ Which copy is authoritative for what:
   (it refreshes the cache entry); you cannot reliably update it by hand.
 - **CLI commands** (`load-lock status`, `service`, `doctor`, …) — the copy on
   PATH (typically a global install via npm/bun). Update it with your usual
-  global install command.
+  global install command, or `load-lock update` (since #38), which detects
+  the package manager from the copy's location and refuses to touch copies
+  it does not manage: it will not "update" the opencode cache copy (opencode
+  owns it) nor a git checkout (your git workflow owns it), and it restarts
+  the service after a successful apply.
 - **The daemon's code** — whichever copy spawned it (usually the CLI copy,
   since auto-spawn and `service start` run from the CLI client code). The
   version handshake makes a daemon self-restart onto updated code when a
@@ -97,7 +101,17 @@ Which copy is authoritative for what:
   argv, so it only picks up an update when its spawning copy was updated
   *in place* (the normal global-upgrade case). A daemon spawned from a
   different copy than the one you updated keeps running the old code until
-  `load-lock service stop` + any command re-spawns it from the new one.
+  `load-lock service restart` (since #38) or `service stop` + any command
+  re-spawns it from the new one.
+
+The mirror drift — a *newer* adapter copy (opencode refreshed its cache)
+with an *older* CLI on PATH — surfaces at adapter init (issue #38): the
+plugin/MCP server prints one clear notice naming `load-lock update` and
+embeds it in the injected context/instructions. Notify only, never
+auto-install. See
+[OPERATIONS.md](OPERATIONS.md#adapter-init-drift-notice) for the
+in-memory-staleness limitation (a running session keeps the old adapter
+code until the harness restarts).
 
 `load-lock doctor` lists every copy it can find (PATH-resolved CLI, this
 running copy, opencode cache copies) with versions and warns when they
