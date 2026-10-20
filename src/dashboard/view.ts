@@ -10,6 +10,7 @@
  */
 import type * as P from "../shared/protocol.js";
 import { packageVersion, compareVersions } from "../shared/version.js";
+import type { InstallDrift } from "../shared/installs.js";
 
 // ------------------------------------------------------------------ feed state
 
@@ -131,6 +132,12 @@ export interface DashboardView {
   daemonRestartNote?: string;
   /** Set when the running daemon is older than the installed copy. */
   versionSkewNote?: string;
+  /**
+   * Set when the RUNNING copy is older than the PATH-resolved CLI install
+   * (issue #39: harnesses like opencode load plugin code once and never
+   * hot-reload it, so an update leaves this session running stale code).
+   */
+  installDriftNote?: string;
   daemon: DaemonView | null;
   pools: PoolView[];
   events: EventLine[]; // newest first
@@ -253,6 +260,10 @@ export interface DashboardInputs {
   state: FeedState;
   lastSyncAt: number;
   daemonRestartNote?: string;
+  /** Running-copy vs PATH-install drift probe result (null = unknown). */
+  installDrift?: InstallDrift | null;
+  /** Wording hint for the drift note; the TUI plugin passes "opencode". */
+  driftSurface?: "cli" | "opencode";
   now: number;
 }
 
@@ -345,10 +356,24 @@ export function buildDashboardView(inps: DashboardInputs): DashboardView {
   // Newest first; keep the tail (feed already bounds history length).
   const evs = [...inps.events].reverse();
 
+  // Issue #39: make in-memory staleness visible. A harness that loads
+  // plugin code once (opencode never hot-reloads plugins) keeps running
+  // the OLD copy after `npm i -g @aron98/load-lock@latest`; the panel can
+  // only hint at the recovery action, which differs per surface.
+  const drift = inps.installDrift;
+  let installDriftNote: string | undefined;
+  if (drift?.stale && drift.pathVersion) {
+    installDriftNote =
+      inps.driftSurface === "opencode"
+        ? `plugin updated — restart opencode to pick up v${drift.pathVersion} (this session still runs v${drift.ownVersion}; opencode does not hot-reload plugins)`
+        : `PATH CLI v${drift.pathVersion} is newer than this copy v${drift.ownVersion} — you are running a stale install`;
+  }
+
   return {
     now,
     state: inps.state,
     daemonRestartNote: inps.daemonRestartNote,
+    installDriftNote,
     versionSkewNote:
       d && typeof d.daemonVersion === "string" && compareVersions(d.daemonVersion, packageVersion()) < 0
         ? `daemon v${d.daemonVersion} is older than installed v${packageVersion()} — it self-restarts on newer-client contact`

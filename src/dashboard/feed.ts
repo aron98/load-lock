@@ -16,6 +16,7 @@
  */
 import type * as P from "../shared/protocol.js";
 import { buildDashboardView, type DashboardView, type FeedState } from "./view.js";
+import { detectInstallDrift, type InstallDrift } from "../shared/installs.js";
 
 /** Structural subset of LLClient the feed needs (LLClient satisfies it). */
 export interface FeedClient {
@@ -37,6 +38,19 @@ export interface FeedOptions {
   inspectEveryMs?: number;
   /** Reconnect backoff base (default 250 ms). */
   reconnectBaseMs?: number;
+  /**
+   * How often to re-check install drift between this running copy and the
+   * PATH-resolved `load-lock` CLI (default 15_000 ms; 0 disables). A harness
+   * that loads plugin code once at startup keeps running the OLD copy after
+   * an update — this makes that visible on the dashboard (issue #39).
+   */
+  driftCheckMs?: number;
+  /**
+   * Wording of the drift hint: "opencode" says "restart opencode to pick up
+   * vX" (the plugin cannot hot-reload), "cli" (default) says the running
+   * copy is stale relative to the PATH CLI.
+   */
+  driftSurface?: "cli" | "opencode";
 }
 
 const DEFAULTS = {
@@ -45,6 +59,8 @@ const DEFAULTS = {
   refreshDebounceMs: 40,
   inspectEveryMs: 60_000,
   reconnectBaseMs: 250,
+  driftCheckMs: 15_000,
+  driftSurface: "cli" as const,
 };
 
 export class DashboardFeed {
@@ -61,10 +77,14 @@ export class DashboardFeed {
   private daemonStartedAt = 0;
   private refreshTimer: NodeJS.Timeout | null = null;
   private slowTimer: NodeJS.Timeout | null = null;
+  private driftTimer: NodeJS.Timeout | null = null;
+  private drift: InstallDrift | null = null;
   private stopped = false;
   private unsub: (() => void) | null = null;
   private connecting: Promise<void> | null = null;
   private viewSeq = 0;
+  /** daemonVersion seen at the previous resync — powers the "restarted onto" note. */
+  private lastDaemonVersion: string | undefined;
 
   /** Fired whenever the rendered view might have changed (state or data). */
   onChange?: () => void;
@@ -107,7 +127,9 @@ export class DashboardFeed {
       typeof this.client.onDisconnect === "function"
         ? ((this.client.onDisconnect(() => void this.handleDisconnect()) as any) ?? undefined)
         : null;
-    await this.connectAndSync();
+    // Timers are installed BEFORE the first connect: a failed initial
+    // connect must not leave the feed without its slow-refresh/drift
+    // timers once the reconnect loop eventually recovers (issue #39 H3).
     this.slowTimer =
       this.opts.slowRefreshMs > 0
         ? setInterval(() => {
@@ -115,14 +137,36 @@ export class DashboardFeed {
           }, this.opts.slowRefreshMs)
         : null;
     this.slowTimer?.unref?.();
+    this.driftTimer =
+      this.opts.driftCheckMs > 0
+        ? setInterval(() => {
+            void this.refreshDrift();
+          }, this.opts.driftCheckMs)
+        : null;
+    this.driftTimer?.unref?.();
+    void this.refreshDrift();
+    try {
+      await this.connectAndSync();
+    } catch (e) {
+      // Issue #39 (hypothesis 3): previously a failed initial connect
+      // rejected start() with no socket ever attached, so no close event
+      // could ever fire handleDisconnect and the feed wedged in
+      // "connecting" forever. Enter the standard reconnect loop instead —
+      // the loop owns recovery, and start() still reports the failure.
+      this.setState("reconnecting");
+      void this.reconnectLoop();
+      throw e;
+    }
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     if (this.slowTimer) clearInterval(this.slowTimer);
+    if (this.driftTimer) clearInterval(this.driftTimer);
     this.refreshTimer = null;
     this.slowTimer = null;
+    this.driftTimer = null;
     this.unsub?.();
     this.unsub = null;
     this.client.close();
@@ -156,12 +200,22 @@ export class DashboardFeed {
     let restartNote: string | undefined;
     if (daemonStartChanged || evRes.latestEventId < this.latestEventId) {
       // Daemon restarted: ids restarted from scratch. Reset and re-pull.
-      restartNote = `daemon restarted (pid ${status.daemon?.pid ?? "?"}); event history re-synced`;
+      const pid = status.daemon?.pid ?? "?";
+      const newVersion = status.daemon?.daemonVersion;
+      // Issue #39 (deliverable d): when the v1.3.0 handshake reports a
+      // DIFFERENT version than the daemon we were talking to, say which
+      // version the daemon restarted onto (e.g. after an update).
+      if (this.lastDaemonVersion && newVersion && newVersion !== this.lastDaemonVersion) {
+        restartNote = `daemon restarted onto v${newVersion} (was v${this.lastDaemonVersion}; pid ${pid}); event history re-synced`;
+      } else {
+        restartNote = `daemon restarted (pid ${pid}); event history re-synced`;
+      }
       this.events = [];
       this.latestEventId = 0;
       const fresh = await this.client.request<P.EventsResult>("events", { sinceEventId: 0 });
       this.mergeEvents(fresh.events, fresh.latestEventId);
     }
+    this.lastDaemonVersion = status.daemon?.daemonVersion;
     this.restartNote = restartNote;
     if (this.inspectAt === 0 || Date.now() - this.inspectAt > this.opts.inspectEveryMs) {
       await this.refreshInspect();
@@ -282,6 +336,21 @@ export class DashboardFeed {
     await this.refresh().catch(() => {});
   }
 
+  /**
+   * Re-probe install drift (running copy vs PATH-resolved CLI) and surface
+   * it on the next view. Public so surfaces can trigger it on demand
+   * (e.g. right after a plugin's panel regains focus).
+   */
+  refreshDrift(): void {
+    if (this.stopped || this.opts.driftCheckMs === 0) return;
+    try {
+      this.drift = detectInstallDrift();
+    } catch {
+      this.drift = null;
+    }
+    this.emitChange();
+  }
+
   /** Render-ready snapshot; countdowns are computed at `now`. */
   view(now = Date.now()): DashboardView {
     return buildDashboardView({
@@ -292,6 +361,8 @@ export class DashboardFeed {
       state: this.state,
       lastSyncAt: this.lastSyncAt,
       daemonRestartNote: this.restartNote,
+      installDrift: this.drift,
+      driftSurface: this.opts.driftSurface,
       now,
     });
   }
