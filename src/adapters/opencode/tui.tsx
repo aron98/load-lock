@@ -131,13 +131,16 @@ function dashboardLines(v: DashboardView, width: number, f: ThemeFg): StyledLine
 
   if (v.daemon) {
     push(
-      `daemon pid ${v.daemon.pid} · uptime ${fmtDuration(v.daemon.uptimeMs)} · config v${v.daemon.configVersion} · protocol v${v.daemon.protocolVersion} · events through #${v.latestEventId}`,
+      `daemon pid ${v.daemon.pid} · uptime ${fmtDuration(v.daemon.uptimeMs)} · config v${v.daemon.configVersion} · protocol v${v.daemon.protocolVersion}` +
+        (v.daemon.daemonVersion ? ` · daemon v${v.daemon.daemonVersion}` : "") +
+        ` · events through #${v.latestEventId}`,
       f.dim,
     );
   } else {
     push(`daemon unreachable — it auto-spawns on the next load-lock command`, f.dim);
   }
   if (v.daemonRestartNote) push(`note: ${v.daemonRestartNote}`, f.warn);
+  if (v.versionSkewNote) push(`note: ${v.versionSkewNote}`, f.warn);
 
   if (v.machine) {
     const m = v.machine;

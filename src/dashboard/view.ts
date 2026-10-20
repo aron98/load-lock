@@ -9,6 +9,7 @@
  * "now" is always an explicit parameter, which makes countdowns testable.
  */
 import type * as P from "../shared/protocol.js";
+import { packageVersion, compareVersions } from "../shared/version.js";
 
 // ------------------------------------------------------------------ feed state
 
@@ -118,6 +119,8 @@ export interface DaemonView {
   uptimeMs: number;
   protocolVersion: number;
   configVersion: number;
+  /** Package version of the daemon's code (pre-handshake daemons omit it). */
+  daemonVersion?: string;
 }
 
 /** The complete render-ready snapshot of the machine-wide budget. */
@@ -126,6 +129,8 @@ export interface DashboardView {
   state: FeedState;
   /** False right after a daemon restart was detected (history was reset). */
   daemonRestartNote?: string;
+  /** Set when the running daemon is older than the installed copy. */
+  versionSkewNote?: string;
   daemon: DaemonView | null;
   pools: PoolView[];
   events: EventLine[]; // newest first
@@ -344,6 +349,10 @@ export function buildDashboardView(inps: DashboardInputs): DashboardView {
     now,
     state: inps.state,
     daemonRestartNote: inps.daemonRestartNote,
+    versionSkewNote:
+      d && typeof d.daemonVersion === "string" && compareVersions(d.daemonVersion, packageVersion()) < 0
+        ? `daemon v${d.daemonVersion} is older than installed v${packageVersion()} — it self-restarts on newer-client contact`
+        : undefined,
     daemon: d
       ? {
           pid: d.pid,
@@ -351,6 +360,7 @@ export function buildDashboardView(inps: DashboardInputs): DashboardView {
           uptimeMs: now - d.startedAt,
           protocolVersion: d.protocolVersion,
           configVersion: inps.status?.config.version ?? 0,
+          daemonVersion: d.daemonVersion,
         }
       : null,
     pools,

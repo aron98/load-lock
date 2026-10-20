@@ -68,12 +68,15 @@ export function renderFrame(view: DashboardView, width = 100, height = 40): stri
 
   if (view.daemon) {
     push(
-      `daemon pid ${view.daemon.pid} · uptime ${fmtDuration(view.daemon.uptimeMs)} · config v${view.daemon.configVersion} · protocol v${view.daemon.protocolVersion} · events through #${view.latestEventId}`,
+      `daemon pid ${view.daemon.pid} · uptime ${fmtDuration(view.daemon.uptimeMs)} · config v${view.daemon.configVersion} · protocol v${view.daemon.protocolVersion}` +
+        (view.daemon.daemonVersion ? ` · daemon v${view.daemon.daemonVersion}` : "") +
+        ` · events through #${view.latestEventId}`,
     );
   } else {
     push(`daemon: unreachable — it auto-spawns on the next load-lock command`);
   }
   if (view.daemonRestartNote) push(`note: ${view.daemonRestartNote}`);
+  if (view.versionSkewNote) push(`note: ${view.versionSkewNote}`);
 
   if (view.machine) {
     const m = view.machine;
