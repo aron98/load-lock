@@ -15,8 +15,9 @@
  *  - a clickable sidebar.footer widget with the same summary (session
  *    screens) — onMouseDown opens the dashboard; the two slots render on
  *    disjoint surfaces, so this is not a double-render
- *  - /load-lock (palette + slash command, also bound to "gl") opens the
- *    panel IN-WINDOW via presentation: "panel" instead of fullscreen
+ *  - /load-lock (palette + slash command) opens the panel IN-WINDOW via
+ *    presentation: "panel" instead of fullscreen (deliberately NOT bound to
+ *    any key — see the "no global key binding" comment in the keymap layer)
  *  - 'r' resync, 'x' force-release, and 'Esc' close while the panel is open;
  *    force-release is an admin action gated behind an explicit select +
  *    confirm dialog
@@ -248,8 +249,8 @@ function MiniIndicator(v: DashboardView, ctx: Context): JSX.Element {
  * Right-sidebar widget: the same glance summary plus a "click to open"
  * affordance. Click support is contract-level (opentui enables mouse and
  * bubbles mouse-down events to slot renderables); terminals that don't
- * deliver mouse events can still open the dashboard with the keymap
- * binding shown on the hint line.
+ * deliver mouse events can still open the dashboard via the /load-lock
+ * slash command (or the command palette) named on the hint line.
  */
 function SidebarWidget(v: DashboardView, ctx: Context): JSX.Element {
   const f = themeFg(ctx.theme);
@@ -266,7 +267,7 @@ function SidebarWidget(v: DashboardView, ctx: Context): JSX.Element {
     );
   }
   const shortcut = ctx.keymap.shortcuts("load-lock.dashboard.open")[0];
-  const hint = shortcut ? `${shortcut} / click opens dashboard` : "click opens dashboard";
+  const hint = shortcut ? `${shortcut} / click opens dashboard` : "/load-lock or click opens dashboard";
   return (
     <box onMouseDown={openDashboard}>
       <text fg={healthColor(g.health, f)}>{`load-lock ${g.bits.join("·")}`}</text>
@@ -347,9 +348,21 @@ export default Plugin.define({
           id: "load-lock.dashboard.open",
           title: "load-lock: open the lock-status dashboard",
           group: "load-lock",
-          // Always-works fallback for the sidebar widget's click affordance
-          // (some terminals don't deliver mouse events to the TUI).
-          bind: "gl",
+          // NO global key binding, on purpose (issue #28):
+          //
+          // 1. Never bind unmodified single letters or letter sequences
+          //    (the old "gl") at global scope: while the keymap engine waits
+          //    for the next key of a sequence it swallows the prefix, so
+          //    plain "g" never reached the composer. Modifier chords don't
+          //    have this problem.
+          // 2. The obvious chord, ctrl+g, is already the host's documented
+          //    default binding for session.first ("Navigate to first
+          //    message", bound to ctrl+g,home,alt+home in opencode >=
+          //    2.0.32); our layer is mode "global" + priority 5 and would
+          //    shadow it. Rather than shadow the host or pick another
+          //    unmodified key, the command ships unbound: the sidebar
+          //    widget (click), the command palette, and the /load-lock
+          //    slash command remain as entry points.
           palette: true,
           slash: { name: "load-lock", aliases: ["lock", "ll"] },
           run: () => {
@@ -370,6 +383,10 @@ export default Plugin.define({
           id: "load-lock.dashboard.resync",
           title: "load-lock: resync the dashboard",
           group: "load-lock",
+          // Unmodified letters are fine here (unlike the global-scope rule
+          // above): `enabled` gates these to moments when OUR panel is the
+          // fullscreen current one and the composer is suspended, so there is
+          // no typing to swallow.
           bind: "r",
           enabled: panelOpen,
           run: () => {
