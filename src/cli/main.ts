@@ -2,14 +2,13 @@
 /**
  * load-lock CLI: inspection, recovery, scriptable flows, execution helper.
  *
- * Exit codes: 0 ok; 64 usage; 65 protocol/data error; 68 not granted yet
- * (queued/registered); 69 offer/claim failed; 70 internal.
+ * Exit codes: 0 ok; 1 update available (`update --check`); 64 usage; 65
+ * protocol/data error; 68 not granted yet (queued/registered); 69
+ * offer/claim failed; 70 internal.
  */
 import { spawn, ChildProcess } from "node:child_process";
-import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { connect } from "node:net";
-import { setTimeout as delay } from "node:timers/promises";
 
 import { LLClient, withClient } from "../shared/client.js";
 import { ProtocolError } from "../shared/protocol.js";
@@ -22,6 +21,8 @@ import { findInstalledCopies } from "./copies.js";
 import { installCommand, uninstallCommand } from "./install.js";
 import { hookCommand } from "./hook.js";
 import { topCommand } from "./top.js";
+import { awaitDaemonUpgraded, serviceRestart, serviceStart, serviceStop, ServiceError } from "./service.js";
+import { updateCommand } from "./update.js";
 
 // ---------------------------------------------------------------- arg parsing
 
@@ -36,7 +37,7 @@ for (let i = 0; i < argv.length; i++) {
   } else if (a.startsWith("--")) {
     const eq = a.indexOf("=");
     if (eq !== -1) flags[a.slice(2, eq)] = a.slice(eq + 1);
-    else if (["json", "follow", "force", "admin", "quiet"].includes(a.slice(2))) flags[a.slice(2)] = true;
+    else if (["json", "follow", "force", "admin", "quiet", "check", "version"].includes(a.slice(2))) flags[a.slice(2)] = true;
     else if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) flags[a.slice(2)] = argv[++i];
     else flags[a.slice(2)] = true;
   } else {
@@ -65,87 +66,6 @@ function defaultAgent(): string {
     process.env.LOAD_LOCK_AGENT ||
     "cli:" + (process.env.USER || "user") + "@" + (process.env.HOSTNAME || "localhost")
   );
-}
-
-// ------------------------------------------------- daemon service helpers
-
-/** daemon.json contents, or null when missing/unreadable. */
-function readDaemonInfo(dir: string): { pid?: number; startedAt?: number; socket?: string } | null {
-  try {
-    return JSON.parse(readFileSync(join(dir, "daemon.json"), "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Version-less hello over a raw socket connection: deliberately does NOT
- * send clientVersion, so asking a daemon for its identity never orders it
- * to self-restart (used by `service stop` and post-restart confirmation).
- * Best-effort: resolves null on any failure.
- */
-function rawHello(sockPath: string, timeoutMs = 2000): Promise<{ pid?: number; daemonVersion?: string; protocolVersion?: number } | null> {
-  return new Promise((resolve) => {
-    let settled = false;
-    let buf = "";
-    const done = (v: unknown) => {
-      if (settled) return;
-      settled = true;
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
-      resolve(v as any);
-    };
-    const sock = connect(sockPath, () => {
-      sock.write(JSON.stringify({ id: 1, method: "hello", params: {} }) + "\n");
-    });
-    sock.on("data", (chunk) => {
-      buf += chunk.toString("utf8");
-      const idx = buf.indexOf("\n");
-      if (idx === -1) return;
-      try {
-        const msg = JSON.parse(buf.slice(0, idx));
-        done(msg.ok ? msg.result : null);
-      } catch {
-        done(null);
-      }
-    });
-    sock.on("error", () => done(null));
-    const timer = setTimeout(() => done(null), timeoutMs);
-    timer.unref?.();
-  });
-}
-
-/** Poll the socket until nothing answers there (bounded). */
-async function waitSocketFree(sockPath: string, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + Math.max(0, timeoutMs);
-  for (;;) {
-    if (!(await probeTransport(sockPath))) return true;
-    if (Date.now() >= deadline) return false;
-    await delay(100);
-  }
-}
-
-/**
- * After ordering a self-restart, wait for the daemon to come back running
- * at least `installed` (the version of this CLI copy). Resolves its hello
- * result, or null if it did not come back (or an older/pre-handshake
- * daemon answered again — e.g. the daemon's copy is not actually updated).
- */
-async function awaitDaemonUpgraded(
-  sockPath: string,
-  timeoutMs: number,
-  installed: string,
-): Promise<{ pid?: number; daemonVersion?: string } | null> {
-  const deadline = Date.now() + Math.max(0, timeoutMs);
-  for (;;) {
-    const h = await rawHello(sockPath, 1500);
-    if (h && typeof h.daemonVersion === "string" && compareVersions(h.daemonVersion, installed) >= 0) return h;
-    if (Date.now() >= deadline) return null;
-    await delay(250);
-  }
 }
 
 // ---------------------------------------------------------------- help text
@@ -189,12 +109,14 @@ const HELP_GROUPS: { title: string; items: HelpItem[] }[] = [
       { names: ["config", "get-config"], desc: "current configuration" },
       { names: ["configure"], desc: "change configuration (compare-and-swap): --reason required" },
       { names: ["dashboard", "top"], desc: "full-screen live dashboard, read-only (never acquires): [--once]" },
+      { names: ["version"], desc: "print this CLI copy's version" },
     ],
   },
   {
     title: "service & diagnostics",
     items: [
-      { names: ["service"], desc: "daemon lifecycle: start | stop | status (stop/start take --timeout <ms>)" },
+      { names: ["service"], desc: "daemon lifecycle: start | stop | restart | status (stop/start/restart take --timeout <ms> for the stop phase)" },
+      { names: ["update"], desc: "check npm for a newer version, install it via the detected package manager, then `service restart` (--check dry-run; refuses repo checkouts / opencode-managed copies)" },
       { names: ["doctor"], desc: "health report: state dir, socket, daemon, versions + copies, machine" },
       { names: ["recover"], desc: "list held permits with diagnostics; recover force-release --id <request-id>" },
     ],
@@ -232,12 +154,17 @@ function usage(): void {
   }
   lines.push(
     "",
-    "exit codes: 0 ok, 64 usage, 65 protocol, 68 not granted yet, 69 offer/claim failed, 70 internal",
+    "exit codes: 0 ok, 1 update available (update --check), 64 usage, 65 protocol, 68 not granted yet, 69 offer/claim failed, 70 internal",
   );
   process.stdout.write(lines.join("\n") + "\n");
 }
 
 async function main(): Promise<void> {
+  // `--version` prints this copy's version (same as the `version` command).
+  if (f["version"] === true) {
+    process.stdout.write(packageVersion() + "\n");
+    return;
+  }
   // `--help`, `-h` and a bare `load-lock` all print the same usage as `help`.
   if (f["help"] !== undefined || cmd === "-h" || (positional.length === 0 && argv.length === 0)) {
     usage();
@@ -477,133 +404,28 @@ async function main(): Promise<void> {
     // --------------------------------------------------------------- service
     case "service": {
       const sub = rest[0] ?? "status";
+      const phase = (e: unknown): never => {
+        if (e instanceof ServiceError) fail(e.message, e.exitCode);
+        throw e;
+      };
       if (sub === "stop") {
-        // Honest stop: signal the daemon, wait bounded for its socket to go
-        // silent, escalate to SIGKILL, and only report success once the
-        // endpoint is verifiably free. A leftover silent socket file or
-        // daemon.json (crash leftovers) is cleaned up either way.
-        const dir = stateDir();
-        const sock = socketPath();
-        const timeoutMs = N("timeout", 5000);
-        const info = readDaemonInfo(dir);
-        const answering = await probeTransport(sock);
-        if (!answering) {
-          // Nothing is listening: no daemon to stop. Clean crash leftovers.
-          try {
-            if (!isWindows() && existsSync(sock)) unlinkSync(sock);
-          } catch {
-            /* ignore */
-          }
-          try {
-            rmSync(join(dir, "daemon.json"), { force: true });
-          } catch {
-            /* ignore */
-          }
-          process.stdout.write("load-lock: no running daemon found (stale files cleaned)\n");
-          return;
-        }
-        // Identify the daemon: prefer daemon.json, else ask it directly
-        // (version-less hello — stopping must not order a self-restart).
-        let pid = typeof info?.pid === "number" ? info.pid : undefined;
-        if (!pid) {
-          const hello = await rawHello(sock, 1500);
-          if (hello && typeof hello.pid === "number") pid = hello.pid;
-        }
-        if (!pid) {
-          fail(
-            `the socket ${sock} answers but no pid could be identified (daemon did not respond and daemon.json names none) ` +
-              `— cannot stop safely; run \`load-lock doctor\``,
-            70,
-          );
-        }
-        let how = "SIGTERM";
-        let stopped = false;
-        try {
-          process.kill(pid!, "SIGTERM");
-        } catch (e: any) {
-          if (e?.code === "ESRCH") stopped = true; // already gone
-          else fail(`cannot signal daemon pid ${pid}: ${e?.message ?? e}`, 70);
-        }
-        if (!stopped) stopped = await waitSocketFree(sock, timeoutMs);
-        if (!stopped) {
-          how = "SIGKILL";
-          try {
-            process.kill(pid!, "SIGKILL");
-          } catch {
-            /* already dead */
-          }
-          stopped = await waitSocketFree(sock, timeoutMs);
-        }
-        if (!stopped) {
-          fail(`daemon pid ${pid} did not stop within ${timeoutMs}ms even after SIGKILL — run \`load-lock doctor\``, 70);
-        }
-        try {
-          if (!isWindows() && existsSync(sock)) unlinkSync(sock);
-        } catch {
-          /* ignore */
-        }
-        try {
-          rmSync(join(dir, "daemon.json"), { force: true });
-        } catch {
-          /* ignore */
-        }
-        process.stdout.write(
-          `load-lock: daemon (pid ${pid}) stopped${how === "SIGKILL" ? " (required SIGKILL after SIGTERM)" : ""}\n`,
-        );
+        // Hardened stop: SIGTERM → bounded wait → SIGKILL → verified-free
+        // endpoint; crash leftovers cleaned either way.
+        process.stdout.write(`load-lock: ${await serviceStop(N("timeout", 5000)).catch(phase)}\n`);
         return;
       }
       if (sub === "start") {
         // Connecting auto-spawns a detached daemon (see shared/client.ts);
         // hello confirms it is up. Refusals name the conflicting pid.
-        const timeoutMs = N("timeout", 10_000);
-        const sock = socketPath();
-        const installed = packageVersion();
-        try {
-          const r = (await withClient((c) => c.request("hello", {}, timeoutMs))) as any;
-          const dv = typeof r.daemonVersion === "string" ? r.daemonVersion : undefined;
-          if (dv && compareVersions(dv, installed) < 0) {
-            // The handshake just ordered this old daemon to self-restart;
-            // confirm it comes back on updated code.
-            const up = await awaitDaemonUpgraded(sock, 8000, installed);
-            if (up) {
-              process.stdout.write(
-                `load-lock: daemon self-restarted ${r.pid} -> ${up.pid} (v${dv} -> v${up.daemonVersion}), running on ${sock}\n`,
-              );
-            } else {
-              process.stdout.write(
-                `load-lock: daemon running on pid ${r.pid} (${sock}), daemon v${dv} — older than this CLI v${installed}; ` +
-                  `self-restart ordered but not confirmed (its copy may not be updated in place — see docs/OPERATIONS.md)\n`,
-              );
-            }
-            return;
-          }
-          process.stdout.write(
-            `load-lock: daemon running on pid ${r.pid} (${sock})${dv ? `, daemon v${dv}` : ""}\n`,
-          );
-          return;
-        } catch (e) {
-          if (await probeTransport(sock)) {
-            // Something owns the endpoint. Name it.
-            const hello = await rawHello(sock, 1500);
-            if (hello && typeof hello.pid === "number") {
-              fail(
-                `start refused: socket answered from pid ${hello.pid} — another daemon owns ${sock}; ` +
-                  `if it is stale, run \`load-lock service stop\` first`,
-                70,
-              );
-            }
-            const info = readDaemonInfo(stateDir());
-            if (info && typeof info.pid === "number") {
-              fail(
-                `socket ${sock} answers but the daemon did not respond (daemon.json names pid ${info.pid}) — likely hung; ` +
-                  `run \`load-lock service stop\``,
-                70,
-              );
-            }
-            fail(`start refused: ${sock} is in use but nothing responsive owns it — run \`load-lock doctor\``, 70);
-          }
-          throw e;
-        }
+        process.stdout.write(`load-lock: ${await serviceStart(N("timeout", 10_000)).catch(phase)}\n`);
+        return;
+      }
+      if (sub === "restart") {
+        // Hardened stop, then honest start — both phases reported; a
+        // failure names the phase and reason (issue #38).
+        const r = await serviceRestart(N("timeout", 5000), 10_000).catch(phase);
+        process.stdout.write(`load-lock: ${r.stop}\nload-lock: ${r.start}\n`);
+        return;
       }
       if (sub === "status") {
         const r = (await withClient((c) => c.request("hello", {}))) as any;
@@ -622,9 +444,24 @@ async function main(): Promise<void> {
         });
         return;
       }
-      fail(`service: unknown subcommand "${sub}" (use start | stop | status)`);
+      fail(`service: unknown subcommand "${sub}" (use start | stop | restart | status)`);
       return;
     }
+
+    // ---------------------------------------------------------------- update
+    case "update": {
+      // issue #38: registry check → classify self → apply via the detected
+      // package manager (or refuse honestly) → `service restart` on
+      // success. Exit code comes from updateCommand (1 = update available
+      // under --check; 70 = failure/refusal in apply mode).
+      const code = await updateCommand({ check: B("check"), json: B("json") });
+      if (code !== 0) process.exit(code);
+      return;
+    }
+
+    case "version":
+      process.stdout.write(packageVersion() + "\n");
+      return;
 
     case "doctor": {
       const report: Record<string, unknown> = {};
