@@ -169,10 +169,17 @@ alternate screen, so it works anywhere the CLI works.
 The OpenCode installer also ships the package's `./tui` plugin export (a
 companion to the main plugin, which is unchanged). Inside the opencode TUI:
 
-- `/load-lock` (or the command palette) opens the **load-lock.dashboard**
-  session panel full-screen: same data as `load-lock dashboard`, themed,
-  live-updating.
-- The home footer gains a small `lock 1/1·Q2` indicator.
+- `/load-lock` (or the command palette, or the `gl` keybinding) opens the
+  **load-lock.dashboard** session panel **in-window** as a side panel —
+  same data as `load-lock dashboard`, themed, live-updating, with the rest
+  of the TUI layout still visible beside it.
+- Every session screen shows an at-a-glance widget at the bottom of the
+  right sidebar: `load-lock 0/3` colored by pool health (green ok, yellow
+  full/queued, red daemon down) plus a hint line. Clicking it opens the
+  dashboard; `gl` is the fallback for terminals that don't deliver mouse
+  events. The home screen keeps its `lock 1/1·Q2` footer indicator — the
+  sidebar widget only renders on session screens, so the two never
+  double-render.
 - `r` resyncs; `x` opens force-release, which requires an explicit
   select + confirm — the panel itself is read-only.
 - `Esc` closes the panel (the footer has always advertised this). It is
@@ -180,9 +187,15 @@ companion to the main plugin, which is unchanged). Inside the opencode TUI:
   palette — is open, so Esc keeps cancelling the dialog instead of
   closing the panel underneath it.
 
-Verified live against opencode 2.0.29: the panel renders pools, holder
-cards, queue positions and the event feed against the real daemon, and the
-`x` flow refuses to release anything until the confirm dialog accepts.
+Verified live against opencode 2.0.32 (real pty session): the sidebar
+widget renders with live daemon data, a mouse press on the widget opens
+the dashboard in-window with the chat still visible beside it, `gl` opens
+it as well, and the `/load-lock` command appears in the slash suggestions.
+Earlier live verification (2.0.29): panel render, palette/slash entry
+points, and the confirm-gated force-release flow. Click handling itself
+is contract-level from opentui (mouse reporting enabled by default,
+mouse-down events bubble to slot renderables) — the pty test above
+exercises the full path; the `gl` binding works regardless.
 Plugins configured in `opencode.json` that expose `./tui` are loaded
 automatically by the CLI, so the published package needs no extra config.
 For local development against a checkout, opencode also auto-discovers

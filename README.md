@@ -76,8 +76,10 @@ load-lock help                                            # one-screen usage of 
 load-lock configure --capacity 2 --reason "16-core host" --author me
 ```
 
-OpenCode users also get a live dashboard panel inside the TUI (`/load-lock`)
-— same data, themed. See docs/OPERATIONS.md → "Dashboard".
+OpenCode users also get a live dashboard inside the TUI: `/load-lock`
+opens it in-window, every session screen shows a clickable at-a-glance
+widget in the right sidebar, and the home screen has a footer indicator —
+same data, themed. See docs/OPERATIONS.md → "Dashboard".
 
 ## Layout
 

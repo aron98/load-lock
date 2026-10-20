@@ -11,8 +11,12 @@
  *    holder cards (label, reason, phase, pid/pgid, age, lease deadline),
  *    offer cards with claim-window countdown, FIFO queue positions,
  *    paused requests, the recent event feed, and the inspect_machine panel
- *  - a home.footer.status indicator summarizing the heavy pool
- *  - /load-lock (palette + slash command) opens the panel full-screen
+ *  - a home.footer.status indicator summarizing the heavy pool (home screen)
+ *  - a clickable sidebar.footer widget with the same summary (session
+ *    screens) — onMouseDown opens the dashboard; the two slots render on
+ *    disjoint surfaces, so this is not a double-render
+ *  - /load-lock (palette + slash command, also bound to "gl") opens the
+ *    panel IN-WINDOW via presentation: "panel" instead of fullscreen
  *  - 'r' resync, 'x' force-release, and 'Esc' close while the panel is open;
  *    force-release is an admin action gated behind an explicit select +
  *    confirm dialog
@@ -28,9 +32,9 @@
  * that boundary, eager evaluation is exactly the semantics we want.
  */
 import { Plugin } from "@opencode/plugin/tui";
-import type { Context, PanelInput } from "@opencode/plugin/tui/context";
+import type { Context, PanelInput, PanelPresentation } from "@opencode/plugin/tui/context";
 import { createComponent, createSignal, Show } from "solid-js";
-import type { RGBA } from "@opentui/core";
+import type { MouseEvent, RGBA } from "@opentui/core";
 import type { JSX } from "@opentui/solid";
 import { LLClient } from "../../shared/client.js";
 import { DashboardFeed } from "../../dashboard/feed.js";
@@ -44,6 +48,13 @@ import {
 } from "../../dashboard/view.js";
 
 const PANEL_NAME = "load-lock.dashboard";
+
+/**
+ * The dashboard opens as an in-window panel ("panel" is the SDK's in-window
+ * PanelPresentation; "fullscreen" takes over the whole TUI). Exported so
+ * tests can pin the choice (issue #24).
+ */
+export const PANEL_PRESENTATION: PanelPresentation = "panel";
 
 // ---------------------------------------------------------------- theme
 
@@ -187,22 +198,81 @@ function PanelBody(v: DashboardView, panel: PanelInput, ctx: Context): JSX.Eleme
   );
 }
 
-function MiniIndicator(v: DashboardView, ctx: Context): JSX.Element {
-  const f = themeFg(ctx.theme);
+// ---------------------------------------------------------------- glance
+
+/**
+ * Health of the at-a-glance summary. "down" means the daemon feed is not
+ * live (daemon down / connecting); the others describe the pool itself.
+ */
+export type GlanceHealth = "good" | "warn" | "bad" | "down";
+
+/** Render-ready at-a-glance summary of one pool (pure; unit-tested). */
+export interface PoolGlance {
+  /** e.g. ["2/3", "Q1", "P2"] — used/capacity, then queue/paused counts. */
+  bits: string[];
+  health: GlanceHealth;
+}
+
+/**
+ * One-line heavy-pool summary shared by the home footer indicator and the
+ * sidebar widget, so both surfaces always agree. Prefers the "heavy" pool
+ * and falls back to the first pool for custom configurations.
+ */
+export function poolGlance(v: DashboardView): PoolGlance | null {
   const pool = v.pools.find((p) => p.pool === "heavy") ?? v.pools[0];
-  if (!pool) return <text fg={f.dim}>lock: no pools</text>;
+  if (!pool) return null;
   const bits = [`${pool.used}/${pool.capacity}`];
   if (pool.queue.length) bits.push(`Q${pool.queue.length}`);
   if (pool.paused.length) bits.push(`P${pool.paused.length}`);
-  const fg =
-    v.state !== "live"
-      ? f.bad
-      : pool.used >= pool.capacity
-        ? f.warn
-        : pool.queue.length
-          ? f.warn
-          : f.good;
-  return <text fg={fg}>{`lock ${bits.join("·")}`}</text>;
+  let health: GlanceHealth;
+  if (v.state !== "live") health = "down";
+  else if ((pool.capacity > 0 && pool.used >= pool.capacity) || pool.queue.length > 0) health = "warn";
+  else health = "good";
+  return { bits, health };
+}
+
+function healthColor(h: GlanceHealth, f: ThemeFg): RGBA {
+  if (h === "good") return f.good;
+  if (h === "warn") return f.warn;
+  return f.bad; // "bad" and "down" both read as the error color
+}
+
+function MiniIndicator(v: DashboardView, ctx: Context): JSX.Element {
+  const f = themeFg(ctx.theme);
+  const g = poolGlance(v);
+  if (!g) return <text fg={f.dim}>lock: no pools</text>;
+  return <text fg={healthColor(g.health, f)}>{`lock ${g.bits.join("·")}`}</text>;
+}
+
+/**
+ * Right-sidebar widget: the same glance summary plus a "click to open"
+ * affordance. Click support is contract-level (opentui enables mouse and
+ * bubbles mouse-down events to slot renderables); terminals that don't
+ * deliver mouse events can still open the dashboard with the keymap
+ * binding shown on the hint line.
+ */
+function SidebarWidget(v: DashboardView, ctx: Context): JSX.Element {
+  const f = themeFg(ctx.theme);
+  const openDashboard = (e: MouseEvent) => {
+    if (e.button !== 0) return; // 0 = MouseButton.LEFT; ignore other buttons
+    ctx.ui.panel.open(PANEL_NAME, { presentation: PANEL_PRESENTATION });
+  };
+  const g = poolGlance(v);
+  if (!g) {
+    return (
+      <box onMouseDown={openDashboard}>
+        <text fg={f.dim}>load-lock: no pools configured</text>
+      </box>
+    );
+  }
+  const shortcut = ctx.keymap.shortcuts("load-lock.dashboard.open")[0];
+  const hint = shortcut ? `${shortcut} / click opens dashboard` : "click opens dashboard";
+  return (
+    <box onMouseDown={openDashboard}>
+      <text fg={healthColor(g.health, f)}>{`load-lock ${g.bits.join("·")}`}</text>
+      <text fg={f.dim}>{hint}</text>
+    </box>
+  );
 }
 
 // ---------------------------------------------------------------- plugin
@@ -277,10 +347,13 @@ export default Plugin.define({
           id: "load-lock.dashboard.open",
           title: "load-lock: open the lock-status dashboard",
           group: "load-lock",
+          // Always-works fallback for the sidebar widget's click affordance
+          // (some terminals don't deliver mouse events to the TUI).
+          bind: "gl",
           palette: true,
           slash: { name: "load-lock", aliases: ["lock", "ll"] },
           run: () => {
-            ctx.ui.panel.open(PANEL_NAME, { presentation: "fullscreen" });
+            ctx.ui.panel.open(PANEL_NAME, { presentation: PANEL_PRESENTATION });
           },
         },
         {
@@ -343,10 +416,27 @@ export default Plugin.define({
         } as never) as unknown as JSX.Element,
     });
 
+    // Right-sidebar at-a-glance widget (session screens). The sidebar.footer
+    // slot pins it at the bottom of the sidebar so it stays visible even
+    // when the session list is long. Disjoint from the home footer above,
+    // so the two indicators never render on the same screen.
+    const offSidebar = ctx.ui.slot({
+      append: "sidebar.footer",
+      render: () =>
+        createComponent(Show, {
+          get when() {
+            return view() ?? false;
+          },
+          keyed: true,
+          children: (v: DashboardView) => SidebarWidget(v, ctx),
+        } as never) as unknown as JSX.Element,
+    });
+
     return () => {
       if (tick) clearInterval(tick);
       offPanel();
       offFooter();
+      offSidebar();
       void feed.stop();
     };
   },
