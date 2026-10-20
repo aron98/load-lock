@@ -607,56 +607,122 @@ Caveats observed (verified):
   inside the sandbox and split the budget. The tests in
   `src/test/sandbox.test.ts` pin the loud failure instead.
 
-### omac — contract-inspected
+### omac — live-verified
 
-**omac is not installed on the verification machine**, so nothing in this
-subsection was executed here; it is assembled from omac's documented
-behavior (the facts below are from omac's docs, not invented) and the
-bubblewrap recipe above, which omac wraps on Linux. Treat it as a
-ready-to-run procedure with expected outcomes, and record what you find.
+Verified 2026-10-20 against **omac 0.11.0** (extracted package binary, no
+root needed) on Linux, driving the load-lock CLI from the v1.2.0 worktree
+build end-to-end from inside `omac sandbox run`. omac wraps bubblewrap +
+Landlock on Linux (seatbelt on macOS with the same env-stripping) and
+**strips the harness environment**, allowing through only variables
+listed in the user-global sandbox profile —
+`~/.config/omac/sandbox-profiles/default.json`. The profile is the whole
+recipe, and `load-lock install --harness omac` writes it for you
+(merge-only; idempotent; `load-lock uninstall --harness omac` removes
+exactly the entries it added):
 
-omac sandboxes agents with bubblewrap on Linux (seatbelt on macOS, WSL2
-elsewhere) and **strips the harness environment** before starting the
-agent, allowing through only variables listed in the sandbox profile's
-`environment.allow_vars` — `~/.config/omac/sandbox-profiles/default.json`
-by default. That file is the whole recipe:
+```json
+{
+  "filesystem": {
+    "allow_unix_dir": ["<load-lock state dir>"],
+    "read": ["<installed package tree>"]
+  },
+  "environment": { "allow_vars": ["LOAD_LOCK_*"] }
+}
+```
 
-1. Make sure the load-lock state dir is visible inside omac's bubblewrap
-   sandbox (the `LOAD_LOCK_SOCKET` path must resolve inside it). How
-   omac's sandbox mounts map to bwrap `--bind`s is an omac sandbox-config
-   question — omac's own facade socket under `~/.local/state/omac/run/`
-   is the project's precedent for a sandbox process connecting to a
-   host-owned socket through its profile.
-2. Add the load-lock variables to the profile's `environment.allow_vars`:
+- `filesystem.allow_unix_dir` += the state dir: AF_UNIX connect to the
+  host daemon socket plus read/write on the state dir — this is the
+  sandbox→host bridge (omac has no separate "bind" step; the grant is the
+  bridge).
+- `environment.allow_vars` += `"LOAD_LOCK_*"` — one trailing-`*` prefix
+  entry (verified: omac 0.11.0 accepts prefix patterns) covering all four
+  client vars (`LOAD_LOCK_SOCKET`, `LOAD_LOCK_STATE_DIR`,
+  `LOAD_LOCK_NO_SPAWN`, `LOAD_LOCK_LABEL_PREFIX`).
+- `filesystem.read` += the installed package tree — **only when
+  load-lock lives outside an already-granted workdir** (see gotcha 1).
 
-   ```json
-   {
-     "environment": {
-       "allow_vars": [
-         "LOAD_LOCK_SOCKET",
-         "LOAD_LOCK_STATE_DIR",
-         "LOAD_LOCK_NO_SPAWN",
-         "LOAD_LOCK_LABEL_PREFIX"
-       ]
-     }
-   }
-   ```
+The exact procedure that was verified (run it with a throwaway `HOME`
+unless you want the grants in your real profile):
 
-   Set the values themselves in your harness env (or the profile's env
-   mechanism): `LOAD_LOCK_SOCKET` to the host daemon socket as seen inside
-   the sandbox, `LOAD_LOCK_NO_SPAWN=1`, and — recommended —
-   `LOAD_LOCK_LABEL_PREFIX=omac` so the dashboard shows holders as
-   `omac:<label>`.
-3. Watch out: **omac never rewrites a profile it has created**, so if your
-   `default.json` already exists, edit it by hand (adding the entries
-   above); and **unknown profile fields are errors**, so don't invent
-   other keys — `allow_vars` entries are plain variable names.
+```sh
+# 0. scratch dirs + a current daemon built from the v1.2.0+ tree.
+#    GOTCHA 2: the machine's real daemon was still v1.1.0 — a daemon
+#    started before v1.2.0 silently strips the unknown labelPrefix field
+#    (zod), so prefixed labels disappear without any error. Upgrade and
+#    restart: load-lock service stop && load-lock service start. This
+#    verification deliberately
+#    used its own daemon on a temp state dir.
+LOAD_LOCK_STATE_DIR=/tmp/ll-32-test node dist/cli/main.js service start
 
-Expected outcome (unverified here): with those four variables allowed and
-the state dir mounted, an agent inside omac behaves exactly like the
-verified bubblewrap case above — host daemon answers, labels carry the
-`omac:` prefix, and long holds need `mark_started` + heartbeats (lease
-mode) because of the PID namespace.
+# 1. install the grants (merge-only; prints exactly what it merged)
+HOME=/tmp/ll-32-home LOAD_LOCK_STATE_DIR=/tmp/ll-32-test \
+  node dist/cli/main.js install --harness omac
+
+# 2. omac's strict parser accepts the profile (unknown fields are errors)
+HOME=/tmp/ll-32-home omac sandbox run -- true    # exit 0, no ERROR lines
+
+# 3. sandboxed client -> host daemon round-trip.
+#    NOTE: standalone `omac sandbox run` starts at cwd "/" and grants NO
+#    workdir by default — `--workdir-access read` binds the invocation
+#    dir read-only, modeling what a real omac agent session gets for its
+#    project workdir (which is why a repo checkout needs no read grant).
+#    The env values are set inside the sandboxed command with `env`
+#    (`-- env VAR=... node ...`); with the LOAD_LOCK_* allow_vars entry
+#    in place they could equally be inherited from the outer shell.
+HOME=/tmp/ll-32-home omac sandbox run --workdir-access read -- \
+  env LOAD_LOCK_SOCKET=/tmp/ll-32-test/daemon.sock LOAD_LOCK_NO_SPAWN=1 \
+      LOAD_LOCK_LABEL_PREFIX=omac \
+  node dist/cli/main.js acquire --op-key issue-32-live \
+    --reason "issue-32 live verification build" --label "issue-32 build" --json
+# -> permit prm_…; host status shows:
+#    held: omac:issue-32 build — issue-32 live verification build [claimed, awaiting start]
+
+# 4. host-side release (or any later step from inside the sandbox):
+node dist/cli/main.js release --permit prm_…   # -> releasedNow: true
+```
+
+Also verified live:
+
+- **`LOAD_LOCK_NO_SPAWN=1` error contract**: with the client pointed at a
+  missing socket inside the sandbox, the CLI exits **70** with the loud
+  "not reachable and auto-spawn is disabled … bridge its socket into this
+  sandbox" error instead of silently spawning a sandbox-local daemon.
+- **Lease-mode lifecycle across the PID namespace** (same as the
+  bubblewrap case): `acquire` → `mark-started` (held, lease 900s) →
+  `release` (`releasedNow: true`), all issued from inside the sandbox;
+  long holds need lease mode because the host daemon pid is invisible to
+  the sandbox.
+- **Install/uninstall round-trips against the real omac**: a populated
+  user profile (workdir/network/environment entries) survives install
+  byte-faithfully with our grants appended, omac's strict parser accepts
+  the merged file, and uninstall leaves the user entries intact; a
+  from-scratch profile is removed entirely on uninstall (with the omac
+  config tree pruned) and omac keeps running on its defaults.
+
+The two gotchas that shaped the installer:
+
+1. **A global install needs a read grant for the package tree, not just
+   the bin dir.** omac's builtin grants cover `~/.bun/bin`, but the
+   launcher resolves the dist tree under
+   `~/.bun/install/global/node_modules/@aron98/load-lock/dist/…` —
+   ungranted, the CLI dies with `Cannot find module …` (exit 1) before
+   ever reaching the socket. Proven live both ways: the sandboxed CLI
+   from a global-style tree failed with exactly that error before the
+   grant, and completed the full acquire→mark-started→release round-trip
+   after `filesystem.read` covered the tree. A repo checkout needs no
+   read grant (the agent session's workdir already covers it) and the
+   installer says so honestly in its output.
+2. **Label prefixes need a current daemon on the host.** A daemon
+   started before v1.2.0 strips the unknown `labelPrefix` field silently
+   (zod); the dashboard shows the bare label with no error anywhere.
+   `load-lock service stop && load-lock service start` after upgrading.
+
+What was NOT verified: omac's macOS seatbelt path (same profile schema,
+per omac's docs, but the verification machine is Linux) and omac's agent
+orchestration commands (`omac start`/`continue`/…) driving a real agent —
+the round-trip was verified with the documented `omac sandbox run`
+primitive those commands build on. The installer's contract tests cover
+the merge/uninstall edge cases (`src/test/install.test.ts`).
 
 ### Docker — contract-inspected
 
@@ -730,8 +796,10 @@ path-literal strict, or re-generate the profile. Expected outcome
 `LOAD_LOCK_LABEL_PREFIX=…`) passed through to the agent, a seatbelt-sandboxed
 client talks to the host daemon exactly as in the verified bubblewrap
 case. omac's macOS sandboxing uses seatbelt under the hood with the same
-`environment.allow_vars` env-stripping as on Linux, so the omac recipe
-above (profile `allow_vars` + bridged socket path) applies unchanged.
+`environment.allow_vars` env-stripping as on Linux, so the omac installer
+(`load-lock install --harness omac`, live-verified on Linux against omac
+0.11.0 — see above) applies unchanged; only the socket path and the
+seatbelt file rules differ.
 
 ### WSL2 — honest state
 
