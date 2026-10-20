@@ -1293,7 +1293,7 @@ function installOmac(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): stri
   );
   actions.push(
     "label prefixes need load-lock >= 1.2.0 on BOTH ends: a daemon started before v1.2.0 " +
-      "silently strips the unknown labelPrefix field — upgrade and restart the daemon (load-lock service restart)",
+      "silently strips the unknown labelPrefix field — upgrade and restart the daemon (load-lock service stop && load-lock service start)",
   );
   actions.push(
     "verified live against omac 0.11.0 (bubblewrap + Landlock): sandboxed client -> host daemon " +

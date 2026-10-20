@@ -649,7 +649,8 @@ unless you want the grants in your real profile):
 #    GOTCHA 2: the machine's real daemon was still v1.1.0 — a daemon
 #    started before v1.2.0 silently strips the unknown labelPrefix field
 #    (zod), so prefixed labels disappear without any error. Upgrade and
-#    restart: load-lock service restart. This verification deliberately
+#    restart: load-lock service stop && load-lock service start. This
+#    verification deliberately
 #    used its own daemon on a temp state dir.
 LOAD_LOCK_STATE_DIR=/tmp/ll-32-test node dist/cli/main.js service start
 
@@ -714,7 +715,7 @@ The two gotchas that shaped the installer:
 2. **Label prefixes need a current daemon on the host.** A daemon
    started before v1.2.0 strips the unknown `labelPrefix` field silently
    (zod); the dashboard shows the bare label with no error anywhere.
-   `load-lock service restart` after upgrading.
+   `load-lock service stop && load-lock service start` after upgrading.
 
 What was NOT verified: omac's macOS seatbelt path (same profile schema,
 per omac's docs, but the verification machine is Linux) and omac's agent
