@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-label="load-lock — machine-wide permits for parallel coding agents">
+  <!-- card -->
+  <rect x="4" y="4" width="1192" height="332" rx="24" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
+
+  <!-- window dots -->
+  <circle cx="40" cy="40" r="7" fill="#ff5f56"/>
+  <circle cx="66" cy="40" r="7" fill="#ffbd2e"/>
+  <circle cx="92" cy="40" r="7" fill="#27c93f"/>
+
+  <!-- semaphore gauge: 2 of 3 in use -->
+  <g>
+    <rect x="440" y="92" width="72" height="30" rx="8" fill="#3fb950"/>
+    <rect x="526" y="92" width="72" height="30" rx="8" fill="#3fb950"/>
+    <rect x="612" y="92" width="72" height="30" rx="8" fill="none" stroke="#3fb950" stroke-width="2.5"/>
+    <text x="716" y="116" font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, monospace" font-size="26" font-weight="bold" fill="#8b949e">2/3</text>
+  </g>
+
+  <!-- wordmark -->
+  <text x="600" y="232" text-anchor="middle" font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, monospace" font-size="80" font-weight="bold" fill="#e6edf3">load<tspan fill="#3fb950">-lock</tspan></text>
+
+  <!-- tagline -->
+  <text x="600" y="282" text-anchor="middle" font-family="ui-monospace, 'DejaVu Sans Mono', Menlo, monospace" font-size="26" fill="#8b949e">machine-wide permits for parallel coding agents</text>
+</svg>

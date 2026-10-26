@@ -1,6 +1,17 @@
-# load-lock
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/banner.svg">
+    <img src="assets/banner.svg" width="640" alt="load-lock — machine-wide permits for parallel coding agents">
+  </picture>
+</h1>
 
-[![CI](https://github.com/aron98/load-lock/actions/workflows/ci.yml/badge.svg)](https://github.com/aron98/load-lock/actions/workflows/ci.yml)
+<p align="center">
+  <a href="https://github.com/aron98/load-lock/actions/workflows/ci.yml"><img src="https://github.com/aron98/load-lock/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/@aron98/load-lock"><img src="https://img.shields.io/npm/v/@aron98/load-lock?color=%233fb950" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/@aron98/load-lock"><img src="https://img.shields.io/npm/dm/@aron98/load-lock?color=%233fb950" alt="npm downloads"></a>
+  <a href="https://github.com/aron98/load-lock/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="license MIT"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A520-green" alt="node >= 20">
+</p>
 
 **A machine-wide heavy-work budget for parallel coding agents.**
 
@@ -20,6 +31,12 @@ agent A (OpenCode)        agent B (Codex)         agent C (Claude Code)
   ...                       offer → claim ✓ runs    (misses window → paused)
   release ✓                 release ✓               rejoin → offer → claim ✓
 ```
+
+Three agents, one budget — the queue drains FIFO while everyone keeps coding:
+
+<p align="center">
+  <img src="assets/demo.gif" width="640" alt="load-lock demo: three agents acquire permits, the queue drains FIFO, watched live via load-lock dashboard">
+</p>
 
 ## Features
 
