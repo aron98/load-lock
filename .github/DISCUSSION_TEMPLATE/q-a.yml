@@ -1,0 +1,27 @@
+title: "[Q&A] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask a question about load-lock — install, adapters, policy text, sandbox
+        bridging, daemon behavior, anything.
+
+        Quick diagnostics that help answer you faster:
+        - `load-lock doctor` output
+        - `load-lock status` output
+        - Harness name(s) and OS
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: One question per thread works best.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context (version, OS, harness, sandbox setup)
+      description: Optional but speeds up answers.
+    validations:
+      required: false
