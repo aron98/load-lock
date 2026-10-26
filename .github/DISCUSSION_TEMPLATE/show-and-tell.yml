@@ -1,0 +1,24 @@
+title: "[Setup] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Show your setup — agent count, harnesses, capacity, machine, sandboxes.
+        Real-world configs here get quoted back into the docs, so even a
+        one-liner helps. Start with [the original setup thread](https://github.com/aron98/load-lock/discussions/42)
+        for inspiration.
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup
+      description: e.g. "3 agents (OpenCode + Claude Code + Codex), capacity 2, 8-core/32GB, one agent in a Docker container bridging the socket."
+    validations:
+      required: true
+  - type: textarea
+    id: surprises
+    attributes:
+      label: Anything surprising?
+      description: Weird queue behavior, agents proposing capacity changes on their own, sandbox tricks…
+    validations:
+      required: false

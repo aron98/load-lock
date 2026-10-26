@@ -1,0 +1,25 @@
+title: "[Idea] "
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Ideas grounded in a real coordination problem get built faster.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What should it do?
+      description: Sketch the behavior, even roughly. CLI shape or tool name helps.
+    validations:
+      required: true
+  - type: checkboxes
+    id: cooperative
+    attributes:
+      label: Design constraint check
+      description: load-lock is deliberately cooperative/advisory — ideas that require enforcement or command wrapping are welcome but will be debated.
+      options:
+        - label: This idea stays within (or openly debates) the cooperative model.
+          required: true

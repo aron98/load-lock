@@ -1,0 +1,19 @@
+title: ""
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        General discussion about load-lock — coordination stories, setup questions,
+        anything that doesn't fit the categories below.
+
+        **Before posting, please run `load-lock doctor`** and include its output
+        if something isn't working. Also mention your harness(es) and how you
+        installed (npm global, `load-lock install --harness <name>`).
+  - type: textarea
+    id: content
+    attributes:
+      label: What's on your mind?
+      description: The more context (harnesses, machine, capacity), the better others can help.
+    validations:
+      required: true
