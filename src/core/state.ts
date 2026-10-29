@@ -100,6 +100,24 @@ interface Entry {
   leaseDeadline?: number;
   lastSeen?: number;
   enqueuedAt?: number;
+  /** Journal fields this version doesn't know (written by a newer daemon); written back as-is (issue #51). */
+  journalExtra?: Record<string, unknown>;
+}
+
+/** Journal entry fields this version understands; everything else is carried through (issue #51). */
+const KNOWN_JOURNAL_KEYS = new Set([
+  "formatVersion", "requestId", "pool", "agentId", "agentLabel", "cwd", "opKey", "reason", "weight",
+  "permitToken", "phase", "pid", "pgid", "pidStartTime", "claimedAt", "startedAt", "leaseDeadline", "state", "enqueuedAt",
+]);
+const KNOWN_PHASES = new Set<string>(["claimed", "running_tracked", "running_untracked"]);
+
+function journalExtra(j: JournalEntry): Record<string, unknown> | undefined {
+  let out: Record<string, unknown> | undefined;
+  for (const [k, v] of Object.entries(j)) {
+    if (KNOWN_JOURNAL_KEYS.has(k)) continue;
+    (out ??= {})[k] = v;
+  }
+  return out;
 }
 
 const rid = () => "req_" + randomBytes(12).toString("hex");
@@ -851,7 +869,8 @@ export class Machine {
 
     this.config.version += 1;
     if (c.pools) {
-      for (const [name, pc] of Object.entries(c.pools)) this.config.pools[name] = { capacity: pc.capacity };
+      // Spread the previous pool config so fields from a newer format survive (issue #51).
+      for (const [name, pc] of Object.entries(c.pools)) this.config.pools[name] = { ...this.config.pools[name], capacity: pc.capacity };
     }
     if (c.offerTimeoutMs !== undefined) this.config.offerTimeoutMs = c.offerTimeoutMs;
     if (c.maxWaitMs !== undefined) this.config.maxWaitMs = c.maxWaitMs;
@@ -907,6 +926,7 @@ export class Machine {
     for (const e of this.entries.values()) {
       if (e.state !== "held") continue;
       out.push({
+        ...e.journalExtra,
         requestId: e.id,
         pool: e.pool,
         agentId: e.agentId,
@@ -929,6 +949,7 @@ export class Machine {
     for (const e of this.entries.values()) {
       if (e.state !== "queued" && e.state !== "offered") continue;
       out.push({
+        ...e.journalExtra,
         requestId: e.id,
         pool: e.pool,
         agentId: e.agentId,
@@ -955,16 +976,34 @@ export class Machine {
    *    alive => keep (same token, so a late explicit release still works).
    *  - claimed: keep the start deadline (reclaimed by tick if already past).
    *  - untracked: keep, with a FRESH lease window from restore time.
+   *  - forward compatibility (issue #51): entries of an unknown `state`
+   *    (written by a newer daemon) or missing required fields are skipped
+   *    and reported, never fatal; a held entry with an unknown `phase` is
+   *    kept as untracked with a fresh lease (capacity stays accounted, but
+   *    the lease reclaims it if nobody heartbeats). Unknown fields are kept
+   *    and written back to the journal while the entry lives.
    */
   restore(journal: JournalEntry[], liveness: (e: { pid?: number; pgid?: number; pidStartTime?: string }) => boolean | null): {
     kept: number;
     releasedDead: number;
     queued: number;
+    skipped: number;
   } {
     let kept = 0;
     let releasedDead = 0;
+    let skipped = 0;
     const queuedEntries: Array<{ j: JournalEntry; at: number }> = [];
     for (const j of journal) {
+      const st: unknown = j.state;
+      if (
+        (st !== undefined && st !== "held" && st !== "queued") ||
+        typeof j.requestId !== "string" ||
+        typeof j.pool !== "string" ||
+        typeof j.agentId !== "string"
+      ) {
+        skipped++;
+        continue;
+      }
       if (j.state === "queued") {
         queuedEntries.push({ j, at: j.enqueuedAt ?? j.claimedAt });
         continue;
@@ -987,7 +1026,9 @@ export class Machine {
         pidStartTime: j.pidStartTime,
         startedAt: j.startedAt,
         lastSeen: this.now(),
+        journalExtra: journalExtra(j),
       };
+      if (!KNOWN_PHASES.has(e.phase as string)) e.phase = "running_untracked";
       if (e.phase === "claimed") {
         e.startDeadline = j.claimedAt + this.config.startTimeoutMs;
       } else if (e.phase === "running_untracked") {
@@ -1027,6 +1068,7 @@ export class Machine {
         state: "queued",
         since: this.now(),
         enqueuedAt: j.enqueuedAt ?? j.claimedAt,
+        journalExtra: journalExtra(j),
       };
       this.entries.set(e.id, e);
       this.byKey.set(`${e.agentId}\u0000${e.opKey}`, e.id);
@@ -1039,8 +1081,10 @@ export class Machine {
     this.pushEvent({
       type: "daemon_recovered",
       targetAgent: "*",
-      detail: `restored ${kept} held permit(s) from journal (${releasedDead} confirmed dead and released); re-queued ${queued} waiting request(s)`,
+      detail:
+        `restored ${kept} held permit(s) from journal (${releasedDead} confirmed dead and released); re-queued ${queued} waiting request(s)` +
+        (skipped ? `; skipped ${skipped} unrecognized journal entr${skipped === 1 ? "y" : "ies"} (newer format?)` : ""),
     });
-    return { kept, releasedDead, queued };
+    return { kept, releasedDead, queued, skipped };
   }
 }
