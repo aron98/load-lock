@@ -68,8 +68,8 @@ async function setupJson(sb: Sandbox): Promise<any> {
   return (await setupOut(sb)).inventory;
 }
 
-async function install(sb: Sandbox, harness: string): Promise<void> {
-  const r = await runCli(sb, ["install", "--harness", harness, "--project", sb.project]);
+async function install(sb: Sandbox, harness: string, ...extra: string[]): Promise<void> {
+  const r = await runCli(sb, ["install", "--harness", harness, "--project", sb.project, ...extra]);
   assert.equal(r.code, 0, `install ${harness} failed: ${r.stderr}`);
 }
 
@@ -290,7 +290,8 @@ test("setup converge: Claude Code plugin + loose install -> loose removed (skill
   writeJsonFile(join(sb.project, ".mcp.json"), { servers: { "load-lock": { command: "npx", args: ["-y", "@aron98/load-lock@1.5.0", "mcp"] } } });
   const original = snapshot(sb.root);
 
-  await install(sb, "claude-code");
+  // with the plugin enabled, only --legacy writes the loose wiring (#62)
+  await install(sb, "claude-code", "--legacy");
   const out = await setupYes(sb);
   assert.deepEqual(steps(out, "claude-code"), ["remove-loose", "manual"]);
   assert.match(out.plan.steps.find((s: any) => s.action === "manual").detail, /servers\.load-lock/);
@@ -310,8 +311,8 @@ test("setup converge: Claude Code plugin + loose install -> loose removed (skill
   // idempotent: a second run has only the manual step left
   assert.deepEqual(steps(await setupYes(sb), "claude-code"), ["manual"]);
 
-  // reversible: install brings the loose wiring back ...
-  await install(sb, "claude-code");
+  // reversible: install --legacy brings the loose wiring back ...
+  await install(sb, "claude-code", "--legacy");
   assert.equal(harness(await setupJson(sb), "claude-code").integrations.filter((i: any) => i.owner === "installer").length, 4);
   // ... and uninstall restores the user's original bytes
   await uninstall(sb, "claude-code");

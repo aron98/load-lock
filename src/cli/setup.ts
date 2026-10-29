@@ -615,22 +615,46 @@ function findingsOf(h: Harness, list: Integration[]): string[] {
 
 // ------------------------------------------------------------------ public
 
-export function inventory(opts: InventoryOptions): Inventory {
-  const c: Ctx = {
+function ctxOf(opts: InventoryOptions): Ctx {
+  return {
     home: opts.home ?? os.homedir(),
     project: path.resolve(opts.project),
     env: opts.env ?? process.env,
     platform: opts.platform ?? process.platform,
   };
-  const harnesses = HARNESSES.map((h) => {
-    let integrations: Integration[];
-    try {
-      integrations = SCANNERS[h](c);
-    } catch {
-      integrations = []; // best-effort: a scanner never fails the inventory
-    }
-    return { harness: h, rung: rungOf(integrations), integrations, findings: findingsOf(h, integrations) };
-  });
+}
+
+function scanHarness(h: Harness, c: Ctx): HarnessInventory {
+  let integrations: Integration[];
+  try {
+    integrations = SCANNERS[h](c);
+  } catch {
+    integrations = []; // best-effort: a scanner never fails the inventory
+  }
+  return { harness: h, rung: rungOf(integrations), integrations, findings: findingsOf(h, integrations) };
+}
+
+/** Inventory of one harness only (no runtime copies). */
+export function inventoryHarness(h: Harness, opts: InventoryOptions): HarnessInventory {
+  return scanHarness(h, ctxOf(opts));
+}
+
+/**
+ * Claude Code's mode (#62): `plugin` (the plugin is active), `loose`
+ * (`load-lock install` wiring: MCP server, hooks or CLAUDE.md section),
+ * `both`, or `none`. The skill doesn't count: the plugin ships none.
+ */
+export type ClaudeCodeMode = "plugin" | "loose" | "both" | "none";
+
+export function claudeCodeMode(h: HarnessInventory): ClaudeCodeMode {
+  const plugin = h.integrations.some(activePlugin);
+  const loose = h.integrations.some((i) => i.owner === "installer" && (i.kind === "mcp" || i.kind === "hooks" || i.kind === "policy"));
+  return plugin && loose ? "both" : plugin ? "plugin" : loose ? "loose" : "none";
+}
+
+export function inventory(opts: InventoryOptions): Inventory {
+  const c = ctxOf(opts);
+  const harnesses = HARNESSES.map((h) => scanHarness(h, c));
 
   const stateDir = resolveStateDir(c.platform, c.env);
   const copies = findInstalledCopies(c.platform, c.env);
@@ -827,7 +851,7 @@ export function planConverge(inv: Inventory, opts: PlanOptions): Plan {
           action: "remove-loose",
           detail:
             `remove the loose ${[...new Set(loose.map((i) => i.kind))].join(", ")} from \`load-lock install\` ` +
-            "(the plugin provides them; the skill stays). Undo: load-lock install --harness claude-code",
+            "(the plugin provides them; the skill stays). Undo: load-lock install --harness claude-code --legacy",
         });
       }
       steps.push(...foreignSteps(h, false, "the plugin bundles its own MCP server and hooks"));
@@ -940,8 +964,12 @@ function removeMdSection(file: string): boolean {
   return true;
 }
 
-/** Drop the loose Claude Code wiring (installer-shaped entries only); keep the skill. */
-function removeClaudeLoose(h: HarnessInventory): string[] {
+/**
+ * Drop the loose Claude Code wiring (installer-shaped entries only); keep
+ * the skill. Shared by `setup --yes` (`remove-loose`) and `install` when
+ * the plugin is enabled (#62).
+ */
+export function removeClaudeLoose(h: HarnessInventory): string[] {
   const done: string[] = [];
   for (const i of h.integrations) {
     if (i.owner !== "installer") continue;

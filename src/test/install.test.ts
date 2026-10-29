@@ -631,6 +631,116 @@ test("claude-code: uninstall with nothing installed is a harmless no-op", async 
   rmSync(home, { recursive: true, force: true });
 });
 
+// claude-code plugin migration (#62)
+
+const PLUGIN_KEY = "load-lock-plugin@load-lock";
+
+/** `doctor --json` against a temp HOME and a state dir no daemon ever runs in. */
+async function doctorMode(home: string): Promise<{ mode: string; warnings: string[] }> {
+  const state = join(home, "st");
+  const r = await runCli(home, ["doctor", "--json"], {
+    LOAD_LOCK_STATE_DIR: state,
+    LOAD_LOCK_SOCKET: join(state, "d.sock"),
+    LOAD_LOCK_NO_SPAWN: "1",
+  });
+  assert.equal(r.code, 0, `doctor failed: ${r.stderr}`);
+  const rep = JSON.parse(r.stdout);
+  return { mode: rep.claudeCodeMode, warnings: rep.warnings };
+}
+
+function enablePlugin(home: string, on: boolean) {
+  const file = join(home, ".claude", "settings.json");
+  const s = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  s.enabledPlugins = { ...s.enabledPlugins, [PLUGIN_KEY]: on };
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(s, null, 2) + "\n");
+}
+
+test("claude-code: loose → plugin migration, --legacy, uninstall; doctor reports the mode", async () => {
+  const home = tempHome();
+  const claudeDir = join(home, ".claude");
+  mkdirSync(claudeDir, { recursive: true });
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { fetch: { command: "uvx" } } }, null, 2) + "\n");
+  writeFileSync(
+    join(claudeDir, "settings.json"),
+    JSON.stringify({ theme: "dark", hooks: { Stop: [{ hooks: [{ type: "command", command: "/usr/local/bin/user-stop" }] }] } }, null, 2) + "\n",
+  );
+  writeFileSync(join(claudeDir, "CLAUDE.md"), "# My rules\n");
+  const claudeJson = join(home, ".claude.json");
+  const settingsFile = join(claudeDir, "settings.json");
+  const claudeMd = join(claudeDir, "CLAUDE.md");
+  const skill = join(claudeDir, "skills", "load-lock", "SKILL.md");
+
+  let r = await runCli(home, ["install", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+  assert.equal((await doctorMode(home)).mode, "loose");
+
+  // the user enables the plugin: both are active, doctor flags it
+  enablePlugin(home, true);
+  let d = await doctorMode(home);
+  assert.equal(d.mode, "both");
+  assert.ok(d.warnings.some((w) => /plugin and the loose/.test(w)), "doctor flags both");
+
+  // -- install moves the loose entries out, reporting each step
+  r = await runCli(home, ["install", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `migrating install failed: ${r.stderr}`);
+  assert.match(r.stdout, new RegExp(`plugin ${PLUGIN_KEY} is enabled`));
+  assert.match(r.stdout, /removed mcpServers\.load-lock/);
+  assert.match(r.stdout, /removed load-lock hooks/);
+  assert.match(r.stdout, /removed the load-lock section/);
+  let cj = JSON.parse(readFileSync(claudeJson, "utf8"));
+  assert.ok(!("load-lock" in cj.mcpServers), "loose MCP server removed");
+  assert.ok(cj.mcpServers.fetch, "user MCP server untouched");
+  let s = JSON.parse(readFileSync(settingsFile, "utf8"));
+  assert.ok(!("SessionStart" in s.hooks), "loose SessionStart hooks removed");
+  assert.deepEqual(s.hooks.Stop, [{ hooks: [{ type: "command", command: "/usr/local/bin/user-stop" }] }], "user hook untouched");
+  assert.equal(s.enabledPlugins[PLUGIN_KEY], true, "plugin state untouched");
+  assert.equal(s.theme, "dark");
+  assert.equal(readFileSync(claudeMd, "utf8"), "# My rules\n", "CLAUDE.md section removed exactly");
+  assert.ok(existsSync(skill), "the skill stays (the plugin ships none)");
+  assert.equal((await doctorMode(home)).mode, "plugin");
+
+  // a second run is a no-op
+  r = await runCli(home, ["install", "--harness", "claude-code"]);
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /no loose MCP server, hooks or CLAUDE\.md section to remove/);
+
+  // -- --legacy keeps the loose install next to the plugin
+  r = await runCli(home, ["install", "--harness", "claude-code", "--legacy"]);
+  assert.equal(r.code, 0, `legacy install failed: ${r.stderr}`);
+  assert.match(r.stdout, /--legacy: plugin .* is enabled too/);
+  cj = JSON.parse(readFileSync(claudeJson, "utf8"));
+  assert.ok(cj.mcpServers["load-lock"], "--legacy installs the loose MCP server");
+  s = JSON.parse(readFileSync(settingsFile, "utf8"));
+  assert.equal(s.hooks.SessionStart.length, 2, "--legacy installs the loose hooks");
+  assert.equal((await doctorMode(home)).mode, "both");
+
+  // -- uninstall removes loose entries only and points at /plugin uninstall
+  r = await runCli(home, ["uninstall", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+  assert.match(r.stdout, new RegExp(`/plugin uninstall ${PLUGIN_KEY}`));
+  s = JSON.parse(readFileSync(settingsFile, "utf8"));
+  assert.equal(s.enabledPlugins[PLUGIN_KEY], true, "uninstall never edits plugin state");
+  assert.ok(!("SessionStart" in s.hooks), "loose hooks removed");
+  cj = JSON.parse(readFileSync(claudeJson, "utf8"));
+  assert.ok(!("load-lock" in cj.mcpServers), "loose MCP server removed");
+  assert.equal(readFileSync(claudeMd, "utf8"), "# My rules\n");
+  assert.ok(!existsSync(skill), "our skill removed");
+  assert.equal((await doctorMode(home)).mode, "plugin");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("claude-code: a disabled plugin doesn't stop the loose install", async () => {
+  const home = tempHome();
+  enablePlugin(home, false);
+  const r = await runCli(home, ["install", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+  const cj = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+  assert.ok(cj.mcpServers["load-lock"], "loose MCP server installed");
+  assert.equal((await doctorMode(home)).mode, "loose");
+  rmSync(home, { recursive: true, force: true });
+});
+
 // --------------------------------------------------------------------- codex
 
 test("codex: install/uninstall round-trip on a populated HOME; re-install never duplicates hooks", async () => {

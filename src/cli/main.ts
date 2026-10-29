@@ -24,7 +24,7 @@ import { hookCommand } from "./hook.js";
 import { topCommand } from "./top.js";
 import { awaitDaemonUpgraded, serviceRestart, serviceStart, serviceStop, ServiceError } from "./service.js";
 import { updateCommand } from "./update.js";
-import { applyPlan, formatInventory, formatPlan, inventory, planConverge, selfCopy } from "./setup.js";
+import { applyPlan, claudeCodeMode, formatInventory, formatPlan, inventory, inventoryHarness, planConverge, selfCopy } from "./setup.js";
 import { sessionIdentity, type SessionIdentity } from "../shared/identity.js";
 
 // ---------------------------------------------------------------- arg parsing
@@ -141,7 +141,7 @@ const HELP_GROUPS: { title: string; items: HelpItem[] }[] = [
   {
     title: "setup & docs",
     items: [
-      { names: ["install"], desc: "install the load-lock adapter for a harness: --harness <name>" },
+      { names: ["install"], desc: "install the load-lock adapter for a harness: --harness <name> (claude-code: with the plugin enabled, moves the loose wiring out; --legacy keeps it)" },
       { names: ["uninstall"], desc: "remove what install added: --harness <name>" },
       { names: ["setup"], desc: "inventory every load-lock integration across all harnesses and plan the recommended layout (dry run); --yes applies it: [--project <dir>] [--json]" },
       { names: ["hook"], desc: "harness hook handlers (called by integrations, not humans)" },
@@ -552,6 +552,15 @@ async function main(): Promise<void> {
             ` — see docs/COMPATIBILITY.md "Multiple copies of load-lock" for which copy is authoritative for what`,
         );
       }
+      // Claude Code wiring mode (#62): plugin, loose install, both or none.
+      const ccMode = claudeCodeMode(inventoryHarness("claude-code", { project: process.cwd() }));
+      report.claudeCodeMode = ccMode;
+      if (ccMode === "both") {
+        warnings.push(
+          "Claude Code: the plugin and the loose `load-lock install` wiring are both active (harmless, but two MCP servers); " +
+            "`load-lock install --harness claude-code` or `load-lock setup --yes` moves the loose entries out",
+        );
+      }
       report.warnings = warnings;
       out(report, () => JSON.stringify(report, null, 2));
       return;
@@ -591,6 +600,7 @@ async function main(): Promise<void> {
         json: B("json"),
         global: true,
         binDir: import.meta.dirname ? join(import.meta.dirname, "..") : undefined,
+        legacy: B("legacy"),
       });
       return;
     case "uninstall":

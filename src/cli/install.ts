@@ -13,6 +13,10 @@
  *  - claude-code  : user-scope MCP server in ~/.claude.json, SessionStart /
  *                   Stop hooks + background await-offer watcher in
  *                   ~/.claude/settings.json, CLAUDE.md section, skill.
+ *                   With the load-lock-plugin enabled at user scope it
+ *                   moves those loose entries out instead (--legacy keeps
+ *                   them); the skill is never written over one it didn't
+ *                   write (ACE).
  *  - codex        : ~/.codex/hooks.json (SessionStart/SubagentStart/Stop),
  *                   [mcp_servers.load-lock] in ~/.codex/config.toml,
  *                   ~/.codex/AGENTS.md pointer. Trust must be granted via /hooks.
@@ -59,7 +63,7 @@ import os from "node:os";
 import path from "node:path";
 import { POLICY_BRIEF } from "../policy/text.js";
 import { resolveStateDir } from "../shared/transport.js";
-import { skillDirOwner } from "./setup.js";
+import { activePlugin, inventoryHarness, removeClaudeLoose, skillDirOwner, type Integration } from "./setup.js";
 
 export interface InstallOptions {
   harness: string;
@@ -67,6 +71,8 @@ export interface InstallOptions {
   json?: boolean;
   global?: boolean;
   binDir?: string; // dist/cli — lets us locate package root
+  /** claude-code: install the loose wiring even when the plugin is enabled (#62). */
+  legacy?: boolean;
 }
 
 export interface UninstallOptions {
@@ -256,8 +262,29 @@ function skillOwnerNote(owner: string): string {
   return owner === "ace" ? "managed by ACE (.ace.json), update or remove it through ACE" : "not written by load-lock install (a symlink)";
 }
 
+/** `load-lock-plugin@<marketplace>` from an `enabledPlugins["..."]` detail. */
+function pluginKey(i: Integration): string {
+  return /^enabledPlugins\["(.+)"\]$/.exec(i.detail)?.[1] ?? "load-lock-plugin@load-lock";
+}
+
 function installClaudeCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
+  // The plugin enabled at user scope replaces the loose MCP server, hooks
+  // and CLAUDE.md section everywhere (#62); project-scope enables don't.
+  const h = inventoryHarness("claude-code", { project: opts.project, home: HOME });
+  const plugin = h.integrations.find((i) => activePlugin(i) && i.owner === "harness" && i.scope === "user");
+  if (plugin && !opts.legacy) {
+    const actions = [
+      `plugin ${pluginKey(plugin)} is enabled in ${plugin.file}: it provides the MCP server and hooks, so the loose ones are not installed (--legacy installs them anyway)`,
+    ];
+    const removed = removeClaudeLoose(h);
+    actions.push(...(removed.length ? removed : ["no loose MCP server, hooks or CLAUDE.md section to remove"]));
+    actions.push(installClaudeSkill(P));
+    return actions;
+  }
   const actions: string[] = [];
+  if (plugin) {
+    actions.push(`--legacy: plugin ${pluginKey(plugin)} is enabled too; harmless, but two MCP servers are registered, keep one`);
+  }
 
   // 1. user-scope MCP server in ~/.claude.json
   const claudeJson = path.join(HOME, ".claude.json");
@@ -303,20 +330,22 @@ function installClaudeCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>)
   )
     actions.push(`CLAUDE.md section in ${md}`);
 
-  // 4. skill (never over one we didn't write, e.g. ACE's, #89)
-  const skillDir = claudeSkillDir();
-  const owner = skillDirOwner(skillDir, skillDir);
-  if (owner === "installer") {
-    fs.mkdirSync(skillDir, { recursive: true });
-    fs.copyFileSync(P.skill, path.join(skillDir, "SKILL.md"));
-    actions.push(`skill in ${skillDir}/SKILL.md`);
-  } else {
-    actions.push(`kept the skill in ${skillDir}: ${skillOwnerNote(owner)}`);
-  }
+  // 4. skill
+  actions.push(installClaudeSkill(P));
   return actions;
 }
 
-function uninstallClaudeCode(): string[] {
+/** Copy the skill, never over one we didn't write, e.g. ACE's (#89). */
+function installClaudeSkill(P: ReturnType<typeof pkgPaths>): string {
+  const skillDir = claudeSkillDir();
+  const owner = skillDirOwner(skillDir, skillDir);
+  if (owner !== "installer") return `kept the skill in ${skillDir}: ${skillOwnerNote(owner)}`;
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.copyFileSync(P.skill, path.join(skillDir, "SKILL.md"));
+  return `skill in ${skillDir}/SKILL.md`;
+}
+
+function uninstallClaudeCode(opts: UninstallOptions): string[] {
   const actions: string[] = [];
   const P = pkgPaths(); // cli path for our-entry matching below
   const claudeJson = path.join(HOME, ".claude.json");
@@ -366,6 +395,11 @@ function uninstallClaudeCode(): string[] {
     actions.push("removed skill");
   } else {
     actions.push(`kept the skill in ${skillDir}: ${skillOwnerNote(owner)}`);
+  }
+  // Plugin state belongs to Claude Code: point at /plugin, never edit it.
+  const h = inventoryHarness("claude-code", { project: opts.project, home: HOME });
+  for (const i of h.integrations.filter((x) => x.kind === "plugin" && x.owner === "harness")) {
+    actions.push(`plugin ${pluginKey(i)} (${i.file}) is managed by Claude Code and stays; to remove it too, run /plugin uninstall ${pluginKey(i)}`);
   }
   return actions;
 }
@@ -1399,7 +1433,7 @@ export async function uninstallCommand(opts: UninstallOptions): Promise<void> {
       break;
     case "claude-code":
     case "claude":
-      actions = uninstallClaudeCode();
+      actions = uninstallClaudeCode(opts);
       break;
     case "codex":
       actions = uninstallCodex();

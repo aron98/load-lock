@@ -84,7 +84,14 @@ uninstall — see issue #19); not live-verified inside the real CLIs.
   a marked section to `~/.claude/CLAUDE.md`; copies the skill to
   `~/.claude/skills/load-lock/`. A skill dir it didn't write (an ACE
   install with an `.ace.json` stamp, or a symlink) is left alone by both
-  `install` and `uninstall`, which say so (#89).
+  `install` and `uninstall`, which say so (#89). With the
+  [Claude Code plugin](#claude-code-plugin) enabled in
+  `~/.claude/settings.json` (`enabledPlugins["load-lock-plugin@…"]: true`),
+  `install` instead removes the loose MCP server, hooks and `CLAUDE.md`
+  section, reporting each step, and only installs the skill (the plugin
+  ships none); `--legacy` installs the loose wiring anyway. `uninstall`
+  removes loose entries only and names the `/plugin uninstall …` command
+  for the plugin (#62).
 - **codex** — writes `~/.codex/hooks.json` (`SessionStart`, `SubagentStart`,
   `Stop`), appends `[mcp_servers.load-lock]` to `~/.codex/config.toml` if
   absent, adds a marked section to `~/.codex/AGENTS.md`. **Then run `/hooks`
@@ -172,7 +179,7 @@ The plan only uses moves the installers can reverse:
 
 | Situation | Step |
 |---|---|
-| Claude Code plugin enabled **and** loose `install` wiring | `remove-loose`: drop the loose MCP server, hooks and `CLAUDE.md` section (the plugin provides them). The skill stays: the plugin ships none. Undo: `load-lock install --harness claude-code`. |
+| Claude Code plugin enabled **and** loose `install` wiring | `remove-loose`: drop the loose MCP server, hooks and `CLAUDE.md` section (the plugin provides them). The skill stays: the plugin ships none. Undo: `load-lock install --harness claude-code --legacy`. |
 | Installer wiring incomplete, pointing at a missing copy, or hooks from several copies / duplicated | `install`: remove the installer-shaped hooks of every copy (and a stale codex `[mcp_servers.load-lock]` block), then `load-lock install --harness <h>` from the running copy |
 | Only an MCP registration or only the skill | `install` (moves up to the installer's rung) |
 | Anything not written by `load-lock install` (plugin state, ACE entries, manual / npx entries, extra skill copies) | `manual`: printed with what to remove or run (`/plugin uninstall …`), never applied |
@@ -223,10 +230,11 @@ in `plugins/claude-code/`:
 
 Combining the plugin with a loose `install --harness claude-code` is safe
 (one session identity, duplicate hooks dropped by the daemon, #54), but
-registers two MCP servers; keep one. `load-lock setup --yes` removes the
-loose MCP server, hooks and `CLAUDE.md` section when the plugin is enabled.
-(`install --harness claude-code` itself detecting the plugin, and a
-`--legacy` flag to keep the loose install: pending #62.)
+registers two MCP servers; keep one. Once the plugin is enabled, re-running
+`load-lock install --harness claude-code` (or `load-lock setup --yes`) moves
+the loose MCP server, hooks and `CLAUDE.md` section out (`--legacy` keeps
+them), and `load-lock doctor` reports the mode (`claudeCodeMode`: `plugin`,
+`loose`, `both` or `none`) and warns on `both`.
 
 ### Installing via ACE
 
