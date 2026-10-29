@@ -73,6 +73,23 @@ tool round-trip (acquire → queued → wakeup → claim → release), execution
 boundary delivery without interrupting a running `sleep`, skill visible,
 and graceful handling of a deliberately missed offer (paused → cancel).
 
+#### ACE listing (opencode, issue #79)
+
+ACE ([TNG/ace](https://github.com/TNG/ace)) cannot detect the root
+`package.json` as an OpenCode plugin, because its entry point is the
+gitignored `dist/`. The OpenCode listing therefore comes from the dedicated
+folder `ace/opencode/`. It is a thin pointer: `index.js` re-exports
+`@aron98/load-lock`, and `package.json` (`load-lock-opencode`, private) pins
+that dependency to the release version through `scripts/check-pins.mjs`.
+ACE finds the folder through its npm-package heuristic (a `main` that exists
+in the git tree, plus `opencode` in the name or keywords). ACE marks every
+such detection as **"verify before registering"**, so that note is expected.
+`src/test/ace-opencode.test.ts` mirrors the heuristic (TNG/ace@b703410) and
+asserts that this repo yields exactly one OpenCode plugin, at `ace/opencode`.
+Users install the published package as usual (a `plugins` entry
+`@aron98/load-lock` in `opencode.json`), not the folder itself. The
+end-to-end ACE install is not yet live-verified (#66).
+
 #### Multiple copies of load-lock (opencode)
 
 `install --harness opencode` registers the **bare package name** in
