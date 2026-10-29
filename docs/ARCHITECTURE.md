@@ -122,6 +122,29 @@ a newer client than the daemon) respawns with the same argv after persisting
 state — see the update lifecycle in
 [OPERATIONS.md](OPERATIONS.md#update-lifecycle).
 
+**Persisted format compatibility (issue #51).** Several runtime copies may
+share one state dir, so a downgrade is possible: a newer daemon dies and an
+older client starts its older copy, which must then load files the newer one
+wrote. `config.json` carries a top-level `formatVersion` (absent = 0, the
+pre-versioning format); the journal stays a bare JSON array (what every
+released daemon reads) with `formatVersion` stamped on each entry. The
+promise, in both directions:
+
+- Format changes are **additive**. A reader never rejects a file because its
+  `formatVersion` is higher than its own; it uses what it understands.
+- Unknown fields are **never dropped destructively**: top-level and
+  `config`/pool/guidance fields of `config.json` survive a rewrite (e.g. a
+  `configure`), and unknown fields on a journal entry are written back while
+  that entry lives. Each writer stamps its *own* `formatVersion`, so readers
+  must treat fields from a newer format as possibly stale.
+- Unknown journal entry kinds (a `state` this version doesn't know) and
+  malformed entries are **skipped**, never fatal; the count is reported in the
+  `daemon_recovered` event. A held entry with an unknown `phase` is kept as an
+  untracked permit with a fresh lease (capacity stays accounted; the lease
+  reclaims it if nobody heartbeats).
+- An incompatible change would use a **new file name**, never reinterpret
+  `config.json` / `journal.json`.
+
 ## Notification honesty
 
 A critical constraint discovered by research: **no harness reliably pushes

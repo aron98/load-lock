@@ -174,6 +174,8 @@ export interface OwnerEntrySnapshot extends EntrySnapshot {
 // Journal (conservative restart reconciliation for held permits)
 
 export interface JournalEntry {
+  /** Persisted format version of the writer (issue #51); absent before versioning. */
+  formatVersion?: number;
   requestId: string;
   pool: string;
   agentId: string;
