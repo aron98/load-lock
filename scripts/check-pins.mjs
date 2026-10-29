@@ -35,6 +35,7 @@ export const PINNED = [
   { path: "ace/opencode/package.json", kind: "json", key: "dependencies.@aron98/load-lock" },
   { path: "skills/load-lock/SKILL.md", kind: "spec" },
   { path: "ace/mcp/mcp.json", kind: "spec" },
+  { path: "plugins/claude-code/scripts/load-lock.mjs", kind: "spec" },
 ];
 
 const SEMVER = String.raw`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?`;
