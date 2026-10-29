@@ -66,7 +66,7 @@ export function buildServer(opts: McpServerOptions): McpServer {
   const drift = opts.drift !== undefined ? opts.drift : detectCliDrift(packageVersion());
   if (drift) process.stderr.write(drift.message + "\n");
   const server = new McpServer(
-    { name: opts.serverName ?? "load-lock", version: "0.1.0" },
+    { name: opts.serverName ?? "load-lock", version: packageVersion() },
     { instructions: POLICY_BRIEF + "\n\n" + SETUP_HINT + (drift ? "\n\n" + drift.message : "") },
   );
 
