@@ -284,10 +284,11 @@ function installClaudeCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>)
       marker,
       `${marker}\n## load-lock: machine-wide heavy-work budget\n\n` +
         `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine:\n\n` +
-        `1. Call the MCP tool \`mcp__load-lock__acquire\` (reason + op_key) — it grants a permit or queues you.\n` +
-        `2. While queued, keep doing light work. When an offer arrives (hook wakeup or \`mcp__load-lock__pending\`), claim it via \`mcp__load-lock__claim\` within the window (default 30s).\n` +
-        `3. Only start heavy work after acquire/claim succeeds. Use \`mcp__load-lock__run_with_permit\` for full lifecycle ownership (auto-release), or \`attach_pid\` for processes you already started.\n` +
-        `4. Release (or cancel queued work) promptly. Inspect the machine with \`mcp__load-lock__inspect_machine\`; adjust capacity via \`mcp__load-lock__configure\` when warranted.\n\n` +
+        `1. Call the load-lock \`acquire\` tool (reason + op_key) — it grants a permit or queues you.\n` +
+        `2. While queued, keep doing light work. When an offer arrives (hook wakeup or the \`pending\` tool), claim it via the \`claim\` tool within the window (default 30s).\n` +
+        `3. Only start heavy work after acquire/claim succeeds. Use \`run_with_permit\` for full lifecycle ownership (auto-release), or \`attach_pid\` for processes you already started.\n` +
+        `4. Release (or cancel queued work) promptly. Inspect the machine with \`inspect_machine\`; adjust capacity via \`configure\` when warranted.\n\n` +
+        `Exact tool names vary with the wiring (standalone MCP server vs. plugin); use the load-lock tools you have.\n\n` +
         `Full guide: \`load-lock agent-guide\`.\n<!-- load-lock:end -->\n`,
     )
   )
@@ -406,7 +407,7 @@ function installCodex(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): str
       agentsMd,
       "<!-- load-lock:begin -->",
       `<!-- load-lock:begin -->\n## load-lock: machine-wide heavy-work budget\n\n` +
-        `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine via the \`load-lock\` MCP tools (mcp__load-lock__acquire / claim / release / run_with_permit / pending / status / inspect_machine / configure). ` +
+        `Before resource-intensive local work (full builds, big test suites), coordinate with other agents on this machine via the \`load-lock\` MCP tools (acquire / claim / release / run_with_permit / pending / status / inspect_machine / configure). ` +
         `Acquire before heavy work, keep doing light work while queued, claim offers promptly (they expire), release when done. Full guide: \`load-lock agent-guide\`.\n<!-- load-lock:end -->\n`,
     )
   )

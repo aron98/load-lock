@@ -530,6 +530,7 @@ test("claude-code: install/uninstall round-trip on a populated HOME; re-install 
   const md = readFileSync(claudeMd, "utf8");
   assert.ok(md.includes("# My rules"), "existing CLAUDE.md content preserved");
   assert.equal(count(md, MARKER_BEGIN), 1, "exactly one marked section");
+  assert.ok(!md.includes("mcp__"), "section names tools neutrally (plugin tools are namespaced differently)");
   assert.ok(existsSync(join(claudeDir, "skills", "load-lock", "SKILL.md")), "skill installed");
 
   // -- idempotent re-install: no duplicate hook entries (issue #19)
@@ -639,6 +640,7 @@ test("codex: install/uninstall round-trip on a populated HOME; re-install never 
   const md = readFileSync(agentsMd, "utf8");
   assert.ok(md.includes("# My codex rules"), "existing AGENTS.md content preserved");
   assert.equal(count(md, MARKER_BEGIN), 1, "exactly one marked section");
+  assert.ok(!md.includes("mcp__"), "section names tools neutrally");
 
   // -- idempotent re-install: no duplicate hook entries (issue #19)
   r = await runCli(home, ["install", "--harness", "codex"], { CODEX_HOME: codexDir });

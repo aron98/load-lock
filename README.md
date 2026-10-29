@@ -83,7 +83,7 @@ load-lock doctor
 
 From then on, agents see the policy and tools automatically:
 OpenCode plugin (`load_lock_*` tools), Claude Code / Codex MCP tools
-(`mcp__load-lock__*`) plus session hooks. Any other MCP-capable harness can
+(named per the harness's MCP namespacing) plus session hooks. Any other MCP-capable harness can
 use the generic stdio server; plain shells use the CLI:
 
 ```sh
