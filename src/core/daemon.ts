@@ -27,7 +27,8 @@ import { loadState, saveState, loadJournal, saveJournal, socketPath as defaultSo
 import { inspectMachine } from "./sysinfo.js";
 import { AcquireParams, MachineEvent, OwnerEntrySnapshot, ProtocolError, WaitForCompletionResult } from "../shared/protocol.js";
 import { isWindows, probeTransport } from "../shared/transport.js";
-import { packageVersion, compareVersions } from "../shared/version.js";
+import { packageVersion, packageRoot, compareVersions } from "../shared/version.js";
+import { DaemonInfo, RuntimeCopy, inspectPackageRoot, loadRuntimes, mergeRuntime, saveRuntimes } from "../shared/runtimes.js";
 
 /** Package version of the copy of load-lock this daemon process runs from. */
 const DAEMON_VERSION = packageVersion();
@@ -37,6 +38,8 @@ const DAEMON_VERSION = packageVersion();
  * only one respawn per version bump.
  */
 const RESTARTED_FOR_ENV = "LOAD_LOCK_RESTARTED_FOR";
+/** Re-persist a known copy's lastSeen at most this often (issue #52). */
+const RUNTIME_TOUCH_MS = 60_000;
 
 interface Watcher {
   socket: Socket;
@@ -81,6 +84,10 @@ export class Daemon {
   private expiryTimer: NodeJS.Timeout | null = null;
   private restartTimer: NodeJS.Timeout | null = null;
   private stopped = false;
+  /** Known runtime copies (issue #52), mirrored to runtimes.json. */
+  private runtimes: RuntimeCopy[] = [];
+  /** clientRoot hints already resolved this run: raw hint -> real path (null = invalid). */
+  private runtimeHints = new Map<string, string | null>();
 
   constructor(opts: { stateDir?: string; socket?: string; machine?: Machine; recover?: boolean } = {}) {
     this.stateDirPath = defaultStateDir(opts.stateDir);
@@ -111,10 +118,17 @@ export class Daemon {
       this.server.on("error", reject);
       this.server.listen(this.socketPath, () => resolve());
     });
-    writeFileSync(
-      join(this.stateDirPath, "daemon.json"),
-      JSON.stringify({ pid: process.pid, startedAt: Date.now(), socket: this.socketPath }, null, 2) + "\n",
-    );
+    const own = inspectPackageRoot(packageRoot());
+    const info: DaemonInfo = {
+      pid: process.pid,
+      startedAt: Date.now(),
+      socket: this.socketPath,
+      packageRoot: own?.path ?? packageRoot(),
+      version: DAEMON_VERSION,
+    };
+    writeFileSync(join(this.stateDirPath, "daemon.json"), JSON.stringify(info, null, 2) + "\n");
+    this.runtimes = loadRuntimes(this.stateDirPath);
+    this.recordRuntime(packageRoot());
     process.once("SIGTERM", () => this.stop());
     process.once("SIGINT", () => this.stop());
     this.sweepTimer = setInterval(() => this.sweep(), 5_000);
@@ -219,7 +233,7 @@ export class Daemon {
   }
 
   private async handleLine(sock: Socket, lineText: string): Promise<void> {
-    let msg: { id: number; method: string; params?: Record<string, unknown>; clientVersion?: unknown };
+    let msg: { id: number; method: string; params?: Record<string, unknown>; clientVersion?: unknown; clientRoot?: unknown };
     try {
       msg = JSON.parse(lineText);
     } catch {
@@ -228,6 +242,7 @@ export class Daemon {
     }
     // Version handshake: remember the client's version for skew detection.
     const clientVersion = typeof msg.clientVersion === "string" ? msg.clientVersion : undefined;
+    if (typeof msg.clientRoot === "string") this.recordRuntime(msg.clientRoot);
     let result: unknown;
     let agentId: string | undefined;
     try {
@@ -244,7 +259,7 @@ export class Daemon {
       }
       // Respond first, then consider a self-restart — even on errors, a
       // newer client means this daemon is running stale on-disk code.
-      this.maybeScheduleSelfRestart(clientVersion);
+      this.maybeScheduleSelfRestart(clientVersion, msg.clientRoot);
       return;
     }
     // Tool-boundary delivery: surface this agent's outstanding offers/queue
@@ -253,10 +268,38 @@ export class Daemon {
       (result as Record<string, unknown>).pending = this.machine.pending(agentId);
     }
     this.send(sock, { id: msg.id, ok: true, result });
-    this.maybeScheduleSelfRestart(clientVersion);
+    this.maybeScheduleSelfRestart(clientVersion, msg.clientRoot);
   }
 
   // -------------------------------------------------------- version handshake
+
+  /**
+   * Known runtime copies (issue #52): remember a copy seen via the
+   * handshake. Deduped by real path; the version is read from the copy's
+   * own package.json. Disk writes only on a new copy, a version change, or
+   * a stale lastSeen — never per request. Best-effort: never throws.
+   */
+  private recordRuntime(root: string): void {
+    try {
+      let real = this.runtimeHints.get(root);
+      const now = Date.now();
+      if (real === undefined) {
+        real = inspectPackageRoot(root)?.path ?? null;
+        if (this.runtimeHints.size > 256) this.runtimeHints.clear();
+        this.runtimeHints.set(root, real);
+      }
+      if (real === null) return;
+      const known = this.runtimes.find((c) => c.path === real);
+      if (known && now - known.lastSeen < RUNTIME_TOUCH_MS) return;
+      const merged = mergeRuntime(this.runtimes, real, now);
+      if (!merged) return;
+      // Drop copies whose path disappeared since they were last seen.
+      this.runtimes = merged.filter((c) => c.path === real || existsSync(join(c.path, "package.json")));
+      saveRuntimes(this.stateDirPath, this.runtimes);
+    } catch {
+      /* bookkeeping only */
+    }
+  }
 
   /**
    * Self-restart handshake (issue #34): if a client identifies a NEWER
@@ -266,14 +309,14 @@ export class Daemon {
    * entirely daemon-side and best-effort: pre-handshake clients that send
    * no version never trigger a restart.
    */
-  private maybeScheduleSelfRestart(clientVersion: string | undefined): void {
+  private maybeScheduleSelfRestart(clientVersion: string | undefined, clientRoot?: unknown): void {
     if (this.stopped || this.restartTimer || !clientVersion) return;
     if (compareVersions(clientVersion, DAEMON_VERSION) <= 0) return;
     const restartedFor = process.env[RESTARTED_FOR_ENV];
     if (restartedFor && compareVersions(clientVersion, restartedFor) <= 0) return; // already tried
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
-      this.selfRestart(clientVersion);
+      this.selfRestart(clientVersion, typeof clientRoot === "string" ? clientRoot : undefined);
     }, 250);
     this.restartTimer.unref?.();
   }
@@ -281,11 +324,14 @@ export class Daemon {
   /**
    * Drain + respawn onto the updated on-disk code. Persists state and the
    * journal FIRST, then stops (destroying all client connections — they
-   * reconnect to the fresh daemon), then spawns the replacement with the
-   * exact same argv so a daemon started via the old copy runs the new copy's
-   * code, and exits.
+   * reconnect to the fresh daemon), then spawns the replacement and exits.
+   *
+   * The replacement runs the newer client's copy when its package root
+   * (clientRoot, issue #53) checks out — see restartEntry(). Otherwise it
+   * reruns the exact same argv, which picks up an in-place update of the
+   * daemon's own copy (e.g. `npm i -g`).
    */
-  private selfRestart(clientVersion: string): void {
+  private selfRestart(clientVersion: string, clientRoot?: string): void {
     if (this.stopped) return;
     // Best-effort persistence; a failed save must not block the restart.
     try {
@@ -296,7 +342,9 @@ export class Daemon {
     }
     this.stop();
     try {
-      const child = spawn(process.execPath, process.argv.slice(1), {
+      const entry = restartEntry(clientRoot, clientVersion);
+      const args = entry ? [entry, "--state-dir", this.stateDirPath, "--socket", this.socketPath] : process.argv.slice(1);
+      const child = spawn(process.execPath, args, {
         detached: true,
         stdio: "ignore",
         cwd: process.cwd(),
@@ -894,4 +942,20 @@ export function processStartTime(pid: number): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Daemon entry point of the newer client's copy (issue #53), or null to
+ * fall back to the same-argv respawn. The hint must name a load-lock
+ * package root whose on-disk version equals the version the client
+ * claimed, with a dist/core/daemon-main.js. The hint arrives over the
+ * same-user socket, so following it grants no privilege the client did
+ * not already have (it could run that file itself).
+ */
+export function restartEntry(clientRoot: string | undefined, clientVersion: string): string | null {
+  if (!clientRoot) return null;
+  const found = inspectPackageRoot(clientRoot);
+  if (!found || found.version !== clientVersion) return null;
+  const entry = join(found.path, "dist", "core", "daemon-main.js");
+  return existsSync(entry) ? entry : null;
 }

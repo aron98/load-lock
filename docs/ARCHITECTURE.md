@@ -240,6 +240,22 @@ prompts.
 | Config change while offers outstanding | Capacity increase admits queued agents immediately; capacity decrease lets holders finish and delays new admissions; outstanding offers keep their reservations |
 | Duplicate claims/releases | Idempotent or precise `stale_token`/`offer_expired` errors, never double effects |
 
+### Runtime copies and the restart hint
+
+`daemon.json` records the daemon's package root and version, and
+`runtimes.json` the copies seen via the handshake (#52). When a strictly
+newer client connects, the daemon respawns onto that client's copy (#53)
+if the envelope's `clientRoot` names a `@aron98/load-lock` package whose
+on-disk version equals the claimed `clientVersion` and which ships
+`dist/core/daemon-main.js`; otherwise it reruns its own argv. The
+`LOAD_LOCK_RESTARTED_FOR` marker keeps one restart per version either way.
+
+Security: the hint arrives over the daemon's socket, which only the same
+user can reach. Following it grants no privilege the client did not
+already have — that client could run the same file itself. The checks
+exist to avoid respawning onto garbage (wrong package, mismatched version,
+missing entry), not as a trust boundary.
+
 ## Extension points
 
 The protocol already carries weights (a request may ask for >1 units of

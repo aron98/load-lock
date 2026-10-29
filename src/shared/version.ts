@@ -15,6 +15,15 @@ import { fileURLToPath } from "node:url";
 
 let cached: string | undefined;
 
+/**
+ * Package root of THIS copy (the directory holding its package.json):
+ * dist/shared/version.js → <package root>. Sent in the request envelope as
+ * `clientRoot` and recorded by the daemon (issue #52).
+ */
+export function packageRoot(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
 /** Version of THIS copy of load-lock (the on-disk install running now). */
 export function packageVersion(): string {
   if (cached === undefined) {
@@ -22,7 +31,7 @@ export function packageVersion(): string {
       // dist/shared/version.js → <package root>/package.json — resolves the
       // same way in the repo checkout, a global CLI install, and an
       // opencode cache copy. npm always ships package.json with the tarball.
-      const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+      const pkgPath = join(packageRoot(), "package.json");
       cached = String(JSON.parse(readFileSync(pkgPath, "utf8")).version ?? "0.0.0");
     } catch {
       cached = "0.0.0";

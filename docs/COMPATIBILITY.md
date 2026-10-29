@@ -97,12 +97,13 @@ Which copy is authoritative for what:
 - **The daemon's code** — whichever copy spawned it (usually the CLI copy,
   since auto-spawn and `service start` run from the CLI client code). The
   version handshake makes a daemon self-restart onto updated code when a
-  newer client contacts it — but the respawn reuses the daemon's original
-  argv, so it only picks up an update when its spawning copy was updated
-  *in place* (the normal global-upgrade case). A daemon spawned from a
-  different copy than the one you updated keeps running the old code until
-  `load-lock service restart` (since #38) or `service stop` + any command
-  re-spawns it from the new one.
+  newer client contacts it. Since #53 the respawn moves onto the newer
+  client's own copy (validated from its `clientRoot` hint), so a daemon
+  spawned from a different copy than the one you updated follows the
+  newer client. Clients older than #52 send no `clientRoot`; for them the
+  respawn reuses the daemon's original argv and only picks up an in-place
+  update of its spawning copy — `load-lock service restart` (since #38)
+  re-spawns it from the current CLI copy.
 - **npx-launched copies** (since #57) — skill / ACE / pinned MCP entries run
   `npx -y @aron98/load-lock@<pin>`, which installs a copy under the npm
   cache at `~/.npm/_npx/<hash>/node_modules/@aron98/load-lock/` (or under

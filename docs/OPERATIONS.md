@@ -96,7 +96,17 @@ uninstall — see issue #19); not live-verified inside the real CLIs.
 - Also honored by the shared client: `LOAD_LOCK_LABEL_PREFIX` (prefix for
   holder labels; see Sandboxes).
 - Files: `config.json` (settings + history), `journal.json` (held permits +
-  queued requests), `daemon.json` (pid), `spawn.lock` (bootstrap race guard).
+  queued requests), `daemon.json` (pid, plus since #52 the daemon's
+  `packageRoot` and `version`), `runtimes.json` (known runtime copies, see
+  below), `spawn.lock` (bootstrap race guard).
+- **Known runtime copies** (since #52): every client envelope carries its
+  package root (`clientRoot`); the daemon validates it (a package.json
+  naming `@aron98/load-lock`; the version is read from disk, not trusted
+  from the client) and records `{path, version, lastSeen}` in
+  `runtimes.json`, deduped by real path, pruning copies whose path is gone.
+  Small entry points (skill, plugin launchers) can read `daemon.json` /
+  `runtimes.json` to find an existing runtime without npx; `doctor` lists
+  them as `daemonRuntime` and `knownRuntimes`.
 
 ```sh
 load-lock service status   # hello + pid + daemon version
@@ -127,9 +137,13 @@ code. The **version handshake** closes that gap (v1.3.0+):
   carry `daemonVersion` (the package version of the code the daemon runs).
 - When a **newer** client contacts an older daemon, the daemon finishes
   answering, then **self-restarts**: it persists state + journal, drains all
-  connections, respawns itself with the same argv (`process.execPath` +
-  original arguments, so it runs whatever is now on disk at the same path),
-  and exits. The respawn inherits a `LOAD_LOCK_RESTARTED_FOR` marker so
+  connections, respawns, and exits. Since #53 the respawn runs the **newer
+  client's copy** when the envelope's `clientRoot` checks out (a
+  `@aron98/load-lock` package.json whose on-disk version equals the
+  claimed `clientVersion`, plus a `dist/core/daemon-main.js`), so a daemon
+  spawned by an old global CLI moves onto e.g. a newer npx copy. Without a
+  valid hint it falls back to the same argv (`process.execPath` + original
+  arguments, so it runs whatever is now on disk at the same path). The respawn inherits a `LOAD_LOCK_RESTARTED_FOR` marker so
   repeated contact with the same version cannot cause a restart loop — one
   respawn attempt per version.
 - Clients that were connected see a disconnect and simply reconnect to the

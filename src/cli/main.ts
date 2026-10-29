@@ -15,6 +15,7 @@ import { ProtocolError } from "../shared/protocol.js";
 import { waitForTurn } from "../shared/wait-turn.js";
 import { waitForTrackedJob } from "../shared/wait-completion.js";
 import { stateDir, socketPath } from "../core/persist.js";
+import { loadRuntimes, readDaemonInfo } from "../shared/runtimes.js";
 import { isWindows, probeTransport, killProcessGroup } from "../shared/transport.js";
 import { packageVersion, compareVersions } from "../shared/version.js";
 import { findInstalledCopies } from "./copies.js";
@@ -520,6 +521,11 @@ async function main(): Promise<void> {
       // when their versions drift apart.
       const copies = findInstalledCopies();
       report.copies = copies;
+      // Runtime copies the daemon has seen via the handshake (issue #52),
+      // and the copy the daemon itself runs from.
+      const dinfo = readDaemonInfo(dir);
+      if (dinfo?.packageRoot) report.daemonRuntime = { path: dinfo.packageRoot, version: dinfo.version ?? null };
+      report.knownRuntimes = loadRuntimes(dir);
       const versions = new Set(copies.map((c) => c.version).filter((v): v is string => v !== null));
       if (versions.size > 1) {
         warnings.push(
