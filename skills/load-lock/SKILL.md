@@ -1,9 +1,71 @@
+---
+name: load-lock
+description: >-
+  Teach parallel AI coding agents sharing one machine to take turns on heavy
+  work such as full builds and test suites. Agents acquire a machine-wide
+  permit before resource-intensive local work, keep doing light work while
+  queued FIFO, sleep honestly with bounded waits instead of polling, and
+  release the permit when done. Use when several agents on one machine risk
+  overloading it by starting heavy work in the same minute. If load-lock is
+  not installed, this skill runs it via `npx -y @aron98/load-lock@1.5.0`
+  (downloads the pinned npm package), and load-lock keeps its shared state in
+  ~/.local/state/load-lock (a small per-user daemon started on first use).
+---
+
 # load-lock: machine-wide heavy-work coordination
 
 All coding agents on this machine (any harness, any repo/worktree) share one
 small budget of heavy-work permits. Before resource-intensive local work, a
 polite agent acquires a permit; everyone else keeps doing light work until an
 offer arrives.
+
+## How to call load-lock
+
+Use the first of these that works; they all talk to the same daemon:
+
+1. **load-lock MCP tools** (`acquire`, `wait_for_turn`, `run_with_permit`,
+   ...), if your harness lists them. The rest of this skill names them.
+2. **`load-lock` on PATH**: check with `load-lock version`.
+3. **Pinned npx**: `npx -y @aron98/load-lock@1.5.0 <command>` (Node >= 20).
+   It downloads that exact npm package once into the npx cache. Below,
+   read `load-lock` as this whole prefix. `npm install -g @aron98/load-lock`
+   makes it permanent.
+
+The first call starts the daemon on its own (shared state in
+`~/.local/state/load-lock`, or `$XDG_STATE_HOME/load-lock`); you never start
+it yourself.
+
+### CLI-only use (no MCP tools)
+
+`load-lock help` lists every command. The safest flow is `load-lock run`,
+which acquires a permit, runs the command, and releases it when the command
+exits (success or failure):
+
+```sh
+load-lock run --reason "full test suite" --op-key test/all -- npm test
+```
+
+- Exit code **68** with `queued at position N (request <id>)` means you are
+  not allowed to start yet. Keep doing light work. Out of light work? Sleep
+  honestly with `load-lock wait --id <request-id> --timeout 600000`: it
+  wakes you on your turn, claims the offer, and prints a `permit_token`.
+  Then `load-lock run --permit <permit_token> -- npm test`. A `wait` that
+  exits 68 again (still queued) is a checkpoint: call it again.
+- No longer need a queued request: `load-lock cancel --id <request-id>`.
+  Your own offers, queue entries and paused requests: `load-lock pending`.
+
+**Identity.** The daemon routes offers and `pending` per agent. The CLI
+derives your agent id from your harness session (Claude Code and OpenCode
+session env vars; on Linux, otherwise your harness process), so every call
+from one session counts as one agent, and other sessions are other agents.
+If `pending` does not show a request you made, pin the id yourself: set
+`LOAD_LOCK_AGENT=<unique-name>` (or pass `--agent <unique-name>`) on every
+call.
+
+Skill-only use has no idle wakeup (nothing tells you an offer arrived while
+you sit idle; use `load-lock wait`) and no policy reminder after context
+compaction. To get both, install the harness integration once:
+`load-lock setup` (or `load-lock install --harness <name>`).
 
 ## When to use it
 

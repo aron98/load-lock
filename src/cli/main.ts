@@ -143,6 +143,7 @@ const HELP_GROUPS: { title: string; items: HelpItem[] }[] = [
       { names: ["install"], desc: "install the load-lock adapter for a harness: --harness <name>" },
       { names: ["uninstall"], desc: "remove what install added: --harness <name>" },
       { names: ["hook"], desc: "harness hook handlers (called by integrations, not humans)" },
+      { names: ["mcp"], desc: "run the MCP stdio server (same as the load-lock-mcp binary; started by harnesses, not humans)" },
       { names: ["agent-guide"], desc: "print the full agent guide" },
       { names: ["help"], desc: "this usage; also bare load-lock, --help, -h; help <command> for one line" },
     ],
@@ -598,6 +599,16 @@ async function main(): Promise<void> {
     case "hook":
       await hookCommand(rest);
       return;
+
+    // ------------------------------------------------------------ mcp server
+    // Same server as the `load-lock-mcp` bin, reachable through the default
+    // `load-lock` bin so `npx -y @aron98/load-lock@<pin> mcp` works (ACE, #65).
+    // Imported lazily: other commands never load the MCP SDK.
+    case "mcp": {
+      const { runStdioMcp } = await import("../mcp/server.js");
+      await runStdioMcp();
+      return;
+    }
 
     case "agent-guide": {
       const p = join(import.meta.dirname ?? ".", "..", "..", "docs", "AGENT_GUIDE.md");
