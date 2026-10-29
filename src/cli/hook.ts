@@ -23,7 +23,7 @@
  *    against the official docs only (contract-tested, not live-verified).
  */
 import { LLClient } from "../shared/client.js";
-import { POLICY_BRIEF } from "../policy/text.js";
+import { POLICY_BRIEF, SETUP_HINT } from "../policy/text.js";
 
 interface HookInput {
   session_id?: string;
@@ -134,7 +134,7 @@ export async function hookCommand(rest: string[]): Promise<void> {
         c.close();
       }
       if (!first) return;
-      process.stdout.write(POLICY_BRIEF + "\n\n" + (await machineBrief()) + "\n");
+      process.stdout.write(POLICY_BRIEF + "\n\n" + SETUP_HINT + "\n\n" + (await machineBrief()) + "\n");
       return;
     }
 

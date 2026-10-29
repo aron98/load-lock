@@ -52,6 +52,13 @@ Rules:
 
 Detailed guide: the "load-lock" skill or \`load-lock agent-guide\`.`;
 
+/**
+ * The one upgrade hint every rung carries (#47 ladder, #59): appended after
+ * the brief in the MCP instructions and the session-start hook output.
+ */
+export const SETUP_HINT =
+  "Wiring: `load-lock setup` lists this machine's load-lock integrations per harness; `load-lock setup --yes` converges them to the recommended layout (hooks for idle wakeups, policy that survives compaction).";
+
 export function policyWithContext(statusSummary: string, configSummary?: string): string {
   let s = POLICY_BRIEF + "\n\n";
   s += statusSummary;
