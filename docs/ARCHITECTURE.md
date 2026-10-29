@@ -203,6 +203,21 @@ Policy is short (one brief, no repeated reminders), reinforced by tool
 names/descriptions, and never interrupts ordinary work with approval
 prompts.
 
+**Duplicate hook wiring is harmless (issue #54).** Loose hooks, a plugin
+and ACE wiring may all be installed at once, so one harness event can fire
+the same load-lock hook several times. The daemon is the singleton, so it
+drops duplicates: each hook handler first calls `hook_once` with the key
+`(harness, session_id, event, occurrence)`; only the first caller acts, the
+rest exit 0 silently. The occurrence separates legitimate repeats:
+SessionStart uses its `source` (a later `compact` re-injects the policy),
+Stop hooks (Claude Code, Codex, Cursor) use the offer token being delivered
+(each offer becomes at most one continuation per session). Keys expire on
+their own (default 60s) and are never persisted; the `await-offer` watcher
+instead *holds* its key for its connection's lifetime, so a session has at
+most one live watcher and the key frees when the watcher exits. Hooks fail
+open: no session id, a daemon without `hook_once` (`unknown method`), or
+any error means the hook acts exactly as before.
+
 ## Failure modes covered
 
 | Failure | Behavior |

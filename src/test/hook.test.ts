@@ -6,7 +6,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, runCli, delay, cliMainPath, type DaemonHandle } from "./testutil.js";
@@ -186,5 +187,181 @@ test("hooks: claude-code await-offer wakes (exit 2 + stderr, no token leak) on o
     assert.equal(t.stderr, "");
   } finally {
     await d.stop();
+  }
+});
+
+// ------------------------------------------------------------ dedupe (#54)
+// Duplicate wiring (loose hooks + plugin, two plugins) fires every hook
+// twice with the same stdin. The daemon's hook_once lets exactly one act.
+
+test("dedupe: duplicate session-start hooks inject the policy once per firing", async () => {
+  const d = await startDaemon();
+  try {
+    for (const ev of [
+      ["claude-code", "session-start"],
+      ["codex", "session-start"],
+      ["codex", "subagent-start"],
+    ]) {
+      const input = { session_id: `dup-${ev.join("-")}`, cwd: "/tmp", source: "startup" };
+      const rs = await Promise.all([runHook(d, ev, input), runHook(d, ev, input)]);
+      assert.deepEqual(rs.map((r) => r.code), [0, 0]);
+      assert.equal(rs.filter((r) => r.stdout.startsWith(POLICY_MARK)).length, 1, `${ev.join("/")}: exactly one injection`);
+      assert.equal(rs.filter((r) => r.stdout === "").length, 1, "the duplicate is silent");
+
+      // a later compaction is a new occurrence -> injected again
+      const again = await runHook(d, ev, { ...input, source: "compact" });
+      assert.ok(again.stdout.startsWith(POLICY_MARK), "compact re-injects");
+      // other sessions are independent
+      const other = await runHook(d, ev, { ...input, session_id: `${input.session_id}-other` });
+      assert.ok(other.stdout.startsWith(POLICY_MARK));
+    }
+    // no session id -> no dedupe possible, both act (today's behaviour)
+    const rs = await Promise.all([
+      runHook(d, ["claude-code", "session-start"], { cwd: "/tmp" }),
+      runHook(d, ["claude-code", "session-start"], { cwd: "/tmp" }),
+    ]);
+    assert.ok(rs.every((r) => r.stdout.startsWith(POLICY_MARK)));
+  } finally {
+    await d.stop();
+  }
+});
+
+test("dedupe: duplicate stop hooks deliver one continuation (claude-code, codex, cursor)", async () => {
+  for (const [harness, input, field] of [
+    ["claude-code", (cwd: string) => ({ session_id: "dup-s", cwd }), "reason"],
+    ["codex", (cwd: string) => ({ session_id: "dup-s", cwd, stop_hook_active: false }), "reason"],
+    ["cursor", (cwd: string) => ({ conversation_id: "dup-c", workspace_roots: [cwd], loop_count: 0 }), "followup_message"],
+  ] as const) {
+    const d = await startDaemon();
+    try {
+      const cwd = mkdtempSync(join(TMP_BASE, "ll-hook-wt-"));
+      const offer = await outstandingOffer(d, cwd);
+      const rs = await Promise.all([runHook(d, [harness, "stop"], input(cwd)), runHook(d, [harness, "stop"], input(cwd))]);
+      assert.deepEqual(rs.map((r) => r.code), [0, 0]);
+      const delivered = rs.filter((r) => r.stdout !== "");
+      assert.equal(delivered.length, 1, `${harness}: exactly one continuation`);
+      assert.ok(JSON.parse(delivered[0].stdout)[field].includes(offer.offerToken));
+    } finally {
+      await d.stop();
+    }
+  }
+});
+
+test("dedupe: duplicate await-offer watchers -> one live watcher; key freed when it exits", async () => {
+  const d = await startDaemon();
+  try {
+    const cwd = mkdtempSync(join(TMP_BASE, "ll-hook-wt-"));
+    const c = d.client();
+    await c.connect();
+    await c.request("acquire", { agentId: "dup-holder", opKey: "h", reason: "holding" });
+    await c.request("acquire", { agentId: "dup-waiter", opKey: "w", reason: "waiting", cwd });
+
+    const env = { LOAD_LOCK_AWAIT_MS: "8000" };
+    const a = runHook(d, ["claude-code", "await-offer"], { session_id: "dup-w", cwd }, env);
+    const b = runHook(d, ["claude-code", "await-offer"], { session_id: "dup-w", cwd }, env);
+    // the loser exits at once, silently, while the winner keeps watching
+    const loser = await Promise.race([a, b]);
+    assert.equal(loser.code, 0);
+    assert.equal(loser.stderr, "");
+
+    const held = (await c.request("pending", { agentId: "dup-holder" })) as any;
+    await c.request("release", { permitToken: held.held[0].permitToken });
+    const rs = await Promise.all([a, b]);
+    assert.deepEqual(rs.map((r) => r.code).sort(), [0, 2], "exactly one watcher woke the session");
+
+    // the winner exited -> its connection closed -> the key is free again
+    const next = await runHook(d, ["claude-code", "await-offer"], { session_id: "dup-w", cwd: "/nowhere" }, { LOAD_LOCK_AWAIT_MS: "600" });
+    assert.equal(next.code, 0);
+    const r = (await c.request("hook_once", { harness: "claude-code", sessionId: "dup-w", event: "await-offer", hold: true })) as any;
+    assert.equal(r.first, true, "no stale hold after the watchers are gone");
+    c.close();
+  } finally {
+    await d.stop();
+  }
+});
+
+test("dedupe: hook_once TTL keys expire; params are validated", async () => {
+  const d = await startDaemon();
+  try {
+    const c = d.client();
+    await c.connect();
+    const k = { harness: "codex", sessionId: "ttl", event: "stop", occurrence: "o1", ttlMs: 1000 };
+    assert.equal(((await c.request("hook_once", k)) as any).first, true);
+    assert.equal(((await c.request("hook_once", k)) as any).first, false);
+    assert.equal(((await c.request("hook_once", { ...k, occurrence: "o2" })) as any).first, true, "occurrence is part of the key");
+    await delay(1100);
+    assert.equal(((await c.request("hook_once", k)) as any).first, true, "expired keys can be claimed again");
+    await assert.rejects(c.request("hook_once", { harness: "codex", event: "stop" }), /sessionId/);
+    c.close();
+  } finally {
+    await d.stop();
+  }
+});
+
+/**
+ * A daemon predating hook_once: answers `unknown method` for it, serves one
+ * cwd-matched offer and pushes one `offered` event to watchers.
+ */
+async function oldDaemon(cwd: string) {
+  const dir = mkdtempSync(join(TMP_BASE, "ll-old-daemon-"));
+  const sock = join(dir, "daemon.sock");
+  const entry = { requestId: "req_old", pool: "heavy", opKey: "w", reason: "waiting", cwd, offerToken: "off_old", offerExpiresAt: Date.now() + 30_000 };
+  const seen: string[] = [];
+  const server = createServer((s: Socket) => {
+    let buf = "";
+    s.on("error", () => s.destroy());
+    s.on("data", (chunk) => {
+      buf += chunk.toString("utf8");
+      let idx: number;
+      while ((idx = buf.indexOf("\n")) !== -1) {
+        const msg = JSON.parse(buf.slice(0, idx));
+        buf = buf.slice(idx + 1);
+        seen.push(msg.method);
+        const reply = (o: unknown) => s.write(JSON.stringify(o) + "\n");
+        if (msg.method === "offers_for_cwd") reply({ id: msg.id, ok: true, result: { offers: [entry] } });
+        else if (msg.method === "watch") {
+          reply({ id: msg.id, ok: true, result: { ok: true } });
+          setTimeout(() => reply({ event: true, type: "offered", entry }), 300);
+        } else reply({ id: msg.id, ok: false, error: { code: "invalid", message: `unknown method "${msg.method}"` } });
+      }
+    });
+  });
+  await new Promise<void>((r) => server.listen(sock, r));
+  const env = { ...process.env, LOAD_LOCK_STATE_DIR: dir, LOAD_LOCK_SOCKET: sock, LOAD_LOCK_NO_SPAWN: "1" } as Record<string, string>;
+  return {
+    handle: { env } as unknown as DaemonHandle,
+    seen,
+    close: () => {
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+test("dedupe fallback: a daemon without hook_once -> every hook acts as before", async () => {
+  const cwd = mkdtempSync(join(TMP_BASE, "ll-hook-wt-"));
+  const old = await oldDaemon(cwd);
+  try {
+    const d = old.handle;
+    const two = (args: string[], input: Record<string, unknown>, env?: Record<string, string>) =>
+      Promise.all([runHook(d, args, input, env), runHook(d, args, input, env)]);
+
+    for (const r of await two(["claude-code", "session-start"], { session_id: "old", cwd, source: "startup" })) {
+      assert.ok(r.stdout.startsWith(POLICY_MARK), "both inject (no dedupe available)");
+    }
+    for (const h of ["claude-code", "codex"]) {
+      for (const r of await two([h, "stop"], { session_id: "old", cwd })) {
+        assert.equal(JSON.parse(r.stdout).decision, "block", `${h} stop still delivers`);
+      }
+    }
+    for (const r of await two(["cursor", "stop"], { conversation_id: "old", workspace_roots: [cwd], loop_count: 0 })) {
+      assert.ok(JSON.parse(r.stdout).followup_message.includes("off_old"));
+    }
+    for (const r of await two(["claude-code", "await-offer"], { session_id: "old", cwd }, { LOAD_LOCK_AWAIT_MS: "5000" })) {
+      assert.equal(r.code, 2, "both watchers still wake");
+    }
+    assert.ok(old.seen.includes("hook_once"), "the hooks did try the new method");
+  } finally {
+    old.close();
   }
 });
