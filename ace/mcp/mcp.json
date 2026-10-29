@@ -3,5 +3,5 @@
   "description": "Machine-wide heavy-work budget shared by parallel coding agents: acquire/release permits before builds and test suites, get offered capacity when it frees up. Local stdio server: runs `npx -y @aron98/load-lock@<version> mcp` (fetches the pinned npm package), which starts or reuses one per-user daemon with its state in ~/.local/state/load-lock. Install either this MCP server or the load-lock Claude Code plugin, not both: the plugin already bundles this server.",
   "transport": "stdio",
   "command": "npx",
-  "args": ["-y", "@aron98/load-lock@1.6.0", "mcp"]
+  "args": ["-y", "@aron98/load-lock@1.6.1", "mcp"]
 }

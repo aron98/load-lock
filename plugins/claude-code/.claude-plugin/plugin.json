@@ -1,7 +1,7 @@
 {
   "name": "load-lock-plugin",
   "displayName": "load-lock",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Machine-wide heavy-work budget shared by parallel coding agents: MCP tools, SessionStart policy, Stop and idle offer wakeups.",
   "author": {
     "name": "aron98",
