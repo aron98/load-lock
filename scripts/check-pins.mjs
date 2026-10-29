@@ -33,6 +33,7 @@ export const PINNED = [
   // e.g. { path: "ace/mcp.json", kind: "spec" },
   // e.g. { path: "plugins/claude-code/.claude-plugin/plugin.json", kind: "json", key: "version" },
   { path: "skills/load-lock/SKILL.md", kind: "spec" },
+  { path: "ace/mcp/mcp.json", kind: "spec" },
 ];
 
 const SEMVER = String.raw`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?`;
