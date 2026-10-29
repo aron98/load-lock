@@ -35,7 +35,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PACKAGE_NAME = "@aron98/load-lock";
-const PACKAGE_SPEC = "@aron98/load-lock@1.5.0";
+const PACKAGE_SPEC = "@aron98/load-lock@1.6.0";
 const PIN = PACKAGE_SPEC.slice(PACKAGE_NAME.length + 1);
 
 /** Compiled entry per bin, relative to a package root (package.json "bin"). */
