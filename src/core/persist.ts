@@ -75,9 +75,10 @@ export function saveState(dir: string, config: MachineConfig, history: ConfigHis
 }
 
 // --------------------------------------------------------------------------
-// Journal: held permits, persisted so a daemon restart can conservatively
-// reconcile running ownership (tracked jobs keep their permit; confirmed-dead
-// jobs release; queued/offered requests are NOT journaled — agents re-acquire).
+// Journal: held permits AND queued/offered requests, persisted so a daemon
+// restart can conservatively reconcile running ownership (tracked jobs keep
+// their permit; confirmed-dead jobs release) and re-queue waiters FIFO with
+// the same requestIds (offered entries come back as queued; issue #34).
 
 export function journalPath(dir: string): string {
   return join(dir, "journal.json");
