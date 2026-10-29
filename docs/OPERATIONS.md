@@ -96,7 +96,17 @@ uninstall — see issue #19); not live-verified inside the real CLIs.
 - Also honored by the shared client: `LOAD_LOCK_LABEL_PREFIX` (prefix for
   holder labels; see Sandboxes).
 - Files: `config.json` (settings + history), `journal.json` (held permits +
-  queued requests), `daemon.json` (pid), `spawn.lock` (bootstrap race guard).
+  queued requests), `daemon.json` (pid, plus since #52 the daemon's
+  `packageRoot` and `version`), `runtimes.json` (known runtime copies, see
+  below), `spawn.lock` (bootstrap race guard).
+- **Known runtime copies** (since #52): every client envelope carries its
+  package root (`clientRoot`); the daemon validates it (a package.json
+  naming `@aron98/load-lock`; the version is read from disk, not trusted
+  from the client) and records `{path, version, lastSeen}` in
+  `runtimes.json`, deduped by real path, pruning copies whose path is gone.
+  Small entry points (skill, plugin launchers) can read `daemon.json` /
+  `runtimes.json` to find an existing runtime without npx; `doctor` lists
+  them as `daemonRuntime` and `knownRuntimes`.
 
 ```sh
 load-lock service status   # hello + pid + daemon version

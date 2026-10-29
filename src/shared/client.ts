@@ -29,7 +29,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ProtocolError } from "./protocol.js";
 import { socketPath as defaultSocket, stateDir as defaultStateDir } from "../core/persist.js";
 import { probeTransport } from "./transport.js";
-import { packageVersion } from "./version.js";
+import { packageVersion, packageRoot } from "./version.js";
 import { resolveDaemonEntry } from "./installs.js";
 
 export interface ClientOptions {
@@ -180,8 +180,10 @@ export class LLClient {
       });
       const sock = this.ensureSock();
       // clientVersion: lets the daemon detect version skew and self-restart
-      // onto newer on-disk code (pre-handshake daemons ignore the field).
-      sock.write(JSON.stringify({ id, method, params, clientVersion: packageVersion() }) + "\n");
+      // onto newer on-disk code (pre-handshake daemons ignore the field);
+      // clientRoot: where that code lives, so the daemon can record known
+      // runtime copies (issue #52; older daemons ignore it too).
+      sock.write(JSON.stringify({ id, method, params, clientVersion: packageVersion(), clientRoot: packageRoot() }) + "\n");
     });
   }
 

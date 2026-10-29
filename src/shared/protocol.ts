@@ -11,6 +11,9 @@
  *           the extra field (forward-compatible); newer daemons use it
  *           for the update handshake: a client strictly newer than the
  *           running daemon triggers a daemon self-restart (issue #34).
+ *           Since #52 the envelope also carries "clientRoot" (the client
+ *           copy's package root); the daemon records it as a known
+ *           runtime copy (runtimes.json). Also ignored by older daemons.
  * Response: {"id": <number>, "ok": true, "result": {...}}
  *           {"id": <number>, "ok": false, "error": {"code": "...", "message": "..."}}
  * Watch push: {"event": true, ...event fields...}
