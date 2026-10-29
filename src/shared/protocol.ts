@@ -557,3 +557,34 @@ export interface HolderDiag {
     note: string; // human explanation incl. which cleanup applies
   };
 }
+
+// ---------------------------------------------------------------------------
+// hook_once (issue #54): daemon-side dedupe for duplicate hook wiring.
+// Loose hooks + plugin hooks (or two plugins) fire the same harness hook
+// more than once. Each hook handler first claims the key
+// (harness, sessionId, event, occurrence); only the first caller acts, the
+// rest exit 0 silently. Keys are in-memory only (never persisted, gone on
+// daemon restart) and expire after ttlMs — or, with hold, live exactly as
+// long as the calling connection (long-running await-offer watchers).
+// Daemons without the method answer `unknown method`; callers then act as
+// before (no dedupe).
+
+export const HOOK_ONCE_DEFAULT_TTL_MS = 60_000;
+export const HOOK_ONCE_MAX_TTL_MS = 10 * 60_000;
+
+export interface HookOnceParams {
+  harness: string;
+  sessionId: string;
+  event: string;
+  /** Distinguishes legitimate repeats within one session (e.g. SessionStart source, offer token). */
+  occurrence?: string;
+  /** Key lifetime, ms (clamped to [1s, HOOK_ONCE_MAX_TTL_MS]); ignored with hold. */
+  ttlMs?: number;
+  /** Hold the key until this connection closes instead of a TTL. */
+  hold?: boolean;
+}
+
+export interface HookOnceResult {
+  /** True when the caller is the first for this key and should act. */
+  first: boolean;
+}

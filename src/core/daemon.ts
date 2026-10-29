@@ -26,6 +26,7 @@ import { Machine } from "./state.js";
 import { loadState, saveState, loadJournal, saveJournal, socketPath as defaultSocket, stateDir as defaultStateDir } from "./persist.js";
 import { inspectMachine } from "./sysinfo.js";
 import { AcquireParams, MachineEvent, OwnerEntrySnapshot, ProtocolError, WaitForCompletionResult } from "../shared/protocol.js";
+import { HOOK_ONCE_DEFAULT_TTL_MS, HOOK_ONCE_MAX_TTL_MS, type HookOnceParams, type HookOnceResult } from "../shared/protocol.js";
 import { isWindows, probeTransport } from "../shared/transport.js";
 import { packageVersion, packageRoot, compareVersions } from "../shared/version.js";
 import { DaemonInfo, RuntimeCopy, inspectPackageRoot, loadRuntimes, mergeRuntime, saveRuntimes } from "../shared/runtimes.js";
@@ -77,6 +78,9 @@ export class Daemon {
   private waiters = new Map<string, Waiter>();
   /** wait_for_completion calls blocked on tracked jobs; multiple waiters per job are fine. */
   private completionWaiters = new Map<string, CompletionWaiter[]>();
+  /** hook_once keys (issue #54): in-memory only, never persisted. A key is
+   *  live until expiresAt, or — when held — until its socket closes. */
+  private hookKeys = new Map<string, { expiresAt: number; sock?: Socket }>();
   private sentEventId: number;
   private stateDirPath: string;
   private socketPath: string;
@@ -225,6 +229,7 @@ export class Daemon {
     sock.on("close", () => {
       this.conns.delete(sock);
       for (const w of [...this.watchers]) if (w.socket === sock) this.watchers.delete(w);
+      for (const [k, v] of this.hookKeys) if (v.sock === sock) this.hookKeys.delete(k);
     });
   }
 
@@ -493,6 +498,24 @@ export class Daemon {
         // match can wake a session but can never authorize work by itself.
         const cwd = String(p.cwd);
         return [{ offers: m.allOffers().filter((e) => e.cwd === cwd) }, undefined];
+      }
+
+      case "hook_once": {
+        // Duplicate hook wiring (loose + plugin, two plugins, ...) fires the
+        // same hook several times; the first caller per key acts, the rest
+        // stay silent. Keys are in-memory only and expire on their own
+        // (ttlMs) or, with hold, live exactly as long as this connection.
+        const params = p as unknown as HookOnceParams;
+        if (!params.harness || !params.sessionId || !params.event) {
+          throw new ProtocolError("invalid", "hook_once: harness, sessionId and event are required");
+        }
+        const now = Date.now();
+        for (const [k, v] of this.hookKeys) if (!v.sock && v.expiresAt <= now) this.hookKeys.delete(k);
+        const key = JSON.stringify([params.harness, params.sessionId, params.event, params.occurrence ?? ""]);
+        if (this.hookKeys.has(key)) return [{ first: false } satisfies HookOnceResult, undefined];
+        const ttl = Math.min(Math.max(Number(params.ttlMs ?? HOOK_ONCE_DEFAULT_TTL_MS) || HOOK_ONCE_DEFAULT_TTL_MS, 1_000), HOOK_ONCE_MAX_TTL_MS);
+        this.hookKeys.set(key, params.hold ? { expiresAt: Infinity, sock } : { expiresAt: now + ttl });
+        return [{ first: true } satisfies HookOnceResult, undefined];
       }
 
       case "admin_list":

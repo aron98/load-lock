@@ -96,6 +96,7 @@ normally touches:
 | `heartbeat {agentId}` | keep untracked leases alive |
 | `watch {agentId\|*}` / `events {sinceEventId, agentId?}` | push/pull event streams (durable ids) |
 | `offers_for_cwd {cwd}` | for hook scripts without session identity |
+| `hook_once {harness, sessionId, event, occurrence?, ttlMs?, hold?}` | hook dedupe: `{first}` is true only for the first caller per key; keys expire (TTL, default 60s) or, with `hold`, live as long as the connection; in-memory only |
 
 ## Lifecycle contract (the part that must not be improvised)
 

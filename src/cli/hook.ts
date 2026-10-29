@@ -34,6 +34,7 @@ interface HookInput {
   stop_hook_active?: boolean;
   hook_event_name?: string;
   // Cursor stop-hook fields (hooks v1)
+  conversation_id?: string;
   workspace_roots?: string[];
   loop_count?: number;
 }
@@ -75,6 +76,28 @@ async function machineBrief(): Promise<string> {
   }
 }
 
+/**
+ * Daemon-side dedupe (issue #54): duplicate hook wiring (loose hooks +
+ * plugin, two plugins, ...) fires each hook several times. Only the first
+ * caller per (harness, session, event, occurrence) acts. Fails open: no
+ * session id, an old daemon without hook_once, or any error => act as before.
+ */
+async function firstHook(
+  c: LLClient,
+  harness: string,
+  event: string,
+  sessionId: string | undefined,
+  opts: { occurrence?: string; hold?: boolean } = {},
+): Promise<boolean> {
+  if (!sessionId) return true;
+  try {
+    const r = (await c.request("hook_once", { harness, sessionId, event, ...opts })) as { first?: unknown };
+    return r.first !== false;
+  } catch {
+    return true;
+  }
+}
+
 function claimInstruction(offer: any, seconds: number): string {
   return (
     `load-lock: capacity for "${offer.pool}" is now reserved for you (request ${offer.requestId}, ` +
@@ -98,6 +121,19 @@ export async function hookCommand(rest: string[]): Promise<void> {
     case "claude-code/session-start":
     case "codex/session-start":
     case "codex/subagent-start": {
+      // Occurrence = SessionStart source (startup/resume/compact/...): a
+      // later compaction must re-inject; duplicates of one firing must not.
+      const c = new LLClient();
+      let first = true;
+      try {
+        await c.connect();
+        first = await firstHook(c, harness, event, input.session_id, { occurrence: input.source ?? input.agent_id });
+      } catch {
+        /* daemon down: no dedupe possible; machineBrief explains */
+      } finally {
+        c.close();
+      }
+      if (!first) return;
       process.stdout.write(POLICY_BRIEF + "\n\n" + (await machineBrief()) + "\n");
       return;
     }
@@ -115,6 +151,8 @@ export async function hookCommand(rest: string[]): Promise<void> {
           const { offers } = (await c.request("offers_for_cwd", { cwd })) as any;
           if (offers.length > 0) {
             const o = offers[0];
+            // Occurrence = the offer: each offer is delivered once per session.
+            if (!(await firstHook(c, harness, event, input.session_id, { occurrence: o.offerToken }))) return;
             const seconds = Math.max(0, Math.round(((o.offerExpiresAt ?? Date.now()) - Date.now()) / 1000));
             process.stdout.write(
               JSON.stringify({ decision: "block", reason: claimInstruction(o, seconds) }) + "\n",
@@ -145,6 +183,7 @@ export async function hookCommand(rest: string[]): Promise<void> {
           const { offers } = (await c.request("offers_for_cwd", { cwd: cursorCwd })) as any;
           if (offers.length > 0) {
             const o = offers[0];
+            if (!(await firstHook(c, harness, event, input.conversation_id ?? input.session_id, { occurrence: o.offerToken }))) return;
             const seconds = Math.max(0, Math.round(((o.offerExpiresAt ?? Date.now()) - Date.now()) / 1000));
             process.stdout.write(
               JSON.stringify({ followup_message: claimInstruction(o, seconds) }) + "\n",
@@ -168,6 +207,12 @@ export async function hookCommand(rest: string[]): Promise<void> {
         await c.connect();
       } catch {
         process.exit(0); // daemon down; policy hooks will cover it
+      }
+      // One live watcher per session: the key is held on this connection
+      // and released by the daemon when the watcher exits.
+      if (!(await firstHook(c, harness, event, input.session_id, { hold: true }))) {
+        c.close();
+        process.exit(0);
       }
       let woken = false;
       await new Promise<void>((resolve) => {
