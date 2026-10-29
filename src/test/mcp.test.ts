@@ -52,6 +52,25 @@ test("mcp: `load-lock mcp` serves the same MCP server as load-lock-mcp (#65)", a
   }
 });
 
+test("mcp: initialize reports this package's version from package.json (#97)", async () => {
+  const d = await startDaemon();
+  const viaBin = await connectMcp(d); // load-lock-mcp entry point
+  const viaCli = await connectMcp(d, {}, [cliMainPath, "mcp"]); // `load-lock mcp`
+  try {
+    const pkgVersion = JSON.parse(
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json"), "utf8"),
+    ).version as string;
+    assert.ok(pkgVersion, "package.json has a version");
+    assert.equal(viaBin.getServerVersion()?.version, pkgVersion, "load-lock-mcp serverInfo.version matches package.json");
+    assert.equal(viaCli.getServerVersion()?.version, pkgVersion, "`load-lock mcp` serverInfo.version matches package.json");
+    assert.notEqual(pkgVersion, "0.1.0", "guards against the old hard-coded constant");
+  } finally {
+    await viaCli.close();
+    await viaBin.close();
+    await d.stop();
+  }
+});
+
 test("mcp: tool listing + acquire/release/configure round trip", async () => {
   const d = await startDaemon();
   const c = await connectMcp(d);
