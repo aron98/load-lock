@@ -259,7 +259,7 @@ export class Daemon {
       }
       // Respond first, then consider a self-restart — even on errors, a
       // newer client means this daemon is running stale on-disk code.
-      this.maybeScheduleSelfRestart(clientVersion);
+      this.maybeScheduleSelfRestart(clientVersion, msg.clientRoot);
       return;
     }
     // Tool-boundary delivery: surface this agent's outstanding offers/queue
@@ -268,7 +268,7 @@ export class Daemon {
       (result as Record<string, unknown>).pending = this.machine.pending(agentId);
     }
     this.send(sock, { id: msg.id, ok: true, result });
-    this.maybeScheduleSelfRestart(clientVersion);
+    this.maybeScheduleSelfRestart(clientVersion, msg.clientRoot);
   }
 
   // -------------------------------------------------------- version handshake
@@ -309,14 +309,14 @@ export class Daemon {
    * entirely daemon-side and best-effort: pre-handshake clients that send
    * no version never trigger a restart.
    */
-  private maybeScheduleSelfRestart(clientVersion: string | undefined): void {
+  private maybeScheduleSelfRestart(clientVersion: string | undefined, clientRoot?: unknown): void {
     if (this.stopped || this.restartTimer || !clientVersion) return;
     if (compareVersions(clientVersion, DAEMON_VERSION) <= 0) return;
     const restartedFor = process.env[RESTARTED_FOR_ENV];
     if (restartedFor && compareVersions(clientVersion, restartedFor) <= 0) return; // already tried
     this.restartTimer = setTimeout(() => {
       this.restartTimer = null;
-      this.selfRestart(clientVersion);
+      this.selfRestart(clientVersion, typeof clientRoot === "string" ? clientRoot : undefined);
     }, 250);
     this.restartTimer.unref?.();
   }
@@ -324,11 +324,14 @@ export class Daemon {
   /**
    * Drain + respawn onto the updated on-disk code. Persists state and the
    * journal FIRST, then stops (destroying all client connections — they
-   * reconnect to the fresh daemon), then spawns the replacement with the
-   * exact same argv so a daemon started via the old copy runs the new copy's
-   * code, and exits.
+   * reconnect to the fresh daemon), then spawns the replacement and exits.
+   *
+   * The replacement runs the newer client's copy when its package root
+   * (clientRoot, issue #53) checks out — see restartEntry(). Otherwise it
+   * reruns the exact same argv, which picks up an in-place update of the
+   * daemon's own copy (e.g. `npm i -g`).
    */
-  private selfRestart(clientVersion: string): void {
+  private selfRestart(clientVersion: string, clientRoot?: string): void {
     if (this.stopped) return;
     // Best-effort persistence; a failed save must not block the restart.
     try {
@@ -339,7 +342,9 @@ export class Daemon {
     }
     this.stop();
     try {
-      const child = spawn(process.execPath, process.argv.slice(1), {
+      const entry = restartEntry(clientRoot, clientVersion);
+      const args = entry ? [entry, "--state-dir", this.stateDirPath, "--socket", this.socketPath] : process.argv.slice(1);
+      const child = spawn(process.execPath, args, {
         detached: true,
         stdio: "ignore",
         cwd: process.cwd(),
@@ -937,4 +942,20 @@ export function processStartTime(pid: number): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Daemon entry point of the newer client's copy (issue #53), or null to
+ * fall back to the same-argv respawn. The hint must name a load-lock
+ * package root whose on-disk version equals the version the client
+ * claimed, with a dist/core/daemon-main.js. The hint arrives over the
+ * same-user socket, so following it grants no privilege the client did
+ * not already have (it could run that file itself).
+ */
+export function restartEntry(clientRoot: string | undefined, clientVersion: string): string | null {
+  if (!clientRoot) return null;
+  const found = inspectPackageRoot(clientRoot);
+  if (!found || found.version !== clientVersion) return null;
+  const entry = join(found.path, "dist", "core", "daemon-main.js");
+  return existsSync(entry) ? entry : null;
 }
