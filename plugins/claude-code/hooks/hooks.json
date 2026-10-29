@@ -6,8 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs", "hook", "claude-code", "session-start"],
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs\" hook claude-code session-start",
             "timeout": 30
           }
         ]
@@ -16,8 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs", "hook", "claude-code", "await-offer"],
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs\" hook claude-code await-offer",
             "async": true,
             "asyncRewake": true,
             "timeout": 660
@@ -30,8 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs", "hook", "claude-code", "stop"],
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs\" hook claude-code stop",
             "timeout": 30
           }
         ]

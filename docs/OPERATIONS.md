@@ -215,9 +215,12 @@ in `plugins/claude-code/`:
   `mcp__plugin_load-lock-plugin_load-lock__<tool>`.
 - **Hooks** in `hooks/hooks.json`, the same three as the loose install:
   `SessionStart` (policy + machine summary), `Stop` (offer continuation)
-  and the `async` + `asyncRewake` `await-offer` watcher. Each runs in exec
-  form, `node ${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs hook claude-code
-  <event>` with `args`, so no shell is involved.
+  and the `async` + `asyncRewake` `await-offer` watcher. Each runs in shell
+  form, one command string `node "${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs"
+  hook claude-code <event>` with the root quoted (#63). Shell form is the
+  long-documented hook shape; exec form (`command` + `args`) has no
+  documented minimum Claude Code version. The string has no shell
+  metacharacters, so ACE's `plugin_hooks_command_safe` check passes.
 - **No skill and no CLAUDE.md section.** The policy arrives through the
   SessionStart hook (re-fired after compaction), and the full guide through
   the `agent_guide` MCP tool. Install the `load-lock` skill separately if

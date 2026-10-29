@@ -200,10 +200,34 @@ and run through the dependency-free launcher; no skill, the detailed guide
 comes from the `agent_guide` tool. Its manifest, hooks file and
 marketplace entry are contract-tested (`src/test/plugin.test.ts`) and pass
 `claude plugin validate --strict` (Claude Code 2.1.312), and the hook
-commands are tested the way the plugin invokes them. **Not yet
-live-verified as a plugin** (#63): that plugin hooks honour `async` /
-`asyncRewake` the same way, and that they get the same `session_id` /
-`cwd` stdin and env, is what the docs say but has not been observed.
+commands are tested the way the plugin invokes them. Hooks use shell form
+(one `command` string, `${CLAUDE_PLUGIN_ROOT}` quoted; #63).
+
+**Plugin live verification** (#63; Claude Code 2.1.312, 2026-10-29, Linux
+host): a real session with a throwaway `CLAUDE_CONFIG_DIR` and `HOME`,
+load-lock isolated by `LOAD_LOCK_STATE_DIR` / `LOAD_LOCK_SOCKET`, the
+plugin installed from this repo's marketplace with `claude plugin
+marketplace add <checkout>` + `claude plugin install
+load-lock-plugin@load-lock`, and the checkout's CLI first on `PATH`.
+Headless `claude -p` and an interactive pty session. Status: **plugin
+live-verified** for the checks marked observed:
+
+| Check | Result |
+| --- | --- |
+| Shell-form hooks run, launcher takes the PATH branch | Observed (`load-lock launcher: path 1.5.0` on every hook) |
+| SessionStart policy at startup | Observed (model quoted the isolated daemon's `load-lock now:` line) |
+| SessionStart policy after `/compact` | Observed (`SessionStart:compact` hook ran; model quoted the fresh `1/1` line where the startup brief said `0/1`) |
+| MCP tools named `mcp__plugin_load-lock-plugin_load-lock__<tool>` | Observed (all 19 tools listed under that prefix; server `plugin:load-lock-plugin:load-lock` connected) |
+| `agent_guide` tool | Observed (called; returned the guide) |
+| Stop offer continuation | Observed (headless: Stop hook returned `decision: block` with the offer token; model claimed and released) |
+| `await-offer` idle wakeup (`async` + `asyncRewake`) | Observed (interactive: session idle ~18s, offer arrived, the watcher's exit 2 woke the session with a task notification; model ran `pending` → `claim` → `release`) |
+| Daemon started by the plugin | Observed (fresh state dir; the daemon came up during session start with `CLAUDE_PLUGIN_ROOT` in its environment and `daemon.json` naming the PATH copy). Which plugin component spawned it first (hook or MCP server) was not determined. |
+| Session-derived identity | Observed for the plugin MCP server (requests carried agent `claude-code:<session id>` matching the session's transcript). That hooks read the same `session_id` from stdin was not separately inspected. |
+| Loose install + plugin together | Not observed (not run; covered by the #54 dedupe tests only) |
+| Launcher npx / known-copy branches inside a live session | Not observed (only the PATH branch ran) |
+
+The TUI labels the asyncRewake wake as "Stop hook blocking error from
+command SessionStart:startup"; the message text is the watcher's.
 
 Contract tests cover all hook stdin/stdout shapes against the documented
 harness contracts. Claude Code is additionally **live-verified** (in Docker,

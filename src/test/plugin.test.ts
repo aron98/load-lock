@@ -28,6 +28,8 @@ const PKG_VERSION: string = readJson(join(REPO_ROOT, "package.json")).version;
 
 const ROOT_VAR = "${CLAUDE_PLUGIN_ROOT}";
 const LAUNCHER_ARG = `${ROOT_VAR}/scripts/load-lock.mjs`;
+/** A hook's shell-form command, capturing the hook event. */
+const HOOK_COMMAND = /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/load-lock\.mjs" hook claude-code ([a-z-]+)$/;
 /** ACE plugin_hooks_command_safe (#64): no shell metacharacters. */
 const ACE_UNSAFE = /[;&|`]|\$\(/;
 
@@ -59,18 +61,19 @@ test("plugin.json: name, version pin, MCP server through the launcher, no secret
   assert.equal(mcp.headers, undefined);
 });
 
-test("hooks.json: SessionStart policy + async await-offer watcher, Stop wakeup, exec form via the launcher", () => {
-  const got = handlers().map(([ev, h]) => [ev, h.args.slice(1).join(" "), Boolean(h.async), Boolean(h.asyncRewake)]);
+test("hooks.json: SessionStart policy + async await-offer watcher, Stop wakeup, shell form via the launcher", () => {
+  const got = handlers().map(([ev, h]) => [ev, HOOK_COMMAND.exec(h.command)?.[1], Boolean(h.async), Boolean(h.asyncRewake)]);
   assert.deepEqual(got, [
-    ["SessionStart", "hook claude-code session-start", false, false],
-    ["SessionStart", "hook claude-code await-offer", true, true],
-    ["Stop", "hook claude-code stop", false, false],
+    ["SessionStart", "session-start", false, false],
+    ["SessionStart", "await-offer", true, true],
+    ["Stop", "stop", false, false],
   ]);
   for (const [, h] of handlers()) {
     assert.equal(h.type, "command");
-    assert.equal(h.command, "node");
-    assert.equal(h.args[0], LAUNCHER_ARG);
-    for (const s of [h.command, ...h.args]) assert.doesNotMatch(s, ACE_UNSAFE);
+    // Shell form (#63): one command string, no exec-form `args`; the root is quoted for paths with spaces.
+    assert.equal(h.args, undefined);
+    assert.ok(h.command.includes(`"${LAUNCHER_ARG}"`), h.command);
+    assert.doesNotMatch(h.command, ACE_UNSAFE);
     assert.ok(Number.isInteger(h.timeout) && h.timeout > 0);
   }
   // asyncRewake hooks keep their timeout: leave room for the watcher's own 10 min bound.
@@ -114,26 +117,22 @@ test("plugin commands run as the plugin runs them (launcher -> PATH copy of this
     symlinkSync(cliMainPath, join(bin, "load-lock"));
     const env: Record<string, string> = { ...d.env, PATH: bin, LOAD_LOCK_LAUNCHER_DEBUG: "1" };
     for (const k of ["LOAD_LOCK_AGENT", "CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID"]) delete env[k];
+    // Hooks run as the harness runs a shell-form command: through sh, with
+    // CLAUDE_PLUGIN_ROOT in the environment and `node` resolved from PATH.
+    symlinkSync(process.execPath, join(bin, "node"));
     const sub = (args: string[]) => args.map((a) => a.replace(ROOT_VAR, PLUGIN_ROOT));
-    const hook = (event: string) => handlers().find(([, h]) => h.args.at(-1) === event)![1];
+    const runHook = (event: string, input: object) => {
+      const h = handlers().find(([, x]) => HOOK_COMMAND.exec(x.command)?.[1] === event)![1];
+      return spawnSync(h.command, { shell: "/bin/sh", env: { ...env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT }, input: JSON.stringify(input), encoding: "utf8" });
+    };
 
-    const start = hook("session-start");
-    const s = spawnSync(start.command === "node" ? process.execPath : start.command, sub(start.args), {
-      env,
-      input: JSON.stringify({ session_id: "plug-1", cwd: tmp, source: "startup", hook_event_name: "SessionStart" }),
-      encoding: "utf8",
-    });
+    const s = runHook("session-start", { session_id: "plug-1", cwd: tmp, source: "startup", hook_event_name: "SessionStart" });
     assert.equal(s.status, 0, s.stderr);
     assert.ok(s.stdout.startsWith(POLICY_BRIEF), s.stdout);
     assert.match(s.stdout, /load-lock now: pool "heavy"/);
     assert.match(s.stderr, /launcher: path /);
 
-    const stop = hook("stop");
-    const t = spawnSync(process.execPath, sub(stop.args), {
-      env,
-      input: JSON.stringify({ session_id: "plug-1", cwd: tmp, hook_event_name: "Stop" }),
-      encoding: "utf8",
-    });
+    const t = runHook("stop", { session_id: "plug-1", cwd: tmp, hook_event_name: "Stop" });
     assert.equal(t.status, 0, t.stderr);
     assert.equal(t.stdout, "", "no offer, no continuation");
 
