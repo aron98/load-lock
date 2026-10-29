@@ -9,7 +9,9 @@
  * Rules from the same revision: backend/app/domain/kinds/MCP.md (inline
  * secrets), compliance_mcp_rule_checks_service.py (`_first_non_flag`,
  * companion-file roots), artifact_import_zip_safety_service.py (forbidden
- * names in a non-plugin bundle).
+ * names in a non-plugin bundle), and artifact_import_entry_points_service.py
+ * (`_split_mcp_bundle_members`, `_require_companion_files_match` — the MCP
+ * bundle layout rules mirrored below; issue #98).
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -136,14 +138,69 @@ test("ace mcp.json: local npx server running `load-lock mcp` at the package.json
   }
 });
 
-test("ace/mcp folder: only mcp.json + README, nothing ACE's bundle rules would flag", () => {
-  const files = readdirSync(ACE_MCP_DIR).sort();
-  assert.deepEqual(files, ["README.md", "mcp.json"]);
-  // companion_files roots (must match companion_files) and names forbidden in a non-plugin bundle.
-  for (const bad of ["bin", "scripts", "config", "references", ".claude-plugin", ".mcp.json", ".lsp.json", ".opencode"]) {
-    assert.ok(!files.includes(bad), bad);
+/**
+ * Every file in the ace/mcp bundle, as `member` paths relative to the bundle
+ * root (POSIX separators), mirroring what ACE's `parse_mcp_zip` sees.
+ */
+function listBundleMembers(dir: string, rel = ""): string[] {
+  const members: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const relPath = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) members.push(...listBundleMembers(join(dir, e.name), relPath));
+    else members.push(relPath);
   }
-  assert.equal(manifest.companion_files, undefined);
+  return members.sort();
+}
+
+test("ace/mcp bundle: _split_mcp_bundle_members — only mcp.json at the root", () => {
+  // ACE's artifact_import_entry_points_service.py `_split_mcp_bundle_members`:
+  // the bundle root may contain ONLY `mcp.json`; every other member must live
+  // under one of bin/ | scripts/ | config/ | references/. A root-level file
+  // like the old README.md gets the whole bundle rejected (issue #98).
+  const members = listBundleMembers(ACE_MCP_DIR);
+  assert.ok(members.includes("mcp.json"), "mcp.json must exist at the bundle root");
+  const rootFiles = members.filter((m) => !m.includes("/"));
+  assert.deepEqual(rootFiles, ["mcp.json"], "only mcp.json at the bundle root");
+  const allowedDirs = ["bin", "scripts", "config", "references"];
+  for (const entry of readdirSync(ACE_MCP_DIR)) {
+    if (entry === "mcp.json") continue;
+    assert.ok(
+      allowedDirs.includes(entry),
+      `root member ${entry} must be a directory under ${allowedDirs.join("|")}/`,
+    );
+  }
+  for (const m of members) {
+    if (m === "mcp.json") continue;
+    assert.ok(
+      allowedDirs.includes(m.split("/")[0]!),
+      `member ${m} must be under ${allowedDirs.join("|")}/`,
+    );
+  }
+  // Names forbidden in a non-plugin bundle (artifact_import_zip_safety_service.py).
+  for (const bad of [".claude-plugin", ".mcp.json", ".lsp.json", ".opencode"]) {
+    assert.ok(!members.includes(bad), bad);
+  }
+});
+
+test("ace/mcp bundle: _require_companion_files_match — bin|scripts|config == companion_files", () => {
+  // ACE's artifact_import_entry_points_service.py
+  // `_require_companion_files_match`: every file under bin/, scripts/ or
+  // config/ must be listed in the manifest's `companion_files`, and every
+  // `companion_files` entry must exist — exactly. Files under references/
+  // are exempt (issue #98 moved README.md there).
+  const members = listBundleMembers(ACE_MCP_DIR);
+  const companionRoots = ["bin", "scripts", "config"];
+  const declared = new Set((manifest.companion_files ?? []) as string[]);
+  const present = members.filter((m) => companionRoots.includes(m.split("/")[0]!));
+  assert.deepEqual(
+    [...declared].sort(),
+    present,
+    "companion_files and the files under bin|scripts|config must match exactly",
+  );
+  // references/ members must NOT need a companion_files entry.
+  for (const m of members.filter((m2) => m2.startsWith("references/"))) {
+    assert.ok(!declared.has(m), `references/ member ${m} is exempt from companion_files`);
+  }
 });
 
 test("ace mcp.json: pin is declared in scripts/check-pins.mjs", async () => {

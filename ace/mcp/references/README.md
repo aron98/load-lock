@@ -19,7 +19,11 @@ both.** The plugin already bundles this server. Installing both gives two
 registrations of the same tools. That is harmless (one daemon, one identity
 per session), but redundant.
 
-Keep this folder to `mcp.json` and this README: ACE checks every file under
-`bin/`, `scripts/`, `config/` and `references/` against `companion_files`.
+Keep this folder to the layout ACE's `parse_mcp_zip` requires: only
+`mcp.json` at the bundle root, every other member under `bin/`, `scripts/`,
+`config/` or `references/` (this README lives under `references/`, the
+documented place for human-readable docs). Every file under `bin/`,
+`scripts/` or `config/` must be listed in the manifest's `companion_files`;
+`references/` is exempt from that check.
 The `<version>` pin is kept in sync with `package.json` by
 `scripts/check-pins.mjs` (`npm run check-pins -- --write` at release).
