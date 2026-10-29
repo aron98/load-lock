@@ -164,10 +164,22 @@ observed live on this machine before the feature existed.
 registers the MCP server as `load-lock`, so Claude Code exposes
 `mcp__load-lock__<tool>`. A plugin-bundled server is namespaced by plugin
 and server key, `mcp__plugin_<plugin>_<server>__<tool>` (per the Claude Code
-MCP docs), e.g. `mcp__plugin_load-lock_load-lock__claim`. Every text
+MCP docs), e.g. `mcp__plugin_load-lock-plugin_load-lock__claim` for the
+`load-lock-plugin` Claude Code plugin. Every text
 load-lock injects (policy brief, hook claim/wakeup messages, CLAUDE.md /
 AGENTS.md sections, skill) therefore names tools neutrally ("the load-lock
 `claim` tool") instead of hard-coding a prefix.
+
+**Claude Code plugin** (`/plugin install load-lock-plugin@load-lock`, see
+OPERATIONS "Claude Code plugin"): the same MCP server and hooks, bundled
+and run through the dependency-free launcher; no skill, the detailed guide
+comes from the `agent_guide` tool. Its manifest, hooks file and
+marketplace entry are contract-tested (`src/test/plugin.test.ts`) and pass
+`claude plugin validate --strict` (Claude Code 2.1.312), and the hook
+commands are tested the way the plugin invokes them. **Not yet
+live-verified as a plugin** (#63): that plugin hooks honour `async` /
+`asyncRewake` the same way, and that they get the same `session_id` /
+`cwd` stdin and env, is what the docs say but has not been observed.
 
 Contract tests cover all hook stdin/stdout shapes against the documented
 harness contracts. Claude Code is additionally **live-verified** (in Docker,
@@ -367,7 +379,7 @@ UI** — where no UI surface exists, we say so rather than claim parity.
 | Harness | In-harness dashboard | Also available |
 | --- | --- | --- |
 | **OpenCode** | Native TUI panel: `/load-lock` opens `load-lock.dashboard` **in-window** as a side panel (also opened by clicking the sidebar widget; deliberately **not** bound to any key — issue #28: the old `gl` sequence swallowed plain `g` typing, and the candidate `ctrl+g` is the host's `session.first` default) with pools, holder cards, offer claim-window countdowns, queue, paused, event feed, `inspect_machine`; home-footer `lock 1/1` indicator on the home screen plus a clickable, health-colored `load-lock 0/3` widget in the session sidebar; `x` force-release behind select + confirm. Implemented as the package's `./tui` companion plugin (main plugin unchanged). Live-verified: opencode 2.0.29 (panel render, palette/slash command, confirm-gated force-release) and opencode 2.0.32 in a real pty (sidebar widget render, click-to-open, in-window presentation, plain `g` reaches the composer, `ctrl+g` not intercepted by load-lock). | `load-lock dashboard` (alias `top`) |
-| **Claude Code** | None in-app — Claude Code has no plugin UI surface. The model can report status via the `load_lock_status` MCP tool at tool boundaries, and each `SessionStart` hook injects a one-line machine summary. | `load-lock dashboard` (any terminal) |
+| **Claude Code** | None in-app — the load-lock plugin bundles MCP + hooks only; Claude Code plugins have no dashboard panel surface for it. The model can report status via the `load_lock_status` MCP tool at tool boundaries, and each `SessionStart` hook injects a one-line machine summary. | `load-lock dashboard` (any terminal) |
 | **Codex CLI** | None in-app — same reason. `load_lock_status` MCP tool; `SessionStart`/`SubagentStart` machine summary. | `load-lock dashboard` (alias `top`) |
 | **Gemini CLI** | None in-app (no hooks, no UI plugin surface). `load_lock_status` MCP tool at tool boundaries. | `load-lock dashboard` (alias `top`) |
 | **Copilot CLI, Cursor, Cline, Roo Code, Goose** | None in-app. MCP `status` tool where the MCP server is configured. | `load-lock dashboard` (alias `top`) |

@@ -58,6 +58,11 @@ node --test --test-name-pattern "offer" dist/test/core.test.js
   keep it in sync with actual tool semantics.
 - `src/dashboard/` — feed/frame/view model shared by the TUI panel and
   `load-lock top`.
+- `plugins/claude-code/` — Claude Code plugin `load-lock-plugin` (manifest,
+  `hooks/hooks.json`, committed dependency-free launcher
+  `scripts/load-lock.mjs`; no build, no `dist/`), listed by the root
+  `.claude-plugin/marketplace.json`. Keep it to ACE's plugin layout (no
+  `package.json`, no `SKILL.md`; see `src/test/plugin.test.ts`).
 - `src/test/`, `demo/` (3-worktree repro script), `skills/load-lock/SKILL.md`
   (packaged skill), `docs/` (ARCHITECTURE / OPERATIONS / COMPATIBILITY /
   AGENT_GUIDE / ADAPTERS — authoritative for design decisions).

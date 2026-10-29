@@ -8,6 +8,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { startDaemon, delay, mcpMainPath, cliMainPath, type DaemonHandle } from "./testutil.js";
 
 async function connectMcp(d: DaemonHandle, extraEnv: Record<string, string> = {}, args = [mcpMainPath]): Promise<Client> {
@@ -55,9 +58,16 @@ test("mcp: tool listing + acquire/release/configure round trip", async () => {
   try {
     const tools = await c.listTools();
     const names = tools.tools.map((t) => t.name);
-    for (const expected of ["acquire", "claim", "release", "cancel", "rejoin", "pending", "wait_for_turn", "status", "inspect_machine", "get_config", "configure", "run_with_permit", "job_status", "job_stop", "attach_pid", "mark_started", "wait_for_completion"]) {
+    for (const expected of ["acquire", "claim", "release", "cancel", "rejoin", "pending", "wait_for_turn", "status", "inspect_machine", "get_config", "configure", "run_with_permit", "job_status", "job_stop", "attach_pid", "mark_started", "wait_for_completion", "agent_guide"]) {
       assert.ok(names.includes(expected), `tool ${expected} registered`);
     }
+
+    // agent_guide (issue #61): the same text `load-lock agent-guide` prints.
+    const guide = await c.callTool({ name: "agent_guide", arguments: {} });
+    assert.equal(
+      (guide.content as any)[0].text,
+      readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "docs", "AGENT_GUIDE.md"), "utf8"),
+    );
 
     const acq = await callJson(c, "acquire", { reason: "build", op_key: "mcp-rt", agent_id: "mcpAgentA", label_prefix: "omac" });
     assert.equal(acq.state, "granted");

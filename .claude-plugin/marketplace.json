@@ -1,0 +1,15 @@
+{
+  "name": "load-lock",
+  "owner": {
+    "name": "aron98",
+    "url": "https://github.com/aron98"
+  },
+  "description": "load-lock: machine-wide heavy-work budget for parallel coding agents",
+  "plugins": [
+    {
+      "name": "load-lock-plugin",
+      "source": "./plugins/claude-code",
+      "description": "MCP tools plus SessionStart policy and Stop/idle offer wakeups for load-lock. The load-lock skill is a separate install."
+    }
+  ]
+}

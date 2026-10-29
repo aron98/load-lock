@@ -1,0 +1,41 @@
+{
+  "description": "load-lock: policy brief at session start and after compaction, offer wakeups on Stop and while idle",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs", "hook", "claude-code", "session-start"],
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs", "hook", "claude-code", "await-offer"],
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 660
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs", "hook", "claude-code", "stop"],
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

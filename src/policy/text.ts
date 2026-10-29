@@ -4,12 +4,14 @@
  *
  *  - OpenCode plugin: injected via session "context" hook (every model call,
  *    compaction-proof) + registered skill for detail.
- *  - Claude Code: SessionStart hook stdout (matcher startup|resume|clear|compact|fork).
+ *  - Claude Code: SessionStart hook stdout (matcher startup|resume|clear|compact|fork),
+ *    from the loose install or the load-lock-plugin Claude Code plugin.
  *  - Codex CLI: SessionStart/SubagentStart hook stdout (needs /hooks trust).
  *  - MCP server: `instructions` field on every harness that surfaces it.
  *
  * Deliberately SHORT (spec: no noisy reminders). The detailed playbook lives
- * in the skill / docs/AGENT_GUIDE.md.
+ * in docs/AGENT_GUIDE.md, served by the MCP agent_guide tool, the skill and
+ * `load-lock agent-guide`.
  */
 
 export const POLICY_BRIEF = `# load-lock: machine-wide heavy-work budget
@@ -50,7 +52,8 @@ Rules:
    including container limits) and adjust with configure (explain why). Don't
    assume N cores = N parallel heavy jobs.
 
-Detailed guide: the "load-lock" skill or \`load-lock agent-guide\`.`;
+Detailed guide: the load-lock agent_guide tool (MCP/plugin), else the
+"load-lock" skill or \`load-lock agent-guide\` (CLI) where installed.`;
 
 /**
  * The one upgrade hint every rung carries (#47 ladder, #59): appended after

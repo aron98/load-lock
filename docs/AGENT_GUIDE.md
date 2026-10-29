@@ -6,8 +6,8 @@ wide capacity budget. Before resource-intensive work, acquire a permit. The
 whole thing is cooperative: you decide what is heavy; the budget only works
 if everyone participates.
 
-This guide is also available as `load-lock agent-guide` and as a skill in
-supported harnesses.
+This guide is also available as the `agent_guide` MCP tool, as
+`load-lock agent-guide`, and as a skill in supported harnesses.
 
 ## 1. Deciding heavy vs light
 

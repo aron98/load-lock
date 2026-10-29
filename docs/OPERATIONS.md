@@ -145,6 +145,40 @@ Guards, each turning an `install` into a `manual` step:
 added, after a converge as before it. The MCP instructions and the
 session-start brief end with a one-line pointer to `load-lock setup`.
 
+### Claude Code plugin
+
+Instead of `install --harness claude-code`, Claude Code can load load-lock
+as a plugin (issue #61). The repo root is a marketplace
+(`.claude-plugin/marketplace.json`) listing one plugin, `load-lock-plugin`,
+in `plugins/claude-code/`:
+
+```text
+/plugin marketplace add aron98/load-lock
+/plugin install load-lock-plugin@load-lock
+```
+
+- **MCP server** `load-lock`, declared inline in `plugin.json` and started
+  through the launcher (`--bin load-lock-mcp`). Tools are named
+  `mcp__plugin_load-lock-plugin_load-lock__<tool>`.
+- **Hooks** in `hooks/hooks.json`, the same three as the loose install:
+  `SessionStart` (policy + machine summary), `Stop` (offer continuation)
+  and the `async` + `asyncRewake` `await-offer` watcher. Each runs in exec
+  form, `node ${CLAUDE_PLUGIN_ROOT}/scripts/load-lock.mjs hook claude-code
+  <event>` with `args`, so no shell is involved.
+- **No skill and no CLAUDE.md section.** The policy arrives through the
+  SessionStart hook (re-fired after compaction), and the full guide through
+  the `agent_guide` MCP tool. Install the `load-lock` skill separately if
+  wanted. The plugin is not named `load-lock`, so it doesn't clash with the
+  skill on ACE (#64).
+- **Runtime**: the plugin ships no `dist/`. See [Plugin launcher](#plugin-launcher)
+  for how hooks and the MCP server find one.
+- `plugin.json` `version` is pinned to `package.json` by `check-pins`. A
+  pinned version keeps users on it until the next release changes it.
+
+Combining the plugin with a loose `install --harness claude-code` is safe
+(one session identity, duplicate hooks dropped by the daemon, #54), but
+registers two MCP servers; keep one.
+
 ## The daemon
 
 - State dir: `~/.local/state/load-lock` (Windows: `%LOCALAPPDATA%\load-lock`;
@@ -1200,8 +1234,9 @@ before changing the flow). The release commit itself is manual:
    print `pins ok`. Commit the bump and the pin updates together.
 3. Merge, then publish a GitHub Release tagged `v<version>`.
 
-Pinned files (the skill's npx fallback, ACE `ace/mcp/mcp.json`, the Claude Code
-plugin's `plugin.json` and launcher, once they exist) are declared in the
+Pinned files (the skill's npx fallback, ACE `ace/mcp/mcp.json` and
+`ace/opencode/package.json`, the Claude Code plugin's `plugin.json` and
+launcher) are declared in the
 `PINNED` list at the top of `scripts/check-pins.mjs`; add an entry whenever
 a new artifact pins a version. CI (`pins` job in `ci.yml`) fails on any
 pin that differs from `package.json`, on a declared file that is missing,
