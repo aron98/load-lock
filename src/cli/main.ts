@@ -24,6 +24,7 @@ import { hookCommand } from "./hook.js";
 import { topCommand } from "./top.js";
 import { awaitDaemonUpgraded, serviceRestart, serviceStart, serviceStop, ServiceError } from "./service.js";
 import { updateCommand } from "./update.js";
+import { formatInventory, inventory } from "./setup.js";
 import { sessionIdentity, type SessionIdentity } from "../shared/identity.js";
 
 // ---------------------------------------------------------------- arg parsing
@@ -142,6 +143,7 @@ const HELP_GROUPS: { title: string; items: HelpItem[] }[] = [
     items: [
       { names: ["install"], desc: "install the load-lock adapter for a harness: --harness <name>" },
       { names: ["uninstall"], desc: "remove what install added: --harness <name>" },
+      { names: ["setup"], desc: "inventory every load-lock integration across all harnesses (read-only): [--project <dir>] [--json]" },
       { names: ["hook"], desc: "harness hook handlers (called by integrations, not humans)" },
       { names: ["agent-guide"], desc: "print the full agent guide" },
       { names: ["help"], desc: "this usage; also bare load-lock, --help, -h; help <command> for one line" },
@@ -593,6 +595,12 @@ async function main(): Promise<void> {
     case "uninstall":
       await uninstallCommand({ harness: S("harness"), project: S("project", process.cwd()) });
       return;
+
+    case "setup": {
+      const inv = inventory({ project: S("project", process.cwd()) });
+      out(inv, () => formatInventory(inv));
+      return;
+    }
 
     // ------------------------------------------------------------------ hooks
     case "hook":

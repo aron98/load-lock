@@ -83,6 +83,37 @@ uninstall — see issue #19); not live-verified inside the real CLIs.
 
 `load-lock uninstall --harness <harness>` reverses any of these.
 
+### `load-lock setup`: what is installed where
+
+`load-lock setup [--project <dir>] [--json]` lists every load-lock
+integration it finds, for every harness `install` supports (the project
+defaults to the cwd). It is **read-only**: it never writes a file.
+
+For each harness it reports:
+
+- **what** it found: plugins (Claude Code `enabledPlugins` entries named
+  `load-lock-plugin@…`, OpenCode `plugin` / `plugins` entries), MCP
+  registrations (user and project scope, including ACE's `.mcp.json`
+  `servers` patch), loose hooks, policy sections / rule files, skill
+  copies, and omac sandbox grants;
+- **who** wrote each entry: `installer` (the exact shape `load-lock
+  install` writes), `harness` (the harness's own plugin state), `ace`
+  (an `.ace.json` stamp sits next to it), or `other` (manual, npx, …);
+- **which copy** an entry runs, and whether that copy is gone (stale);
+- the **rung**: `plugin`, `loose` (`load-lock install` wiring), `MCP only`,
+  `skill only`, or `not installed`;
+- **findings**: loose hooks next to an active plugin, the MCP server
+  registered more than once (a Claude Code plugin's bundled server counts),
+  hooks from more than one copy, duplicate hook entries, several skill
+  copies, stale entries, disabled plugins.
+
+It ends with the runtime copies: those on disk (as in `doctor`), the copy
+the daemon runs (`daemon.json`), and the copies the daemon has seen.
+
+An ACE-installed Claude plugin (unzipped into `.claude/skills/<name>/`) is
+listed but not counted as an active plugin: whether Claude Code loads it
+there is not verified yet (#63).
+
 ## The daemon
 
 - State dir: `~/.local/state/load-lock` (Windows: `%LOCALAPPDATA%\load-lock`;
