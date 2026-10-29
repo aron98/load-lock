@@ -1085,7 +1085,7 @@ before changing the flow). The release commit itself is manual:
    print `pins ok`. Commit the bump and the pin updates together.
 3. Merge, then publish a GitHub Release tagged `v<version>`.
 
-Pinned files (the skill's npx fallback, ACE `mcp.json`, the Claude Code
+Pinned files (the skill's npx fallback, ACE `ace/mcp/mcp.json`, the Claude Code
 plugin's `plugin.json` and launcher, once they exist) are declared in the
 `PINNED` list at the top of `scripts/check-pins.mjs`; add an entry whenever
 a new artifact pins a version. CI (`pins` job in `ci.yml`) fails on any

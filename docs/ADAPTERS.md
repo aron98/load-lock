@@ -52,8 +52,8 @@ adapter does — see `src/adapters/opencode/plugin.ts` as the worked example):
 ## Tier 2 — hooks + MCP
 
 For harnesses with lifecycle hooks but no in-process API (Claude Code and
-Codex CLI use this): keep the stock MCP server (`load-lock-mcp` binary, or
-`node .../dist/mcp/main.js`) for tools, and add hook handlers that shell out
+Codex CLI use this): keep the stock MCP server (`load-lock-mcp` binary,
+`load-lock mcp`, or `node .../dist/mcp/main.js`) for tools, and add hook handlers that shell out
 to the CLI:
 
 - `load-lock hook <harness> session-start` → prints `POLICY_BRIEF` +

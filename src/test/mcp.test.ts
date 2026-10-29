@@ -8,9 +8,9 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { startDaemon, delay, mcpMainPath, type DaemonHandle } from "./testutil.js";
+import { startDaemon, delay, mcpMainPath, cliMainPath, type DaemonHandle } from "./testutil.js";
 
-async function connectMcp(d: DaemonHandle, extraEnv: Record<string, string> = {}): Promise<Client> {
+async function connectMcp(d: DaemonHandle, extraEnv: Record<string, string> = {}, args = [mcpMainPath]): Promise<Client> {
   const client = new Client({ name: "load-lock-test", version: "0.1.0" }, { capabilities: {} });
   // The test runner itself may be inside a harness session: drop inherited
   // session identity so each test controls it (issue #50).
@@ -18,7 +18,7 @@ async function connectMcp(d: DaemonHandle, extraEnv: Record<string, string> = {}
   for (const k of ["LOAD_LOCK_AGENT", "CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID"]) delete env[k];
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [mcpMainPath],
+    args,
     env: { ...env, ...extraEnv },
   });
   await client.connect(transport);
@@ -30,6 +30,24 @@ async function callJson(c: Client, name: string, args: Record<string, unknown>):
   assert.equal(res.isError, undefined, `tool ${name} errored: ${JSON.stringify(res.content)}`);
   return JSON.parse((res.content as any)[0].text);
 }
+
+test("mcp: `load-lock mcp` serves the same MCP server as load-lock-mcp (#65)", async () => {
+  const d = await startDaemon();
+  const viaBin = await connectMcp(d);
+  const viaCli = await connectMcp(d, {}, [cliMainPath, "mcp"]);
+  try {
+    const names = async (c: Client) => (await c.listTools()).tools.map((t) => t.name).sort();
+    assert.deepEqual(await names(viaCli), await names(viaBin), "identical tool set");
+    assert.equal(viaCli.getServerVersion()?.name, viaBin.getServerVersion()?.name);
+    const acq = await callJson(viaCli, "acquire", { reason: "build", op_key: "cli-mcp", agent_id: "cliMcpAgent" });
+    assert.equal(acq.state, "granted");
+    await callJson(viaCli, "release", { permit_token: acq.permit_token });
+  } finally {
+    await viaCli.close();
+    await viaBin.close();
+    await d.stop();
+  }
+});
 
 test("mcp: tool listing + acquire/release/configure round trip", async () => {
   const d = await startDaemon();
