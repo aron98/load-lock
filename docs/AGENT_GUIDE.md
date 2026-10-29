@@ -9,6 +9,40 @@ if everyone participates.
 This guide is also available as the `agent_guide` MCP tool, as
 `load-lock agent-guide`, and as a skill in supported harnesses.
 
+## 0. How to reach load-lock
+
+Use the first of these that works; they all talk to the same daemon:
+
+1. **load-lock tools** in your harness (MCP tools, or `load_lock_*` in
+   OpenCode). The rest of this guide names the tools.
+2. **`load-lock` on PATH** (check with `load-lock version`).
+3. **Pinned npx**: `npx -y @aron98/load-lock@<version> <command>`, with the
+   version the load-lock skill pins (Node >= 20). Read `load-lock` below as
+   this whole prefix.
+
+The first call starts the shared daemon; you never start it yourself.
+
+**CLI only (skill-only install, no tools).** Prefer `load-lock run`: it
+acquires, runs the command, and releases when it exits, success or failure:
+
+```sh
+load-lock run --reason "full test suite" --op-key test/all -- npm test
+```
+
+Exit code **68** means "not granted yet" (queued, with the request id in
+the message): don't start the work. Keep doing light work; when you run out,
+`load-lock wait --id <request-id>` sleeps until your turn, claims the offer
+and prints a `permit_token` for `load-lock run --permit <permit_token> -- <cmd>`.
+A `wait` that exits 68 again is a checkpoint: call it again. Your own
+requests and offers: `load-lock pending`.
+
+Your agent id is derived from your harness session, so all calls from one
+session count as one agent. If `pending` doesn't show a request you made,
+pin the id yourself with `LOAD_LOCK_AGENT=<unique-name>` (or `--agent`) on
+every call. Without tools nothing wakes you while you sit idle and nothing
+re-teaches the policy after context compaction; `load-lock setup` shows how
+to add the harness integration that does.
+
 ## 1. Deciding heavy vs light
 
 Judge by **expected** CPU/memory/IO cost, not by name:

@@ -7,6 +7,49 @@ Windows has a named-pipe transport adapter — implemented and unit-tested on
 Linux via platform injection, not yet verified on a Windows machine; see the
 Windows section at the bottom).
 
+### The install ladder
+
+load-lock can be installed at several levels ("rungs"). Each rung works on
+its own, and a higher rung only adds capability. Installing more than one,
+in any order, is safe: there is still one daemon and one budget, one
+identity per session, and duplicate hooks are dropped by the daemon (see
+[ARCHITECTURE.md](ARCHITECTURE.md#three-layers-daemon-runtime-copies-harness-wiring)).
+
+| Rung | What you install | Runtime it runs | What the agent gets |
+| --- | --- | --- | --- |
+| 0 | **Skill only** (`skills/load-lock/SKILL.md`) | the load-lock MCP tools if listed, else `load-lock` on PATH, else `npx -y @aron98/load-lock@<version>` (pinned in the skill) | the full permit lifecycle through the CLI (`run`, `wait`, `acquire` / `claim` / `release`, `cancel`); the first call starts the daemon. No idle wakeup, no policy injection, nothing after compaction |
+| 1 | **MCP server** (`npx -y @aron98/load-lock@<version> mcp`) | the pinned npx copy | the tools; your offers in every load-lock tool result; `wait_for_turn` / `wait_for_completion` bounded sleeps; the policy in the MCP `instructions` where the harness shows them; the `agent_guide` tool |
+| 2 | **Harness plugin**: Claude Code `load-lock-plugin`, OpenCode npm plugin `@aron98/load-lock` | Claude Code: the plugin launcher (PATH CLI if new enough, else a known copy, else pinned npx); OpenCode: its own plugin cache copy | everything the harness supports: tools, policy at session start that survives compaction, offer wakeups at turn ends and while idle |
+| — | **`npm i -g` + `load-lock install --harness <h>`** | the global CLI | the same wiring as loose config files. The only route for harnesses without a plugin, and the escape hatch where plugins aren't allowed |
+
+Each rung points at the next one once: the skill, the MCP `instructions`
+and the session-start brief end with a one-line pointer to
+[`load-lock setup`](#load-lock-setup-what-is-installed-where), which lists
+what is installed where and converges it. The rung each harness can reach
+is in [COMPATIBILITY.md](COMPATIBILITY.md#rung-per-harness).
+
+How to install each rung:
+
+- **Skill (0).** Through ACE (the `load-lock` skill artifact, see
+  [Installing via ACE](#installing-via-ace)), or copy `skills/load-lock/`
+  (shipped in the npm package and the repo) into your harness's skills
+  directory. `load-lock install --harness claude-code` also copies it to
+  `~/.claude/skills/load-lock/`.
+- **MCP server (1).** Through ACE (the `ace/mcp` artifact), or register a
+  stdio server named `load-lock` with command `npx` and args
+  `["-y", "@aron98/load-lock@<version>", "mcp"]`, exactly what
+  `ace/mcp/mcp.json` declares. `load-lock mcp` is the same server as the
+  `load-lock-mcp` binary. With a global install,
+  `load-lock install --harness generic` prints a snippet that runs that
+  copy instead of npx.
+- **Plugin (2).** Claude Code: see [Claude Code plugin](#claude-code-plugin).
+  OpenCode: add `@aron98/load-lock` to the `plugins` array of
+  `~/.config/opencode/opencode.json` (OpenCode downloads and updates it),
+  or let `load-lock install --harness opencode` register it.
+- **Loose wiring.** The installers below.
+
+### `npm i -g` + `load-lock install`
+
 ```sh
 npm install -g @aron98/load-lock    # or: npm install -g ./aron98-load-lock-<ver>.tgz
 load-lock install --harness opencode
@@ -32,9 +75,10 @@ round-trips in `src/test/install.test.ts` for all three (an earlier matcher
 never matched its own entries — duplicate installs and hooks that survived
 uninstall — see issue #19); not live-verified inside the real CLIs.
 
-- **opencode** — writes a plugin stub to
-  `~/.config/opencode/plugins/load-lock/` (npm-installed against the global
-  package), registers it in `~/.config/opencode/opencode.json`.
+- **opencode** — registers the published package `@aron98/load-lock` in
+  the `plugins` array of `~/.config/opencode/opencode.json` (OpenCode
+  installs and updates it itself) and removes the legacy plugin stub
+  `~/.config/opencode/plugins/load-lock/` if an older install left one.
 - **claude-code** — adds `mcpServers.load-lock` to `~/.claude.json`; hooks
   (`SessionStart`, `Stop`, async `await-offer`) to `~/.claude/settings.json`;
   a marked section to `~/.claude/CLAUDE.md`; copies the skill to
@@ -177,7 +221,36 @@ in `plugins/claude-code/`:
 
 Combining the plugin with a loose `install --harness claude-code` is safe
 (one session identity, duplicate hooks dropped by the daemon, #54), but
-registers two MCP servers; keep one.
+registers two MCP servers; keep one. `load-lock setup --yes` removes the
+loose MCP server, hooks and `CLAUDE.md` section when the plugin is enabled.
+(`install --harness claude-code` itself detecting the plugin, and a
+`--legacy` flag to keep the loose install: pending #62.)
+
+### Installing via ACE
+
+[ACE](https://github.com/TNG/ace) imports artifacts from this repository.
+ACE does not edit harness config itself: its `install_artifact` tool hands
+the agent a download plus instructions, and the agent unpacks and wires it
+(findings in issue #64). This repo provides one artifact per folder:
+
+| Folder | ACE kind | What installing it gives you |
+| --- | --- | --- |
+| `skills/load-lock/` | skill `load-lock` | rung 0; unpacked into the harness's skills directory (e.g. `.claude/skills/load-lock/`) |
+| `ace/mcp/` | MCP server `load-lock` (local, stdio) | rung 1; ACE returns a patch with `npx -y @aron98/load-lock@<version> mcp` for the agent to merge into the MCP config (e.g. `.mcp.json`) |
+| `plugins/claude-code/` | Claude Code plugin `load-lock-plugin` | rung 2; ACE unpacks Claude plugins as skills-directory plugins (`.claude/skills/load-lock-plugin/`), not through `/plugin install` |
+| `ace/opencode/` | OpenCode plugin (pointer) | rung 2; install the published `@aron98/load-lock` into `opencode.json` as above, not the folder (see [COMPATIBILITY.md](COMPATIBILITY.md#ace-listing-opencode-issue-79)) |
+
+Install the MCP server **or** the Claude Code plugin, not both: the plugin
+already bundles the server (two registrations are harmless, just
+redundant). The plugin is not named `load-lock`, so it doesn't unpack into
+the skill's directory. ACE updates what it installed (it writes an
+`.ace.json` stamp next to each bundle); `load-lock setup` reports those
+entries as `ace` and never rewrites them.
+
+Not yet verified (#63, #66): whether Claude Code loads a plugin from a
+skills directory (and resolves `${CLAUDE_PLUGIN_ROOT}` there), and the ACE
+install end to end on a clean machine. Until then `load-lock setup` lists an
+ACE-installed Claude plugin but does not count it as an active plugin.
 
 ## The daemon
 
@@ -356,11 +429,12 @@ when that copy is newer than the PATH CLI the notice names it as the npx
 copy. (The reverse — a pin older than the PATH CLI — is not flagged here;
 the daemon's version handshake already keeps the daemon on the newer code.)
 
-Limits, stated honestly: the respawn re-runs the **same argv** — it picks up
-an updated copy only if the daemon's launching copy was updated *in place*
-(the normal `npm i -g` case). A daemon spawned from a different copy (e.g.
-opencode's private cache copy) keeps running that copy's code after a
-restart; see the multi-copy notes in
+Limits, stated honestly: the respawn moves onto the newer client's copy
+only when that client sends a valid `clientRoot` (#52/#53). Clients older
+than #52 don't, so the respawn re-runs the **same argv** and picks up an
+updated copy only if the daemon's launching copy was updated *in place*
+(the normal `npm i -g` case); `load-lock service restart` moves it onto
+the current CLI copy. See the multi-copy notes in
 [COMPATIBILITY.md](COMPATIBILITY.md#multiple-copies-of-load-lock-opencode).
 Pre-1.3.0 daemons do not answer the handshake and never self-restart —
 `service restart` (or `service stop` followed by any load-lock command)

@@ -46,6 +46,30 @@ Status labels mean exactly this:
 | **omac** (agent sandbox; verified with 0.11.0) | N/A — omac is a sandbox runtime, not a harness: the agent inside it uses whichever harness adapter applies (OpenCode, Claude Code, …) | via the inner harness | via the inner harness | via the inner harness | via the inner harness | Full for the sandbox grants: `load-lock uninstall --harness omac` removes exactly the entries install added (match-own-entries, empty sections pruned) | **Sandbox-profile grants installed + live-verified** (`install --harness omac`: `filesystem.allow_unix_dir` += state dir, `filesystem.read` += package tree when needed, `environment.allow_vars` += `LOAD_LOCK_*`) |
 | **Aider** | **No MCP support** | CONVENTIONS.md / `.aider.conf.yml` | Read each run | N/A | N/A | CLI-only: same-shell `load-lock acquire ... && cmd; load-lock release ...` (manual) | Proposed (manual CLI tier) |
 
+## Rung per harness
+
+The install ladder (OPERATIONS.md, "The install ladder") has rungs 0 = skill
+only, 1 = MCP server, 2 = harness plugin, plus the loose
+`npm i -g` + `load-lock install --harness <h>` wiring. **Rung 0 works
+everywhere** an agent can read the skill and run a shell: it only needs
+the CLI (on PATH or through the skill's pinned `npx`), so it is not
+repeated per row. `load-lock setup` reports the rung it finds per harness
+as `plugin`, `loose`, `MCP only`, `skill only` or `not installed`.
+
+| Harness | MCP server (1) | Plugin (2) | Loose `install` | Highest rung |
+| --- | --- | --- | --- | --- |
+| **OpenCode** | generic stdio registration works; the plugin's native `load_lock_*` tools are better | npm plugin `@aron98/load-lock` (also listed on ACE via `ace/opencode/`) — live-verified | `install --harness opencode` registers that same npm plugin | **plugin** |
+| **Claude Code** | ACE `ace/mcp` or a manual stdio registration | `load-lock-plugin` from this repo's marketplace — contract-tested, passes `claude plugin validate --strict`; not yet live-verified as a plugin (pending #63); ACE's skills-dir install unverified (#63/#66) | `install --harness claude-code`: MCP + hooks + `CLAUDE.md` section + skill — live-verified in Docker | **plugin** (loose gives the same capability) |
+| **Codex CLI** | `[mcp_servers]` entry in `~/.codex/config.toml` | none shipped | `install --harness codex`: MCP + hooks + `AGENTS.md` section — live-verified in Docker | **loose** |
+| **Cursor** | project `.cursor/mcp.json` | none shipped | `install --harness cursor --project <dir>`: MCP + stop hook + rule — contract-tested | **loose** |
+| **Gemini CLI, Copilot CLI, Cline, Roo Code, Goose** | the harness's MCP config | none shipped | `install --harness <h>`: MCP + instructions/rule file, no hooks — config-tested | **loose** (rung 1 plus a policy file; no idle wakeup) |
+| **omac** | n/a (sandbox, not a harness) | — | `install --harness omac`: sandbox-profile grants — live-verified | the inner harness's rung |
+| **Aider** | no MCP support | none | none | **0** (CLI only) |
+
+"Highest rung" is what `load-lock setup --yes` converges a harness to once
+it has some load-lock wiring (OPERATIONS.md, "Converging"). Mixing rungs in
+one harness is safe (ARCHITECTURE.md, "Three layers").
+
 ## How each integration tier works
 
 ### Tier 1 — OpenCode (native plugin, live-verified)
@@ -379,7 +403,7 @@ UI** — where no UI surface exists, we say so rather than claim parity.
 | Harness | In-harness dashboard | Also available |
 | --- | --- | --- |
 | **OpenCode** | Native TUI panel: `/load-lock` opens `load-lock.dashboard` **in-window** as a side panel (also opened by clicking the sidebar widget; deliberately **not** bound to any key — issue #28: the old `gl` sequence swallowed plain `g` typing, and the candidate `ctrl+g` is the host's `session.first` default) with pools, holder cards, offer claim-window countdowns, queue, paused, event feed, `inspect_machine`; home-footer `lock 1/1` indicator on the home screen plus a clickable, health-colored `load-lock 0/3` widget in the session sidebar; `x` force-release behind select + confirm. Implemented as the package's `./tui` companion plugin (main plugin unchanged). Live-verified: opencode 2.0.29 (panel render, palette/slash command, confirm-gated force-release) and opencode 2.0.32 in a real pty (sidebar widget render, click-to-open, in-window presentation, plain `g` reaches the composer, `ctrl+g` not intercepted by load-lock). | `load-lock dashboard` (alias `top`) |
-| **Claude Code** | None in-app — the load-lock plugin bundles MCP + hooks only; Claude Code plugins have no dashboard panel surface for it. The model can report status via the `load_lock_status` MCP tool at tool boundaries, and each `SessionStart` hook injects a one-line machine summary. | `load-lock dashboard` (any terminal) |
+| **Claude Code** | None in-app — load-lock ships no in-app view for Claude Code: `load-lock-plugin` bundles the MCP server + hooks only, and the loose install adds no UI either. The model can report status via the load-lock `status` MCP tool at tool boundaries, and each `SessionStart` hook injects a one-line machine summary. | `load-lock dashboard` (any terminal) |
 | **Codex CLI** | None in-app — same reason. `load_lock_status` MCP tool; `SessionStart`/`SubagentStart` machine summary. | `load-lock dashboard` (alias `top`) |
 | **Gemini CLI** | None in-app (no hooks, no UI plugin surface). `load_lock_status` MCP tool at tool boundaries. | `load-lock dashboard` (alias `top`) |
 | **Copilot CLI, Cursor, Cline, Roo Code, Goose** | None in-app. MCP `status` tool where the MCP server is configured. | `load-lock dashboard` (alias `top`) |
