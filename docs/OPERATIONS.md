@@ -82,7 +82,9 @@ uninstall — see issue #19); not live-verified inside the real CLIs.
 - **claude-code** — adds `mcpServers.load-lock` to `~/.claude.json`; hooks
   (`SessionStart`, `Stop`, async `await-offer`) to `~/.claude/settings.json`;
   a marked section to `~/.claude/CLAUDE.md`; copies the skill to
-  `~/.claude/skills/load-lock/`.
+  `~/.claude/skills/load-lock/`. A skill dir it didn't write (an ACE
+  install with an `.ace.json` stamp, or a symlink) is left alone by both
+  `install` and `uninstall`, which say so (#89).
 - **codex** — writes `~/.codex/hooks.json` (`SessionStart`, `SubagentStart`,
   `Stop`), appends `[mcp_servers.load-lock]` to `~/.codex/config.toml` if
   absent, adds a marked section to `~/.codex/AGENTS.md`. **Then run `/hooks`

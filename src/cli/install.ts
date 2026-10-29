@@ -59,6 +59,7 @@ import os from "node:os";
 import path from "node:path";
 import { POLICY_BRIEF } from "../policy/text.js";
 import { resolveStateDir } from "../shared/transport.js";
+import { skillDirOwner } from "./setup.js";
 
 export interface InstallOptions {
   harness: string;
@@ -247,6 +248,14 @@ function hookEntry(P: ReturnType<typeof pkgPaths>, event: string, extra?: Record
   };
 }
 
+function claudeSkillDir(): string {
+  return path.join(HOME, ".claude", "skills", "load-lock");
+}
+
+function skillOwnerNote(owner: string): string {
+  return owner === "ace" ? "managed by ACE (.ace.json), update or remove it through ACE" : "not written by load-lock install (a symlink)";
+}
+
 function installClaudeCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
   const actions: string[] = [];
 
@@ -294,11 +303,16 @@ function installClaudeCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>)
   )
     actions.push(`CLAUDE.md section in ${md}`);
 
-  // 4. skill
-  const skillDir = path.join(HOME, ".claude", "skills", "load-lock");
-  fs.mkdirSync(skillDir, { recursive: true });
-  fs.copyFileSync(P.skill, path.join(skillDir, "SKILL.md"));
-  actions.push(`skill in ${skillDir}/SKILL.md`);
+  // 4. skill (never over one we didn't write, e.g. ACE's, #89)
+  const skillDir = claudeSkillDir();
+  const owner = skillDirOwner(skillDir, skillDir);
+  if (owner === "installer") {
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.copyFileSync(P.skill, path.join(skillDir, "SKILL.md"));
+    actions.push(`skill in ${skillDir}/SKILL.md`);
+  } else {
+    actions.push(`kept the skill in ${skillDir}: ${skillOwnerNote(owner)}`);
+  }
   return actions;
 }
 
@@ -342,9 +356,17 @@ function uninstallClaudeCode(): string[] {
   const md = path.join(HOME, ".claude", "CLAUDE.md");
   removeMdSection(md, "<!-- load-lock:begin -->");
   actions.push(`removed CLAUDE.md section`);
-  fs.rmSync(path.join(HOME, ".claude", "skills", "load-lock"), { recursive: true, force: true });
-  pruneEmptyDirs(path.join(HOME, ".claude", "skills"), path.join(HOME, ".claude"));
-  actions.push("removed skill");
+  const skillDir = claudeSkillDir();
+  const owner = skillDirOwner(skillDir, skillDir);
+  if (!fs.existsSync(skillDir)) {
+    // nothing to remove
+  } else if (owner === "installer") {
+    fs.rmSync(skillDir, { recursive: true, force: true });
+    pruneEmptyDirs(path.join(HOME, ".claude", "skills"), path.join(HOME, ".claude"));
+    actions.push("removed skill");
+  } else {
+    actions.push(`kept the skill in ${skillDir}: ${skillOwnerNote(owner)}`);
+  }
   return actions;
 }
 

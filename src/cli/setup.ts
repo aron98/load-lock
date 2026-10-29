@@ -259,6 +259,22 @@ function skillName(text: string): string | undefined {
 }
 
 /**
+ * Who owns a skill directory: `ace` when ACE stamped it (`.ace.json`),
+ * `installer` when it is the dir `load-lock install` writes (a real
+ * directory, not a symlink to someone's checkout), else `other`.
+ * `install` / `uninstall` only write or remove an `installer` dir (#89).
+ */
+export function skillDirOwner(dir: string, installerDir?: string): Owner {
+  if (fs.existsSync(path.join(dir, ".ace.json"))) return "ace";
+  if (dir !== installerDir) return "other";
+  try {
+    return fs.lstatSync(dir).isSymbolicLink() ? "other" : "installer";
+  } catch {
+    return "installer"; // not there yet: install creates it
+  }
+}
+
+/**
  * load-lock skills (and ACE skills-dir plugin bundles) under a skills dir:
  * `<dir>/load-lock/SKILL.md`, or any `<dir>/<x>/SKILL.md` named load-lock.
  */
@@ -272,7 +288,7 @@ function skillsIn(dir: string, scope: Integration["scope"], installerDir?: strin
   const out: Integration[] = [];
   for (const n of names.sort()) {
     const d = path.join(dir, n);
-    const ace = fs.existsSync(path.join(d, ".ace.json"));
+    const owner = skillDirOwner(d, installerDir);
     const text = readText(path.join(d, "SKILL.md"));
     if (text !== undefined && (n === "load-lock" || skillName(text) === "load-lock")) {
       out.push({
@@ -280,7 +296,7 @@ function skillsIn(dir: string, scope: Integration["scope"], installerDir?: strin
         scope,
         file: d,
         detail: "SKILL.md",
-        owner: ace ? "ace" : d === installerDir ? "installer" : "other",
+        owner,
       });
     }
     // ACE installs Claude plugins as skills-dir plugins (#64 Q4).
@@ -291,7 +307,7 @@ function skillsIn(dir: string, scope: Integration["scope"], installerDir?: strin
         scope,
         file: d,
         detail: `skills-dir plugin "${CLAUDE_PLUGIN_NAME}"`,
-        owner: ace ? "ace" : "other",
+        owner: owner === "ace" ? "ace" : "other",
       });
     }
   }
@@ -838,7 +854,7 @@ export function planConverge(inv: Inventory, opts: PlanOptions): Plan {
         steps.push({
           harness: h.harness,
           action: "manual",
-          detail: `the skill at ${aceSkill.file} is managed by ACE and \`load-lock install --harness claude-code\` would overwrite it; run it yourself if you want the loose wiring`,
+          detail: `the skill at ${aceSkill.file} is managed by ACE (\`load-lock install --harness claude-code\` leaves it in place); run that yourself if you want the loose wiring`,
         });
       } else if (opts.selfEphemeral) {
         steps.push({

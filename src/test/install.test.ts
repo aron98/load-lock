@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync, cpSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync, cpSync, symlinkSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -577,6 +577,48 @@ test("claude-code: bare HOME install then uninstall removes exactly what we adde
   assert.ok(!existsSync(join(home, ".claude", "skills")), "our skill removed");
   const cj = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
   assert.ok(!("load-lock" in cj.mcpServers), "our MCP server key removed");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("claude-code: an ACE-stamped skill survives install and uninstall byte for byte (#89)", async () => {
+  const home = tempHome();
+  const skillDir = join(home, ".claude", "skills", "load-lock");
+  mkdirSync(skillDir, { recursive: true });
+  const aceSkill = "---\nname: load-lock\ndescription: from ACE\n---\nACE copy\n";
+  const stamp = JSON.stringify({ artifact: "load-lock", version: "1.4.0" }) + "\n";
+  writeFileSync(join(skillDir, "SKILL.md"), aceSkill);
+  writeFileSync(join(skillDir, ".ace.json"), stamp);
+
+  let r = await runCli(home, ["install", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+  assert.match(r.stdout, /kept the skill .*managed by ACE/);
+  assert.equal(readFileSync(join(skillDir, "SKILL.md"), "utf8"), aceSkill, "install must not overwrite ACE's skill");
+  // the rest of the loose wiring is still installed
+  const cj = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8"));
+  assert.ok(cj.mcpServers["load-lock"], "MCP server installed");
+
+  r = await runCli(home, ["uninstall", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+  assert.match(r.stdout, /kept the skill .*managed by ACE/);
+  assert.equal(readFileSync(join(skillDir, "SKILL.md"), "utf8"), aceSkill, "uninstall must not delete ACE's skill");
+  assert.equal(readFileSync(join(skillDir, ".ace.json"), "utf8"), stamp, "ACE stamp untouched");
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("claude-code: a symlinked skill dir is neither written through nor removed (#89)", async () => {
+  const home = tempHome();
+  const checkout = join(home, "dev", "skill");
+  mkdirSync(checkout, { recursive: true });
+  writeFileSync(join(checkout, "SKILL.md"), "mine\n");
+  mkdirSync(join(home, ".claude", "skills"), { recursive: true });
+  symlinkSync(checkout, join(home, ".claude", "skills", "load-lock"));
+
+  let r = await runCli(home, ["install", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+  assert.equal(readFileSync(join(checkout, "SKILL.md"), "utf8"), "mine\n", "install must not write through the symlink");
+  r = await runCli(home, ["uninstall", "--harness", "claude-code"]);
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+  assert.ok(lstatSync(join(home, ".claude", "skills", "load-lock")).isSymbolicLink(), "symlink kept");
   rmSync(home, { recursive: true, force: true });
 });
 
