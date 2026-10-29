@@ -81,6 +81,14 @@ load-lock install --harness opencode     # or claude-code | codex | gemini-cli |
 load-lock doctor
 ```
 
+Claude Code can use the plugin instead (MCP server + hooks, no global
+install needed; the skill is separate):
+
+```text
+/plugin marketplace add aron98/load-lock
+/plugin install load-lock-plugin@load-lock
+```
+
 From then on, agents see the policy and tools automatically:
 OpenCode plugin (`load_lock_*` tools), Claude Code / Codex MCP tools
 (named per the harness's MCP namespacing) plus session hooks. Any other MCP-capable harness can

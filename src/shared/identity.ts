@@ -52,9 +52,9 @@ const SHELLS = new Set([
   "sh", "bash", "dash", "zsh", "ksh", "mksh", "fish", "tcsh", "csh", "nu", "pwsh", "busybox",
   "env", "timeout", "nohup", "setsid", "stdbuf", "nice", "xargs",
 ]);
-/** Launcher scripts recognized in argv[0..1] (node/bun running npm/npx, nested load-lock). */
+/** Launcher scripts recognized in argv[0..1] (node/bun running npm/npx, nested load-lock, plugin launcher). */
 const WRAPPER_SCRIPTS = new Set([
-  "npm", "npx", "npm-cli.js", "npx-cli.js", "pnpm", "pnpx", "yarn", "bunx", "load-lock",
+  "npm", "npx", "npm-cli.js", "npx-cli.js", "pnpm", "pnpx", "yarn", "bunx", "load-lock", "load-lock.mjs",
 ]);
 
 export interface ResolveOptions {

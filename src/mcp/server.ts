@@ -28,6 +28,7 @@ import { killProcessGroup } from "../shared/transport.js";
 import { detectCliDrift, type CliDrift } from "../shared/drift.js";
 import { packageVersion } from "../shared/version.js";
 import { sessionIdentity } from "../shared/identity.js";
+import { agentGuideText } from "../shared/agent-guide.js";
 
 const ACQUIRE_DESC = `Acquire a machine-wide permit before starting resource-intensive local work (full builds, test suites, big compiles/containers).
 
@@ -299,6 +300,24 @@ Input: request_id (default: your oldest offered, then front-most queued, then ol
       inputSchema: {},
     },
     async () => json(await client.request("get_config", {})),
+  );
+
+  // Issue #61: a plugin-only install may have neither the skill nor the CLI
+  // on PATH, so the policy brief's pointer to the detailed guide lands here.
+  server.registerTool(
+    "agent_guide",
+    {
+      title: "Full agent guide",
+      description: "The detailed load-lock playbook (same text as `load-lock agent-guide`): heavy-vs-light heuristics, offer claiming, background jobs, configuration and recovery. Read it when the short policy is not enough. No daemon call.",
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        return { content: [{ type: "text" as const, text: agentGuideText() }] };
+      } catch {
+        return { content: [{ type: "text" as const, text: POLICY_BRIEF }] };
+      }
+    },
   );
 
   server.registerTool(
