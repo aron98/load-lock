@@ -57,10 +57,15 @@ function runCli(sb: Sandbox, args: string[]): Promise<{ code: number | null; std
   });
 }
 
-async function setupJson(sb: Sandbox): Promise<any> {
+/** `setup --json` output: { inventory, plan }. */
+async function setupOut(sb: Sandbox): Promise<any> {
   const r = await runCli(sb, ["setup", "--json", "--project", sb.project]);
   assert.equal(r.code, 0, `setup failed: ${r.stderr}`);
   return JSON.parse(r.stdout);
+}
+
+async function setupJson(sb: Sandbox): Promise<any> {
+  return (await setupOut(sb)).inventory;
 }
 
 async function install(sb: Sandbox, harness: string): Promise<void> {
@@ -233,5 +238,168 @@ test("setup: OpenCode plugin listed twice plus an MCP entry; ACE skill and skill
   assert.equal(cc.integrations.find((i: any) => i.kind === "skill").owner, "ace");
   assert.equal(cc.integrations.find((i: any) => i.kind === "plugin").owner, "ace");
   assert.ok(cc.findings.some((f: string) => /ACE skills-dir plugin/.test(f)));
+  rmSync(sb.root, { recursive: true, force: true });
+});
+
+// ------------------------------------------------------------ converge (#59)
+
+async function setupYes(sb: Sandbox): Promise<any> {
+  const r = await runCli(sb, ["setup", "--yes", "--json", "--project", sb.project]);
+  assert.equal(r.code, 0, `setup --yes failed: ${r.stderr}`);
+  return JSON.parse(r.stdout);
+}
+
+async function uninstall(sb: Sandbox, h: string): Promise<void> {
+  const r = await runCli(sb, ["uninstall", "--harness", h, "--project", sb.project]);
+  assert.equal(r.code, 0, `uninstall ${h} failed: ${r.stderr}`);
+}
+
+const steps = (out: any, h: string) => out.plan.steps.filter((s: any) => s.harness === h).map((s: any) => s.action);
+
+test("setup converge: dry run is the default and writes nothing", async () => {
+  const sb = sandbox();
+  await install(sb, "codex");
+  const hooksFile = join(sb.home, ".codex", "hooks.json");
+  const h = JSON.parse(readFileSync(hooksFile, "utf8"));
+  h.hooks.Stop.push({ hooks: [{ type: "command", command: `/usr/bin/node ${JSON.stringify(join(sb.root, "gone", "dist", "cli", "main.js"))} hook codex stop` }] });
+  writeJsonFile(hooksFile, h);
+  const before = snapshot(sb.root);
+
+  const r = await runCli(sb, ["setup", "--project", sb.project]);
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /plan \(dry run, re-run with --yes to apply\)/);
+  assert.match(r.stdout, /codex\s+install\s+load-lock install --harness codex/);
+  const j = await setupOut(sb);
+  assert.deepEqual(steps(j, "codex"), ["install"]);
+  assert.deepEqual(snapshot(sb.root), before, "a dry run must not write anything");
+  rmSync(sb.root, { recursive: true, force: true });
+});
+
+test("setup converge: Claude Code plugin + loose install -> loose removed (skill kept); install/uninstall reverse it", async () => {
+  const sb = sandbox();
+  const claudeDir = join(sb.home, ".claude");
+  // the user's own config, including the plugin they enabled with /plugin
+  writeJsonFile(join(sb.home, ".claude.json"), { mcpServers: { fetch: { type: "stdio", command: "uvx", args: ["mcp-server-fetch"] } } });
+  writeJsonFile(join(claudeDir, "settings.json"), {
+    theme: "dark",
+    enabledPlugins: { "load-lock-plugin@load-lock": true },
+    hooks: { Stop: [{ hooks: [{ type: "command", command: "/usr/local/bin/user-stop" }] }] },
+  });
+  writeFileSync(join(claudeDir, "CLAUDE.md"), "# My rules\n");
+  // an ACE MCP patch the user merged into the project
+  writeJsonFile(join(sb.project, ".mcp.json"), { servers: { "load-lock": { command: "npx", args: ["-y", "@aron98/load-lock@1.5.0", "mcp"] } } });
+  const original = snapshot(sb.root);
+
+  await install(sb, "claude-code");
+  const out = await setupYes(sb);
+  assert.deepEqual(steps(out, "claude-code"), ["remove-loose", "manual"]);
+  assert.match(out.plan.steps.find((s: any) => s.action === "manual").detail, /servers\.load-lock/);
+
+  const cc = harness(out.inventory, "claude-code");
+  assert.equal(cc.rung, "plugin");
+  assert.deepEqual(
+    cc.integrations.map((i: any) => `${i.kind}:${i.owner}`).sort(),
+    ["mcp:other", "plugin:harness", "skill:installer"],
+    "only the plugin, the skill and the foreign project entry remain",
+  );
+  assert.ok(!cc.findings.some((f: string) => f.startsWith("loose + plugin")));
+  const s = JSON.parse(readFileSync(join(claudeDir, "settings.json"), "utf8"));
+  assert.deepEqual(s.enabledPlugins, { "load-lock-plugin@load-lock": true }, "harness-owned plugin state untouched");
+  assert.equal(readFileSync(join(sb.project, ".mcp.json"), "utf8"), original[join(sb.project, ".mcp.json")], "foreign entry untouched");
+
+  // idempotent: a second run has only the manual step left
+  assert.deepEqual(steps(await setupYes(sb), "claude-code"), ["manual"]);
+
+  // reversible: install brings the loose wiring back ...
+  await install(sb, "claude-code");
+  assert.equal(harness(await setupJson(sb), "claude-code").integrations.filter((i: any) => i.owner === "installer").length, 4);
+  // ... and uninstall restores the user's original bytes
+  await uninstall(sb, "claude-code");
+  assert.deepEqual(snapshot(sb.root), original);
+  rmSync(sb.root, { recursive: true, force: true });
+});
+
+test("setup converge: codex with a second copy's hooks and a stale MCP block -> one current set; uninstall restores", async () => {
+  const sb = sandbox();
+  const codexDir = join(sb.home, ".codex");
+  writeJsonFile(join(codexDir, "hooks.json"), { hooks: { Stop: [{ hooks: [{ type: "command", command: "/usr/local/bin/user-stop" }] }] } });
+  mkdirSync(codexDir, { recursive: true });
+  writeFileSync(join(codexDir, "config.toml"), 'model = "o3"\n');
+  writeFileSync(join(codexDir, "AGENTS.md"), "# Mine\n");
+  const original = snapshot(sb.root);
+
+  await install(sb, "codex");
+  const gone = join(sb.root, "gone", "node_modules", "@aron98", "load-lock");
+  const hooksFile = join(codexDir, "hooks.json");
+  const h = JSON.parse(readFileSync(hooksFile, "utf8"));
+  h.hooks.Stop.push({ hooks: [{ type: "command", command: `/usr/bin/node ${JSON.stringify(join(gone, "dist", "cli", "main.js"))} hook codex stop` }] });
+  writeJsonFile(hooksFile, h);
+  const toml = join(codexDir, "config.toml");
+  const mcpMain = join(repoRoot, "dist", "mcp", "main.js");
+  writeFileSync(toml, readFileSync(toml, "utf8").replace(JSON.stringify(mcpMain), JSON.stringify(join(gone, "dist", "mcp", "main.js"))));
+  assert.ok(harness(await setupJson(sb), "codex").findings.length >= 2, "messy state is flagged");
+
+  const out = await setupYes(sb);
+  assert.deepEqual(steps(out, "codex"), ["install"]);
+  const cx = harness(out.inventory, "codex");
+  assert.deepEqual(cx.findings, [], cx.findings.join("\n"));
+  for (const i of cx.integrations.filter((x: any) => x.copy)) assert.equal(i.copy, repoRoot);
+  assert.equal(cx.integrations.filter((i: any) => i.kind === "hooks").length, 1);
+  assert.equal(readFileSync(toml, "utf8").split("[mcp_servers.load-lock]").length, 2, "exactly one MCP block");
+
+  await uninstall(sb, "codex");
+  assert.deepEqual(snapshot(sb.root), original);
+  rmSync(sb.root, { recursive: true, force: true });
+});
+
+test("setup converge: MCP-only cline is upgraded to the installer's wiring; the foreign entry is left for the user", async () => {
+  const sb = sandbox();
+  const file = join(sb.home, ".cline", "data", "settings", "cline_mcp_settings.json");
+  writeJsonFile(file, {
+    mcpServers: {
+      ll: { command: "npx", args: ["-y", "@aron98/load-lock@1.5.0", "mcp"] },
+      fetch: { command: "uvx", args: ["mcp-server-fetch"] },
+    },
+  });
+  const original = snapshot(sb.root);
+  assert.equal(harness(await setupJson(sb), "cline").rung, "mcp");
+
+  const out = await setupYes(sb);
+  assert.deepEqual(steps(out, "cline"), ["install", "manual"]);
+  assert.match(out.plan.steps.find((s: any) => s.action === "manual").detail, /remove mcpServers\.ll/);
+  const cl = harness(out.inventory, "cline");
+  assert.equal(cl.rung, "loose");
+  assert.ok(cl.integrations.some((i: any) => i.detail === "mcpServers.ll"), "foreign entry untouched");
+
+  await uninstall(sb, "cline");
+  assert.deepEqual(snapshot(sb.root), original);
+  rmSync(sb.root, { recursive: true, force: true });
+});
+
+test("setup converge: never overwrites a foreign entry in the installer's slot, an ACE skill, or from a cache copy", async () => {
+  const sb = sandbox();
+  writeJsonFile(join(sb.home, ".gemini", "settings.json"), {
+    mcpServers: { "load-lock": { command: "npx", args: ["-y", "@aron98/load-lock@1.5.0", "mcp"] } },
+  });
+  const skill = join(sb.home, ".claude", "skills", "load-lock");
+  mkdirSync(skill, { recursive: true });
+  writeFileSync(join(skill, "SKILL.md"), "---\nname: load-lock\ndescription: x\n---\n");
+  writeFileSync(join(skill, ".ace.json"), "{}\n");
+  const before = snapshot(sb.root);
+
+  const out = await setupYes(sb);
+  assert.deepEqual(steps(out, "gemini-cli"), ["manual"]);
+  assert.deepEqual(steps(out, "claude-code"), ["manual"]);
+  assert.deepEqual(out.applied, []);
+  assert.deepEqual(snapshot(sb.root), before);
+
+  // a copy running from the npx cache never wires harnesses to itself
+  const { inventory, planConverge } = await import("../cli/setup.js");
+  writeJsonFile(join(sb.home, ".copilot", "mcp-config.json"), { mcpServers: { x: { command: "npx", args: ["@aron98/load-lock", "mcp"] } } });
+  const inv = inventory({ project: sb.project, home: sb.home, env: sb.env });
+  const plan = planConverge(inv, { selfCopy: "/c/_npx/abc/node_modules/@aron98/load-lock", selfEphemeral: true });
+  const cp = plan.steps.filter((s) => s.harness === "copilot-cli");
+  assert.deepEqual(cp.map((s) => s.action), ["manual"]);
+  assert.match(cp[0].detail, /cache copy/);
   rmSync(sb.root, { recursive: true, force: true });
 });

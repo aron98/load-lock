@@ -114,6 +114,37 @@ An ACE-installed Claude plugin (unzipped into `.claude/skills/<name>/`) is
 listed but not counted as an active plugin: whether Claude Code loads it
 there is not verified yet (#63).
 
+#### Converging: `load-lock setup --yes`
+
+After the inventory, `setup` prints a **plan** that brings every harness
+that already has some load-lock wiring to the recommended layout: the
+highest rung available, exactly one of each. Without `--yes` it is a dry
+run. `--yes` applies it (`--json` adds `plan` and `applied`). Harnesses with
+nothing installed are left alone; the plan names them once.
+
+The plan only uses moves the installers can reverse:
+
+| Situation | Step |
+|---|---|
+| Claude Code plugin enabled **and** loose `install` wiring | `remove-loose`: drop the loose MCP server, hooks and `CLAUDE.md` section (the plugin provides them). The skill stays: the plugin ships none. Undo: `load-lock install --harness claude-code`. |
+| Installer wiring incomplete, pointing at a missing copy, or hooks from several copies / duplicated | `install`: remove the installer-shaped hooks of every copy (and a stale codex `[mcp_servers.load-lock]` block), then `load-lock install --harness <h>` from the running copy |
+| Only an MCP registration or only the skill | `install` (moves up to the installer's rung) |
+| Anything not written by `load-lock install` (plugin state, ACE entries, manual / npx entries, extra skill copies) | `manual`: printed with what to remove or run (`/plugin uninstall …`), never applied |
+
+Guards, each turning an `install` into a `manual` step:
+
+- a foreign entry sits in the slot `install` would overwrite (e.g. a
+  hand-written `mcpServers.load-lock`);
+- the Claude Code skill directory is managed by ACE (`.ace.json`);
+- the running copy lives in the npx or opencode cache, which npm may prune
+  (install globally first);
+- `cursor` / `roo-code` write into the project, so they are only refreshed
+  when the project already has their installer wiring.
+
+`load-lock uninstall --harness <h>` still removes everything load-lock
+added, after a converge as before it. The MCP instructions and the
+session-start brief end with a one-line pointer to `load-lock setup`.
+
 ## The daemon
 
 - State dir: `~/.local/state/load-lock` (Windows: `%LOCALAPPDATA%\load-lock`;

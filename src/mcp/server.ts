@@ -21,7 +21,7 @@ import { z } from "zod";
 import { spawn, ChildProcess } from "node:child_process";
 
 import { LLClient } from "../shared/client.js";
-import { POLICY_BRIEF } from "../policy/text.js";
+import { POLICY_BRIEF, SETUP_HINT } from "../policy/text.js";
 import { waitForTurn, WaitAbortedError } from "../shared/wait-turn.js";
 import { waitForLocalJob, waitForTrackedJob, type WaitableAdapterJob } from "../shared/wait-completion.js";
 import { killProcessGroup } from "../shared/transport.js";
@@ -66,7 +66,7 @@ export function buildServer(opts: McpServerOptions): McpServer {
   if (drift) process.stderr.write(drift.message + "\n");
   const server = new McpServer(
     { name: opts.serverName ?? "load-lock", version: "0.1.0" },
-    { instructions: POLICY_BRIEF + (drift ? "\n\n" + drift.message : "") },
+    { instructions: POLICY_BRIEF + "\n\n" + SETUP_HINT + (drift ? "\n\n" + drift.message : "") },
   );
 
   const json = (v: unknown) => ({

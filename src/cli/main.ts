@@ -24,7 +24,7 @@ import { hookCommand } from "./hook.js";
 import { topCommand } from "./top.js";
 import { awaitDaemonUpgraded, serviceRestart, serviceStart, serviceStop, ServiceError } from "./service.js";
 import { updateCommand } from "./update.js";
-import { formatInventory, inventory } from "./setup.js";
+import { applyPlan, formatInventory, formatPlan, inventory, planConverge, selfCopy } from "./setup.js";
 import { sessionIdentity, type SessionIdentity } from "../shared/identity.js";
 
 // ---------------------------------------------------------------- arg parsing
@@ -40,7 +40,7 @@ for (let i = 0; i < argv.length; i++) {
   } else if (a.startsWith("--")) {
     const eq = a.indexOf("=");
     if (eq !== -1) flags[a.slice(2, eq)] = a.slice(eq + 1);
-    else if (["json", "follow", "force", "admin", "quiet", "check", "version"].includes(a.slice(2))) flags[a.slice(2)] = true;
+    else if (["json", "follow", "force", "admin", "quiet", "check", "version", "yes"].includes(a.slice(2))) flags[a.slice(2)] = true;
     else if (i + 1 < argv.length && !argv[i + 1].startsWith("--")) flags[a.slice(2)] = argv[++i];
     else flags[a.slice(2)] = true;
   } else {
@@ -143,7 +143,7 @@ const HELP_GROUPS: { title: string; items: HelpItem[] }[] = [
     items: [
       { names: ["install"], desc: "install the load-lock adapter for a harness: --harness <name>" },
       { names: ["uninstall"], desc: "remove what install added: --harness <name>" },
-      { names: ["setup"], desc: "inventory every load-lock integration across all harnesses (read-only): [--project <dir>] [--json]" },
+      { names: ["setup"], desc: "inventory every load-lock integration across all harnesses and plan the recommended layout (dry run); --yes applies it: [--project <dir>] [--json]" },
       { names: ["hook"], desc: "harness hook handlers (called by integrations, not humans)" },
       { names: ["agent-guide"], desc: "print the full agent guide" },
       { names: ["help"], desc: "this usage; also bare load-lock, --help, -h; help <command> for one line" },
@@ -597,8 +597,17 @@ async function main(): Promise<void> {
       return;
 
     case "setup": {
-      const inv = inventory({ project: S("project", process.cwd()) });
-      out(inv, () => formatInventory(inv));
+      const project = S("project", process.cwd());
+      const inv = inventory({ project });
+      const plan = planConverge(inv, selfCopy());
+      if (!B("yes")) {
+        out({ inventory: inv, plan }, () => formatInventory(inv) + "\n" + formatPlan(plan));
+        return;
+      }
+      const binDir = import.meta.dirname ? join(import.meta.dirname, "..") : undefined;
+      const applied = await applyPlan(inv, plan, { project, binDir });
+      const after = inventory({ project });
+      out({ inventory: after, plan, applied }, () => formatInventory(after) + "\n" + formatPlan(plan, applied));
       return;
     }
 

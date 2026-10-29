@@ -16,7 +16,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findInstalledCopies, type InstalledCopy } from "./copies.js";
+import { findInstalledCopies, npxCacheRoot, opencodeCacheRoot, thisCopy, type InstalledCopy } from "./copies.js";
 import { loadRuntimes, readDaemonInfo, type RuntimeCopy } from "../shared/runtimes.js";
 import { resolveStateDir } from "../shared/transport.js";
 import { PKG_NAME } from "../shared/pkginfo.js";
@@ -664,5 +664,329 @@ export function formatInventory(inv: Inventory): string {
   if (inv.runtime.daemon) lines.push(`  daemon runs    ${inv.runtime.daemon.version ?? "?"}  ${tilde(inv.runtime.daemon.path)}`);
   for (const k of inv.runtime.known) lines.push(`  seen by daemon ${k.version}  ${tilde(k.path)}`);
   for (const f of inv.findings) lines.push(`  ! ${f}`);
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------- converge
+//
+// `load-lock setup --yes` (issue #59) converges each harness that already
+// has some load-lock wiring to the recommended layout: the highest rung we
+// can reach, exactly one of each. It only uses moves the installers can
+// undo — `load-lock install` (merge-only) and removing entries in the exact
+// shape `install` writes — so `install` / `uninstall` reverse it. Entries
+// written by anyone else (the harness's plugin system, ACE, manual edits)
+// are never touched: the plan prints what to do instead.
+
+/** What `load-lock install --harness <h>` provides, per harness. */
+const EXPECTED: Record<Harness, IntegrationKind[]> = {
+  "claude-code": ["mcp", "hooks", "policy", "skill"],
+  opencode: ["plugin"],
+  codex: ["mcp", "hooks", "policy"],
+  cursor: ["mcp", "hooks", "policy"],
+  "gemini-cli": ["mcp", "policy"],
+  "copilot-cli": ["mcp", "policy"],
+  cline: ["mcp", "policy"],
+  "roo-code": ["mcp", "policy"],
+  goose: ["mcp", "policy"],
+  omac: ["grants"],
+};
+
+/** The MCP slot `install` writes (an `other` entry there would be overwritten). */
+const INSTALLER_MCP_SLOT: Partial<Record<Harness, string>> = {
+  "claude-code": "mcpServers.load-lock",
+  codex: "[mcp_servers.load-lock]",
+  cursor: "mcpServers.load-lock",
+  "gemini-cli": "mcpServers.load-lock",
+  "copilot-cli": "mcpServers.load-lock",
+  cline: "mcpServers.load-lock",
+  "roo-code": "mcpServers.load-lock",
+  goose: "extensions.load-lock",
+};
+
+/** Harnesses whose installer writes into the project, not the user's config. */
+const PROJECT_SCOPED: Harness[] = ["cursor", "roo-code"];
+
+export interface PlanStep {
+  harness: Harness;
+  /**
+   * `install`: run `load-lock install --harness <h>` (after removing
+   * installer-shaped hooks of other/missing copies, and a stale codex MCP
+   * block, which `install` alone would keep). `remove-loose`: drop the
+   * loose Claude Code wiring an active plugin replaces (MCP server, hooks,
+   * CLAUDE.md section; the skill stays). `manual`: printed, never applied.
+   */
+  action: "install" | "remove-loose" | "manual";
+  detail: string;
+}
+
+export interface Plan {
+  steps: PlanStep[];
+  /** One-time hints (upgrade path), not actions. */
+  hints: string[];
+}
+
+export interface PlanOptions {
+  /** Package root of the copy running setup; null when unknown. */
+  selfCopy: string | null;
+  /** True when that copy lives in a cache npm/opencode may prune. */
+  selfEphemeral: boolean;
+}
+
+function installerOwned(list: Integration[], kind: IntegrationKind): Integration[] {
+  return list.filter((i) => i.kind === kind && i.owner === "installer");
+}
+
+function needsRefresh(h: HarnessInventory): boolean {
+  const L = h.integrations;
+  // any working OpenCode plugin entry will do (e.g. a pinned one the user chose)
+  if (h.harness === "opencode") return !L.some(activePlugin) || L.some((i) => i.detail.includes("legacy"));
+  if (EXPECTED[h.harness].some((k) => installerOwned(L, k).length === 0)) return true;
+  if (L.some((i) => i.owner === "installer" && i.stale)) return true;
+  const hooks = installerOwned(L, "hooks");
+  if (new Set(hooks.map((i) => i.copy)).size > 1) return true;
+  return hooks.some((i) => new Set(i.detail.split(", ")).size !== i.detail.split(", ").length);
+}
+
+/** Manual steps for entries we will not touch. */
+function foreignSteps(h: HarnessInventory, keepForeignMcp: boolean, why: string): PlanStep[] {
+  const steps: PlanStep[] = [];
+  const L = h.integrations;
+  const mcps = L.filter((i) => i.kind === "mcp" && i.owner !== "installer");
+  // with a plugin or our own MCP entry in place, any other registration is a duplicate
+  if (!keepForeignMcp) {
+    for (const i of mcps) steps.push({ harness: h.harness, action: "manual", detail: `remove ${i.detail} from ${i.file} (${why})` });
+  }
+  for (const i of L.filter((x) => x.kind === "hooks" && x.owner !== "installer")) {
+    steps.push({ harness: h.harness, action: "manual", detail: `remove the load-lock hooks (${i.detail}) from ${i.file} (${why})` });
+  }
+  const skills = L.filter((i) => i.kind === "skill");
+  if (skills.length > 1) {
+    steps.push({
+      harness: h.harness,
+      action: "manual",
+      detail: `skill installed ${skills.length} times (${skills.map((i) => i.file).join("; ")}): keep one`,
+    });
+  }
+  const plugins = L.filter(activePlugin);
+  if (plugins.length > 1) {
+    steps.push({
+      harness: h.harness,
+      action: "manual",
+      detail:
+        h.harness === "claude-code"
+          ? `plugin enabled in ${plugins.length} places (${plugins.map((i) => i.file).join("; ")}): keep one with /plugin`
+          : `plugin listed ${plugins.length} times (${plugins.map((i) => `${i.detail} in ${i.file}`).join("; ")}): keep one`,
+    });
+  }
+  return steps;
+}
+
+/** The running copy, and whether it sits in the npx / opencode cache. */
+export function selfCopy(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): PlanOptions {
+  const self = thisCopy()?.path ?? null;
+  const caches = [npxCacheRoot(platform, env), opencodeCacheRoot(platform, env)].filter((c): c is string => !!c);
+  let real = self;
+  try {
+    real = self ? fs.realpathSync(self) : null;
+  } catch {
+    /* keep the unresolved path */
+  }
+  const inside = (p: string | null, root: string) => !!p && !path.relative(root, p).startsWith("..") && !path.isAbsolute(path.relative(root, p));
+  return { selfCopy: self, selfEphemeral: caches.some((c) => inside(self, c) || inside(real, c)) };
+}
+
+export function planConverge(inv: Inventory, opts: PlanOptions): Plan {
+  const steps: PlanStep[] = [];
+  const hints: string[] = [];
+  for (const h of inv.harnesses) {
+    const L = h.integrations;
+    if (h.rung === "none") continue;
+
+    // Claude Code with its plugin active: the plugin replaces the loose wiring.
+    if (h.harness === "claude-code" && h.rung === "plugin") {
+      const loose = L.filter((i) => i.owner === "installer" && (i.kind === "mcp" || i.kind === "hooks" || i.kind === "policy"));
+      if (loose.length) {
+        steps.push({
+          harness: h.harness,
+          action: "remove-loose",
+          detail:
+            `remove the loose ${[...new Set(loose.map((i) => i.kind))].join(", ")} from \`load-lock install\` ` +
+            "(the plugin provides them; the skill stays). Undo: load-lock install --harness claude-code",
+        });
+      }
+      steps.push(...foreignSteps(h, false, "the plugin bundles its own MCP server and hooks"));
+      for (const i of L.filter((x) => x.kind === "plugin" && x.enabled === false)) {
+        steps.push({ harness: h.harness, action: "manual", detail: `${i.detail} in ${i.file} is disabled: enable it with /plugin, or remove it with /plugin uninstall` });
+      }
+      continue;
+    }
+
+    // Everything else converges onto the installer's wiring.
+    const slot = INSTALLER_MCP_SLOT[h.harness];
+    const occupied = slot ? L.find((i) => i.kind === "mcp" && i.owner !== "installer" && i.detail === slot) : undefined;
+    const aceSkill = h.harness === "claude-code" ? L.find((i) => i.kind === "skill" && i.owner === "ace" && i.scope === "user" && path.basename(i.file) === "load-lock") : undefined;
+    const projectOnly = PROJECT_SCOPED.includes(h.harness) && !L.some((i) => i.owner === "installer" && i.scope === "project");
+    let installed = false;
+    if (needsRefresh(h) && !projectOnly) {
+      if (occupied) {
+        steps.push({
+          harness: h.harness,
+          action: "manual",
+          detail: `${occupied.detail} in ${occupied.file} was not written by \`load-lock install\`; replace it with \`load-lock install --harness ${h.harness}\` or keep it`,
+        });
+      } else if (aceSkill) {
+        steps.push({
+          harness: h.harness,
+          action: "manual",
+          detail: `the skill at ${aceSkill.file} is managed by ACE and \`load-lock install --harness claude-code\` would overwrite it; run it yourself if you want the loose wiring`,
+        });
+      } else if (opts.selfEphemeral) {
+        steps.push({
+          harness: h.harness,
+          action: "manual",
+          detail:
+            `this load-lock runs from a cache copy (${opts.selfCopy ?? "?"}) that npm may prune; install it globally ` +
+            `(npm i -g ${PKG_NAME}) and re-run \`load-lock setup\` to wire ${h.harness}`,
+        });
+      } else {
+        steps.push({ harness: h.harness, action: "install", detail: `load-lock install --harness ${h.harness}` });
+        installed = true;
+      }
+    }
+    const ownMcp = installed || installerOwned(L, "mcp").length > 0 || L.some(activePlugin);
+    steps.push(...foreignSteps(h, !ownMcp, ownMcp ? "load-lock is already registered" : ""));
+  }
+
+  const cc = inv.harnesses.find((h) => h.harness === "claude-code");
+  if (cc && cc.rung !== "none" && cc.rung !== "plugin") {
+    hints.push(
+      "Claude Code: the plugin adds the same wiring as one toggleable unit: " +
+        `/plugin marketplace add aron98/load-lock, then /plugin install ${CLAUDE_PLUGIN_NAME}@load-lock; re-run load-lock setup afterwards`,
+    );
+  }
+  const none = inv.harnesses.filter((h) => h.rung === "none").map((h) => h.harness);
+  if (none.length) hints.push(`not installed: ${none.join(", ")} (load-lock install --harness <name> adds one)`);
+  return { steps, hints };
+}
+
+// ------------------------------------------------------------------- apply
+
+function writeJsonFile(file: string, data: unknown): void {
+  const tmp = file + ".tmp-ll-" + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n");
+  fs.renameSync(tmp, file);
+}
+
+/**
+ * Remove every hook entry in `file` whose command has the installer's shape
+ * for `harness`, whichever copy it runs. Drops emptied events / `hooks`;
+ * removes the file when only the installer's bare shape is left.
+ */
+function stripInstallerHooks(file: string, harness: Harness): boolean {
+  const cfg = readJson(file);
+  if (!isObject(cfg) || !isObject(cfg.hooks)) return false;
+  let changed = false;
+  for (const [ev, list] of Object.entries(cfg.hooks)) {
+    if (!Array.isArray(list)) continue;
+    const kept = list.filter((e) => !hookCommands(e).some((c) => hookCommand(c, harness)?.owner === "installer"));
+    if (kept.length === list.length) continue;
+    changed = true;
+    if (kept.length) cfg.hooks[ev] = kept;
+    else delete cfg.hooks[ev];
+  }
+  if (!changed) return false;
+  if (Object.keys(cfg.hooks).length === 0) delete cfg.hooks;
+  const keys = Object.keys(cfg);
+  if (keys.length === 0 || (harness === "cursor" && keys.length === 1 && cfg.version === 1)) fs.rmSync(file);
+  else writeJsonFile(file, cfg);
+  return true;
+}
+
+/** Remove the installer's tagged `[mcp_servers.load-lock]` block (same match as uninstall). */
+function stripCodexBlock(file: string): boolean {
+  const toml = readText(file);
+  const re = /\n?# load-lock \(added by `load-lock install`\)\n\[mcp_servers\.load-lock\]\n[^\n]*\n[^\n]*\n/;
+  if (toml === undefined || !re.test(toml)) return false;
+  fs.writeFileSync(file, toml.replace(re, ""));
+  return true;
+}
+
+/** Remove a marked section the way the installer's uninstall does. */
+function removeMdSection(file: string): boolean {
+  const text = readText(file);
+  if (text === undefined) return false;
+  const idx = text.indexOf(MD_MARKER);
+  if (idx === -1) return false;
+  const next = text.indexOf(MD_MARKER, idx + MD_MARKER.length);
+  const end = next === -1 ? text.length : next;
+  const start = idx > 0 && text[idx - 1] === "\n" ? idx - 1 : idx;
+  fs.writeFileSync(file, text.slice(0, start) + text.slice(end));
+  return true;
+}
+
+/** Drop the loose Claude Code wiring (installer-shaped entries only); keep the skill. */
+function removeClaudeLoose(h: HarnessInventory): string[] {
+  const done: string[] = [];
+  for (const i of h.integrations) {
+    if (i.owner !== "installer") continue;
+    if (i.kind === "mcp" && i.detail === "mcpServers.load-lock" && i.scope === "user") {
+      const cj = readJson(i.file);
+      if (isObject(cj?.mcpServers) && "load-lock" in cj.mcpServers) {
+        delete cj.mcpServers["load-lock"];
+        writeJsonFile(i.file, cj);
+        done.push(`removed mcpServers.load-lock from ${i.file}`);
+      }
+    } else if (i.kind === "hooks") {
+      if (stripInstallerHooks(i.file, "claude-code")) done.push(`removed load-lock hooks from ${i.file}`);
+    } else if (i.kind === "policy") {
+      if (removeMdSection(i.file)) done.push(`removed the load-lock section from ${i.file}`);
+    }
+  }
+  return done;
+}
+
+export interface ApplyOptions {
+  project: string;
+  /** dist/ of the running copy (what `install` is called with). */
+  binDir?: string;
+}
+
+/** Apply the non-manual steps in order; returns what was done. */
+export async function applyPlan(inv: Inventory, plan: Plan, opts: ApplyOptions): Promise<string[]> {
+  const { installCommand } = await import("./install.js");
+  const done: string[] = [];
+  for (const step of plan.steps) {
+    const h = inv.harnesses.find((x) => x.harness === step.harness)!;
+    if (step.action === "remove-loose") {
+      done.push(...removeClaudeLoose(h).map((d) => `${h.harness}: ${d}`));
+    } else if (step.action === "install") {
+      for (const file of new Set(installerOwned(h.integrations, "hooks").map((i) => i.file))) {
+        if (stripInstallerHooks(file, h.harness)) done.push(`${h.harness}: removed load-lock hooks from ${file} before re-installing`);
+      }
+      for (const i of installerOwned(h.integrations, "mcp")) {
+        if (h.harness === "codex" && i.stale && stripCodexBlock(i.file)) done.push(`${h.harness}: removed stale [mcp_servers.load-lock] from ${i.file}`);
+      }
+      await installCommand({ harness: h.harness, project: opts.project, json: true, global: true, binDir: opts.binDir });
+      done.push(`${h.harness}: ran load-lock install --harness ${h.harness}`);
+    }
+  }
+  return done;
+}
+
+/** Human-readable plan. */
+export function formatPlan(plan: Plan, applied?: string[]): string {
+  const lines: string[] = [""];
+  if (!plan.steps.length) lines.push("plan: nothing to change, every installed harness has the recommended layout");
+  else {
+    lines.push(applied ? "plan (applied):" : "plan (dry run, re-run with --yes to apply):");
+    const width = Math.max(...plan.steps.map((s) => s.harness.length));
+    for (const s of plan.steps) lines.push(`  ${s.harness.padEnd(width)}  ${s.action.padEnd(12)} ${s.detail}`);
+  }
+  if (applied) {
+    lines.push("", "done:");
+    for (const d of applied) lines.push("  - " + d);
+    if (plan.steps.some((s) => s.action === "manual")) lines.push("  (manual steps above were not applied)");
+  }
+  for (const h of plan.hints) lines.push("", "hint: " + h);
   return lines.join("\n");
 }
