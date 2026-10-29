@@ -32,6 +32,7 @@ export const PINNED = [
   // e.g. { path: "skills/load-lock/SKILL.md", kind: "spec" },
   // e.g. { path: "ace/mcp.json", kind: "spec" },
   // e.g. { path: "plugins/claude-code/.claude-plugin/plugin.json", kind: "json", key: "version" },
+  { path: "skills/load-lock/SKILL.md", kind: "spec" },
   { path: "ace/mcp/mcp.json", kind: "spec" },
 ];
 
