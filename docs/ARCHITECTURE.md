@@ -99,8 +99,13 @@ wrong-state error), and a failed start kills the process group immediately.
 Background execution is handled honestly: the helper returns after *the whole
 process group* finishes, never merely when a shell returns a task id.
 
-**Identity.** Per-agent identity comes from the harness (OpenCode session ID)
-or an explicit `agent_id` argument; every entry also records an agent label,
+**Identity.** Per-agent identity is derived from the harness session
+(issues #49/#50): an explicit `agent_id` / `--agent` / `LOAD_LOCK_AGENT`
+wins, else a harness session id (OpenCode `sessionID`, Claude Code
+`CLAUDE_CODE_SESSION_ID`, hook `session_id`), else the stable harness
+ancestor process on Linux, so every wiring of one session (CLI, MCP
+server, hooks) acts as one agent (details in
+[COMPATIBILITY.md](COMPATIBILITY.md#session-identity-per-harness)); every entry also records an agent label,
 cwd, op key (for idempotent duplicate suppression), and reason. Idempotency:
 a duplicate `acquire` from the same agent for the same pending op key returns
 the existing request rather than a second one; multiple distinct ops per
@@ -118,8 +123,8 @@ same request ids (idempotent re-acquire keeps working), entries offered at
 crash time restart as queued and are re-offered with fresh tokens — so a
 restart no longer silently drops a queue position. The daemon auto-spawns on
 the next client connection, and a *self-ordered* restart (version handshake:
-a newer client than the daemon) respawns with the same argv after persisting
-state — see the update lifecycle in
+a newer client than the daemon) persists state and respawns onto the newer
+client's copy (#53; same argv when that copy can't be validated) — see the update lifecycle in
 [OPERATIONS.md](OPERATIONS.md#update-lifecycle).
 
 **Persisted format compatibility (issue #51).** Several runtime copies may
@@ -144,6 +149,59 @@ promise, in both directions:
   reclaims it if nobody heartbeats).
 - An incompatible change would use a **new file name**, never reinterpret
   `config.json` / `journal.json`.
+
+## Three layers: daemon, runtime copies, harness wiring
+
+load-lock reaches a machine through many entry points (a skill, an MCP
+registration, a harness plugin, ACE, `npm i -g` + `load-lock install`), and
+users mix them across harnesses and over time. The design rule (issue #47):
+**any combination, installed in any order, gives one working budget.** It
+holds because load-lock is split into three layers with different
+multiplicity:
+
+| Layer | Per machine | What it is | Rule |
+| --- | --- | --- | --- |
+| **Daemon** | exactly 1 (one socket, one state dir) | the long-lived process that owns all state, started on demand by whichever client connects first (`src/shared/client.ts`) | the newest copy runs it |
+| **Runtime copies** | many | installed copies of the npm package: global npm/bun, the npx cache, OpenCode's plugin cache, a git checkout; the Claude Code plugin's launcher picks one of them | copies interoperate in both directions; none "owns" the daemon |
+| **Harness wiring** | ideally 1 per harness, possibly several | MCP registrations, hooks, policy text, skill copies, written by a plugin, ACE, `load-lock install` or by hand | duplicates are **harmless**, not merely discouraged |
+
+**Duplicates are harmless.** Each overlap is defused where the singleton
+lives, not by hoping the user cleans up:
+
+- *Hooks*: two wirings of the same hook (loose + plugin, two plugins, ACE)
+  both fire, but the daemon's `hook_once` lets only the first act — one
+  policy injection, one Stop continuation, one idle watcher per session
+  (see "Duplicate hook wiring is harmless" below).
+- *MCP servers*: two registrations in one session (e.g. ACE's `mcp.json` +
+  the plugin's bundled server) are two processes with the **same**
+  session-derived identity (see Identity above), so an `acquire` through
+  one shows up in `pending` through the other. Both talk to the one daemon.
+- *Skill copies*: identical text; the skill only tells the agent how to
+  reach the daemon.
+
+Housekeeping is still offered: `load-lock setup` lists every integration
+per harness and, with `--yes`, converges each harness to one wiring at its
+highest rung (see [OPERATIONS.md](OPERATIONS.md#load-lock-setup-what-is-installed-where)).
+Correctness never depends on running it.
+
+**Compatibility promise between copies.** Because several copies of
+different versions talk to one daemon and one state dir:
+
+- every client envelope carries its version and package root; a strictly
+  newer client makes the daemon persist state and respawn onto that
+  client's copy (#52/#53, see "Runtime copies and the restart hint"
+  below), with one attempt per version;
+- the persisted files are versioned and additive in both directions, so
+  an older daemon started after a newer one died reads the newer files
+  safely (#51, "Persisted format compatibility" above);
+- newer client features degrade against an older daemon instead of
+  failing: hooks without `hook_once` act as before, `wait_for_completion`
+  falls back to an events-based poll.
+
+The **install ladder** built on top of this (skill → MCP server → harness
+plugin, plus `npm i -g` + `load-lock install`) is described in
+[OPERATIONS.md](OPERATIONS.md#the-install-ladder); which rung each harness
+reaches is in [COMPATIBILITY.md](COMPATIBILITY.md#rung-per-harness).
 
 ## Notification honesty
 
@@ -191,7 +249,8 @@ mechanisms, and labels exactly which apply per harness:
      calls `ctx.session.synthetic(...)`, delivering the offer (with token)
      to an idle session at its next execution boundary — it never
      interrupts an in-flight shell command.
-   - Claude Code (contract-tested): a `Stop` hook checks for cwd-matching
+   - Claude Code (live-verified in Docker with the loose install; the
+     plugin's hooks are not yet live-verified, #63): a `Stop` hook checks for cwd-matching
      offers and continues the session with a claim instruction; an async
      `await-offer` watcher with `asyncRewake: true` wakes idle sessions.
    - Codex CLI (live-verified in Docker): `Stop` hook with `decision: "block"`
@@ -214,8 +273,10 @@ and restored after context compaction:
 - **OpenCode**: plugin `context` hook injects the brief on every model call
   (compaction-proof, live-verified), plus a registered skill with the full
   guide.
-- **Claude Code**: `SessionStart` hook (matchers include `compact`) +
-  `~/.claude/CLAUDE.md` section + skill.
+- **Claude Code**: `SessionStart` hook (re-fires after `compact`), from
+  either the `load-lock-plugin` plugin or the loose install; the loose
+  install adds a `~/.claude/CLAUDE.md` section + skill, the plugin ships
+  neither (full guide via the `agent_guide` MCP tool).
 - **Codex CLI**: `SessionStart` hook (matcher `compact`) + `SubagentStart`
   hook + `~/.codex/AGENTS.md` section (hooks require the interactive
   hook-trust review once; live-verified in Docker).

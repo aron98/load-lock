@@ -8,6 +8,9 @@
  *    from the loose install or the load-lock-plugin Claude Code plugin.
  *  - Codex CLI: SessionStart/SubagentStart hook stdout (needs /hooks trust).
  *  - MCP server: `instructions` field on every harness that surfaces it.
+ *  - Skill only (ladder rung 0, docs/OPERATIONS.md): no brief is injected;
+ *    skills/load-lock/SKILL.md carries its own version of these rules plus the
+ *    MCP -> PATH -> pinned-npx bootstrap (docs/AGENT_GUIDE.md section 0).
  *
  * Deliberately SHORT (spec: no noisy reminders). The detailed playbook lives
  * in docs/AGENT_GUIDE.md, served by the MCP agent_guide tool, the skill and

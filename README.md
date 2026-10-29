@@ -71,23 +71,41 @@ Three agents, one budget — the queue drains FIFO while everyone keeps coding:
 - **Resource-aware** — `inspect_machine` reports cgroup/container CPU and
   memory limits and current pressure; never assumes cores = capacity.
 
-## Quickstart
+## Install
 
-```sh
-npm install -g @aron98/load-lock
-load-lock install --harness opencode     # or claude-code | codex | gemini-cli |
-                                         # copilot-cli | cline | roo-code | goose |
-                                         # omac (sandbox grants) | generic
-load-lock doctor
-```
+Pick a rung per harness. Each works on its own, a higher rung only adds
+capability, and mixing them is safe: one daemon, one budget, one identity
+per session, duplicate hooks dropped by the daemon.
 
-Claude Code can use the plugin instead (MCP server + hooks, no global
-install needed; the skill is separate):
+| Rung | Install | Agents get |
+| --- | --- | --- |
+| 0 — **skill** | the `load-lock` skill ([`skills/load-lock`](skills/load-lock/SKILL.md), or via ACE) | the full permit lifecycle through the CLI (on PATH, else pinned `npx`); no idle wakeup, no policy injection |
+| 1 — **MCP server** | a stdio server running `npx -y @aron98/load-lock@<version> mcp` (or the ACE `mcp` artifact) | tools, offers in every tool result, bounded `wait_for_turn` / `wait_for_completion` sleeps |
+| 2 — **plugin** | Claude Code `load-lock-plugin`, OpenCode npm plugin `@aron98/load-lock` | everything: tools, policy that survives compaction, offer wakeups |
+| — | `npm i -g` + `load-lock install --harness <h>` | the same as loose config; the route for harnesses without a plugin |
+
+Claude Code plugin (MCP server + hooks, no global install needed; the
+skill is separate):
 
 ```text
 /plugin marketplace add aron98/load-lock
 /plugin install load-lock-plugin@load-lock
 ```
+
+Global CLI + installer (any supported harness):
+
+```sh
+npm install -g @aron98/load-lock
+load-lock install --harness opencode     # or claude-code | codex | cursor | gemini-cli |
+                                         # copilot-cli | cline | roo-code | goose |
+                                         # omac (sandbox grants) | generic
+load-lock setup                          # what is installed where, per harness
+load-lock setup --yes                    # converge wired harnesses to their highest rung
+load-lock doctor
+```
+
+Rung details and ACE: docs/OPERATIONS.md → "The install ladder"; which
+rung each harness reaches: docs/COMPATIBILITY.md → "Rung per harness".
 
 From then on, agents see the policy and tools automatically:
 OpenCode plugin (`load_lock_*` tools), Claude Code / Codex MCP tools
@@ -139,7 +157,7 @@ skills/         packaged skill
   restart semantics, notification honesty, lifecycle tradeoffs.
 - [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — per-harness capability
   matrix with implemented / contract-tested / proposed labels.
-- [docs/OPERATIONS.md](docs/OPERATIONS.md) — install, config,
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — install ladder, `setup`, ACE, config,
   troubleshooting, recovery, daemon lifecycle, sandbox bridging.
 - [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — the playbook for agents.
 - [docs/ADAPTERS.md](docs/ADAPTERS.md) — how to write an adapter for a new
@@ -155,9 +173,10 @@ skills/         packaged skill
 - OpenCode adapter: implemented and **live-verified** (tools, policy
   injection, compaction-proof context hook, execution-boundary wakeup
   with tokens, skill).
-- Claude Code adapter: implemented, contract-tested against documented
-  hook JSON; not yet live-verified (harness not installed on the
-  verification machine).
+- Claude Code adapter: loose install (`load-lock install --harness
+  claude-code`) implemented and **live-verified** in Docker; the
+  `load-lock-plugin` plugin is contract-tested, live verification pending
+  (#63).
 - Codex CLI adapter: implemented and **live-verified** end-to-end in
   Docker (interactive TUI via pty: policy injection, MCP round-trip,
   FIFO queueing behind a competing holder, Stop-hook decision-block
