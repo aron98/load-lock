@@ -8,7 +8,8 @@
 <p align="center">
   <a href="https://github.com/aron98/load-lock/actions/workflows/ci.yml"><img src="https://github.com/aron98/load-lock/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://www.npmjs.com/package/@aron98/load-lock"><img src="https://img.shields.io/npm/v/@aron98/load-lock?color=%233fb950" alt="npm version"></a>
-  <a href="https://www.npmjs.com/package/@aron98/load-lock"><img src="https://img.shields.io/npm/dm/@aron98/load-lock?color=%233fb950" alt="npm downloads"></a>
+  <a href="https://www.npmjs.com/package/@aron98/load-lock"><img src="https://badgen.net/npm/dm/@aron98/load-lock?color=3fb950" alt="npm downloads"></a>
+  <a href="https://skills.sh/aron98/load-lock"><img src="https://skills.sh/b/aron98/load-lock" alt="skills.sh"></a>
   <a href="https://github.com/aron98/load-lock/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="license MIT"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A520-green" alt="node >= 20">
 </p>
