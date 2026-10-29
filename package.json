@@ -88,7 +88,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "tsc -p tsconfig.json && node --test dist/test/*.test.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check-pins": "node scripts/check-pins.mjs"
   },
   "engines": {
     "node": ">=20"

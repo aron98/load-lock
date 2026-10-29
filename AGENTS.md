@@ -76,7 +76,11 @@ node --test --test-name-pattern "offer" dist/test/core.test.js
 ## CI & release
 
 - CI (`.github/workflows/ci.yml`): Node 20 + 24 matrix; `npm ci` → build →
-  `node --test`; plus an install-from-tarball smoke job.
+  `node --test`; plus an install-from-tarball smoke job and a `pins` job.
+- Version pins: `scripts/check-pins.mjs` (plain JS, declared `PINNED` list)
+  checks every pinned `@aron98/load-lock@<version>` against `package.json`;
+  the release commit runs `npm run check-pins -- --write`. See "Releasing"
+  in `docs/OPERATIONS.md`.
 - Publishing (`publish.yml`) is triggered by a GitHub Release, uses npm
   Trusted Publishing (OIDC, no tokens), requires Node 24. Read its comments
   before touching the release flow.

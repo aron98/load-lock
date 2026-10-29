@@ -22,6 +22,16 @@ jobs:
       - name: Test (daemon, MCP, hooks, run helpers)
         run: node --test dist/test/*.test.js
 
+  pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Version pins match package.json (fix with npm run check-pins -- --write)
+        run: node scripts/check-pins.mjs
+
   install-from-tarball:
     runs-on: ubuntu-latest
     steps:
