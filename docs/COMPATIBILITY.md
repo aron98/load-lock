@@ -356,14 +356,49 @@ reconnect, view-model shaping, frame rendering) is covered by
 
 ## Session identity per harness
 
+The daemon routes offers, `pending` and op-key duplicate suppression by agent
+id, so each harness session needs exactly one id, whichever wiring (CLI, MCP
+server, hook) made the call. The default identity of the CLI (issue #49) and
+of the MCP server (issue #50) comes from the shared resolver in
+`src/shared/identity.ts`, first match wins:
+
+1. explicit override: `--agent` (CLI), `agent_id` (MCP tools), or
+   `LOAD_LOCK_AGENT`;
+2. a harness session env var exported to the processes the harness spawns:
+   `CLAUDE_CODE_SESSION_ID` → `claude-code:<session_id>` (the same value hooks
+   receive as `session_id`; verified on Claude Code 2.1.x), and
+   `OPENCODE_SESSION_ID` → the bare `sessionID` (exported by OpenCode's bash
+   tool; verified on opencode 2.1.1). The bare id is exactly the native
+   plugin's agent id, so CLI calls from an OpenCode shell share the plugin's
+   identity;
+3. the stable harness ancestor process (Linux): walk up from the CLI's parent
+   past shells and launcher wrappers (`sh`/`bash`/`zsh`/…, `env`, `timeout`,
+   `npm`/`npx`, nested `load-lock`) to the first other ancestor, identified as
+   `proc:<pid>:<start time>` (pid-reuse safe via `/proc/<pid>/stat`), labelled
+   `<comm>:<pid>`. This covers harnesses without a verified env var (Codex,
+   Cursor, Gemini CLI, …), since one session = one long-lived harness process;
+4. otherwise (no harness ancestor, or no `/proc` — macOS/Windows without a
+   session env var) the legacy default: `cli:$USER@$HOSTNAME` for the CLI, a
+   random per-process `agt_…` id for the MCP server.
+
+So two MCP registrations in one session (plugin-bundled + standalone) share
+one id: an `acquire` through one shows in `pending` through the other, and
+both heartbeat the same id (idempotent). The CLI and the MCP server of one
+session share an id too when both see the same session env var or the same
+harness ancestor; whether a harness exports its session env var to MCP
+server processes is not verified for every harness.
+
+Labels stay human-readable: session-derived ids get a short holder label
+(`claude-code:ee690007`, `codex:12345`); explicit ids label themselves.
+
 | Harness | Identity | Notes |
 | --- | --- | --- |
-| OpenCode | plugin context `sessionID` (also MCP `_meta` when used) | automatic |
-| Claude Code | hooks get `session_id`; MCP tools take explicit `agent_id` | policy instructs agents to pass it |
-| Codex | hooks get `session_id`; MCP tools take explicit `agent_id` | same |
-| Cursor | hooks get `conversation_id` (no `cwd` — `workspace_roots[0]` identifies the request); MCP tools take explicit `agent_id` | same |
+| OpenCode | plugin context `sessionID` (also MCP `_meta` when used); CLI via `OPENCODE_SESSION_ID` (same id) | automatic |
+| Claude Code | hooks get `session_id`; CLI and MCP server via `CLAUDE_CODE_SESSION_ID`, else the harness ancestor; MCP tools also take explicit `agent_id` | automatic; explicit `agent_id` still wins |
+| Codex | hooks get `session_id`; CLI and MCP server via harness ancestor process; MCP tools also take explicit `agent_id` | same |
+| Cursor | hooks get `conversation_id` (no `cwd` — `workspace_roots[0]` identifies the request); CLI and MCP server via harness ancestor process; MCP tools also take explicit `agent_id` | same |
 | omac (sandbox) | inner harness identity + `LOAD_LOCK_LABEL_PREFIX=omac` | dashboard shows holders as `omac:<label>` |
-| Tier 3 | explicit `agent_id` argument | falls back to per-server-process id |
+| Tier 3 | explicit `agent_id` argument; CLI and MCP server via harness ancestor process | MCP falls back to a per-server-process id only when no session is found |
 
 ## Platform matrix
 

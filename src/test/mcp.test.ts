@@ -10,12 +10,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { startDaemon, delay, mcpMainPath, type DaemonHandle } from "./testutil.js";
 
-async function connectMcp(d: DaemonHandle): Promise<Client> {
+async function connectMcp(d: DaemonHandle, extraEnv: Record<string, string> = {}): Promise<Client> {
   const client = new Client({ name: "load-lock-test", version: "0.1.0" }, { capabilities: {} });
+  // The test runner itself may be inside a harness session: drop inherited
+  // session identity so each test controls it (issue #50).
+  const env = { ...(d.env as Record<string, string>) };
+  for (const k of ["LOAD_LOCK_AGENT", "CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID"]) delete env[k];
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [mcpMainPath],
-    env: d.env as Record<string, string>,
+    env: { ...env, ...extraEnv },
   });
   await client.connect(transport);
   return client;
@@ -291,8 +295,8 @@ test("mcp: wait_for_completion on a daemon-tracked request_id (attach_pid) and j
 
 test("mcp: multiple server processes share one machine-wide budget", async () => {
   const d = await startDaemon();
-  const c1 = await connectMcp(d);
-  const c2 = await connectMcp(d); // separate process = separate harness session
+  const c1 = await connectMcp(d, { CLAUDE_CODE_SESSION_ID: "budget-session-1" });
+  const c2 = await connectMcp(d, { CLAUDE_CODE_SESSION_ID: "budget-session-2" }); // separate harness session
   try {
     const a1 = await callJson(c1, "acquire", { reason: "agent1 build", op_key: "a1" });
     assert.equal(a1.state, "granted");
@@ -310,6 +314,48 @@ test("mcp: multiple server processes share one machine-wide budget", async () =>
   } finally {
     await c1.close();
     await c2.close();
+    await d.stop();
+  }
+});
+
+test("mcp: two server processes from one harness session share an identity (issue #50)", async () => {
+  const d = await startDaemon();
+  // Same parent process, no session env: both resolve to the same harness
+  // ancestor, like a plugin-bundled + a standalone registration.
+  const c1 = await connectMcp(d);
+  const c2 = await connectMcp(d);
+  const other = await connectMcp(d, { CLAUDE_CODE_SESSION_ID: "other-session" });
+  try {
+    const filler = await callJson(other, "acquire", { reason: "other build", op_key: "fill" });
+    assert.equal(filler.state, "granted");
+    const a = await callJson(c1, "acquire", { reason: "session build", op_key: "shared-op" });
+    assert.equal(a.state, "queued");
+    if (process.platform === "linux") assert.match(a.entry.agentId, /^proc:\d+:\d+$/);
+
+    // acquire through one server shows up in pending through the other
+    const viaOther = await callJson(c2, "pending", {});
+    assert.deepEqual(viaOther.queue.map((e: any) => e.requestId), [a.request_id]);
+    // and the op_key dedupes across both registrations
+    const again = await callJson(c2, "acquire", { reason: "session build", op_key: "shared-op" });
+    assert.equal(again.request_id, a.request_id);
+
+    // a server from a different session gets a distinct id and sees none of it
+    const otherPending = await callJson(other, "pending", {});
+    assert.equal(otherPending.queue.length, 0);
+    assert.equal(otherPending.held[0].agentId, "claude-code:other-session");
+    assert.notEqual(otherPending.held[0].agentId, a.entry.agentId);
+
+    // the release hands the offer to the shared identity: visible via either server
+    await callJson(other, "release", { permit_token: filler.permit_token });
+    const p1 = await callJson(c1, "pending", {});
+    assert.equal(p1.offers.length, 1);
+    const claimed = await callJson(c2, "claim", { offer_token: p1.offers[0].offerToken });
+    assert.equal(claimed.state, "held");
+    await callJson(c1, "release", { permit_token: claimed.permit_token });
+  } finally {
+    await c1.close();
+    await c2.close();
+    await other.close();
     await d.stop();
   }
 });

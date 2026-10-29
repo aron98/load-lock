@@ -24,6 +24,7 @@ import { hookCommand } from "./hook.js";
 import { topCommand } from "./top.js";
 import { awaitDaemonUpgraded, serviceRestart, serviceStart, serviceStop, ServiceError } from "./service.js";
 import { updateCommand } from "./update.js";
+import { sessionIdentity, type SessionIdentity } from "../shared/identity.js";
 
 // ---------------------------------------------------------------- arg parsing
 
@@ -62,11 +63,25 @@ function out(v: unknown, human?: () => string): void {
   else process.stdout.write((human ? human() : JSON.stringify(v, null, 2)) + "\n");
 }
 
+// Session-derived default identity (issue #49): one id per harness session,
+// so CLI-driven agents on one machine no longer share `cli:$USER@$HOSTNAME`
+// (that remains the fallback when no session can be found).
+let identity: SessionIdentity | undefined;
+function sessionId(): SessionIdentity {
+  return (identity ??= sessionIdentity({
+    fallback: "cli:" + (process.env.USER || "user") + "@" + (process.env.HOSTNAME || "localhost"),
+  }));
+}
+
 function defaultAgent(): string {
-  return (
-    process.env.LOAD_LOCK_AGENT ||
-    "cli:" + (process.env.USER || "user") + "@" + (process.env.HOSTNAME || "localhost")
-  );
+  return sessionId().id;
+}
+
+/** Readable holder label for a session-derived id (explicit ids label themselves). */
+function defaultLabel(): string | undefined {
+  if (S("agent")) return undefined;
+  const s = sessionId();
+  return s.label !== s.id ? s.label : undefined;
 }
 
 // ---------------------------------------------------------------- help text
@@ -291,7 +306,7 @@ async function main(): Promise<void> {
         c.request("acquire", {
           pool: S("pool", "heavy"),
           agentId: S("agent", defaultAgent()),
-          agentLabel: S("label") || undefined,
+          agentLabel: S("label") || defaultLabel(),
           labelPrefix: S("label-prefix") || undefined,
           cwd: S("cwd", process.cwd()),
           opKey: S("op-key") || fail("acquire: --op-key is required"),
