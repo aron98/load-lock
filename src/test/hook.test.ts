@@ -79,6 +79,9 @@ test("hooks: claude-code stop with a matching offer -> decision block carrying t
     assert.ok(out.reason.includes(offer.offerToken), "reason tells the agent which offer_token to claim");
     assert.ok(out.reason.includes("claim"), "reason instructs claiming");
     assert.ok(out.reason.includes(offer.opKey));
+    // issue #55: tool names differ per wiring (loose MCP vs plugin-bundled)
+    assert.ok(out.reason.includes("load-lock claim tool"), "reason names the claim tool neutrally");
+    assert.ok(!out.reason.includes("mcp__"), "reason hard-codes no MCP tool prefix");
 
     // stop_hook_active: never loop
     const quiet = await runHook(d, ["claude-code", "stop"], { session_id: "s1", cwd, stop_hook_active: true });
@@ -129,6 +132,7 @@ test("hooks: cursor stop with a matching offer -> followup_message carrying the 
     assert.ok(out.followup_message.includes(offer.offerToken), "message tells the agent which offer_token to claim");
     assert.ok(out.followup_message.includes("claim"), "message instructs claiming");
     assert.ok(out.followup_message.includes(offer.opKey));
+    assert.ok(!out.followup_message.includes("mcp__"), "message hard-codes no MCP tool prefix");
     assert.equal(out.decision, undefined, "Cursor does not use the Claude/Codex decision shape");
 
     // loop_count > 0: never chain followups (Cursor's loop guard)
@@ -178,6 +182,8 @@ test("hooks: claude-code await-offer wakes (exit 2 + stderr, no token leak) on o
 
     assert.equal(r.code, 2, "asyncRewake contract: exit code 2 wakes Claude");
     assert.ok(r.stderr.includes("claim"), "stderr explains how to claim");
+    assert.ok(r.stderr.includes("load-lock claim tool"), "stderr names the claim tool neutrally");
+    assert.ok(!r.stderr.includes("mcp__"), "stderr hard-codes no MCP tool prefix");
     assert.ok(!r.stderr.includes("off_"), "the offer token itself is NOT in stderr (session must claim via pending)");
     assert.equal(r.stdout, "");
 

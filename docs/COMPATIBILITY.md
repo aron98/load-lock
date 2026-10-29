@@ -143,6 +143,15 @@ observed live on this machine before the feature existed.
   idle Claude. The token is deliberately NOT in that message (stderr may be
   shown); the agent claims via `pending`/`claim`.
 
+**Tool names depend on the wiring.** A loose install (`load-lock install`)
+registers the MCP server as `load-lock`, so Claude Code exposes
+`mcp__load-lock__<tool>`. A plugin-bundled server is namespaced by plugin
+and server key, `mcp__plugin_<plugin>_<server>__<tool>` (per the Claude Code
+MCP docs), e.g. `mcp__plugin_load-lock_load-lock__claim`. Every text
+load-lock injects (policy brief, hook claim/wakeup messages, CLAUDE.md /
+AGENTS.md sections, skill) therefore names tools neutrally ("the load-lock
+`claim` tool") instead of hard-coding a prefix.
+
 Contract tests cover all hook stdin/stdout shapes against the documented
 harness contracts. Claude Code is additionally **live-verified** (in Docker,
 via `docker/run-claude-verify.sh` against the real `claude` CLI): SessionStart
@@ -275,7 +284,7 @@ without a dedicated installer.
 Idle policy: these harnesses get no push notifications, so the PRIMARY
 idle mechanism is the MCP `wait_for_turn` tool — a bounded, honest sleep
 until it is the caller's turn. Queued agents call
-`mcp__load-lock__wait_for_turn` (optionally with `timeout_ms`, default
+the load-lock `wait_for_turn` tool (optionally with `timeout_ms`, default
 600000, capped by the machine's `maxTurnWaitMs` config) and get a
 structured result on every path: `granted` (the offer was auto-claimed —
 `permit_token` included), `still_queued` (timeout, with queue position

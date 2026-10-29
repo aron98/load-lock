@@ -227,8 +227,8 @@ export async function hookCommand(rest: string[]): Promise<void> {
             const seconds = Math.max(0, Math.round(((ev.entry.offerExpiresAt ?? Date.now()) - Date.now()) / 1000));
             process.stderr.write(
               `load-lock: capacity for "${ev.entry.pool}" was just reserved for a request from this directory ` +
-                `(op "${ev.entry.opKey}"). It expires in ~${seconds}s. Call your load-lock pending tool now and ` +
-                `claim the offer with claim(offer_token), then start your heavy work immediately.`,
+                `(op "${ev.entry.opKey}"). It expires in ~${seconds}s. Call the load-lock pending tool now and ` +
+                `claim the offer with the load-lock claim tool (offer_token), then start your heavy work immediately.`,
             );
             c.close();
             resolve();
