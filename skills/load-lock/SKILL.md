@@ -1,9 +1,24 @@
+---
+name: load-lock
+description: >-
+  Teach parallel AI coding agents sharing one machine to take turns on heavy
+  work such as full builds and test suites. Agents acquire a machine-wide
+  permit before resource-intensive local work, keep doing light work while
+  queued FIFO, sleep honestly with bounded waits instead of polling, and
+  release the permit when done. Use when several agents on one machine risk
+  overloading it by starting heavy work in the same minute.
+---
+
 # load-lock: machine-wide heavy-work coordination
 
 All coding agents on this machine (any harness, any repo/worktree) share one
 small budget of heavy-work permits. Before resource-intensive local work, a
 polite agent acquires a permit; everyone else keeps doing light work until an
 offer arrives.
+
+Requires the load-lock daemon and a harness adapter: `npm install -g
+@aron98/load-lock`, then `load-lock install --harness <name>` (check with
+`load-lock doctor`).
 
 ## When to use it
 
