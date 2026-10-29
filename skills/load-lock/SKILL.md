@@ -7,7 +7,7 @@ description: >-
   queued FIFO, sleep honestly with bounded waits instead of polling, and
   release the permit when done. Use when several agents on one machine risk
   overloading it by starting heavy work in the same minute. If load-lock is
-  not installed, this skill runs it via `npx -y @aron98/load-lock@1.5.0`
+  not installed, this skill runs it via `npx -y @aron98/load-lock@1.6.0`
   (downloads the pinned npm package), and load-lock keeps its shared state in
   ~/.local/state/load-lock (a small per-user daemon started on first use).
 ---
@@ -26,7 +26,7 @@ Use the first of these that works; they all talk to the same daemon:
 1. **load-lock MCP tools** (`acquire`, `wait_for_turn`, `run_with_permit`,
    ...), if your harness lists them. The rest of this skill names them.
 2. **`load-lock` on PATH**: check with `load-lock version`.
-3. **Pinned npx**: `npx -y @aron98/load-lock@1.5.0 <command>` (Node >= 20).
+3. **Pinned npx**: `npx -y @aron98/load-lock@1.6.0 <command>` (Node >= 20).
    It downloads that exact npm package once into the npx cache. Below,
    read `load-lock` as this whole prefix. `npm install -g @aron98/load-lock`
    makes it permanent.

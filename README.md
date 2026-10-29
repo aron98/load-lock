@@ -165,18 +165,21 @@ skills/         packaged skill
 
 ## Status
 
-- Core daemon/protocol/CLI: implemented, 68 automated tests passing
+- Core daemon/protocol/CLI: implemented, 253 automated tests passing
   (multi-process daemons, real processes, restarts, races, expiry,
-  PID-reuse, subprocess survival; plus 9 dashboard tests — view-model
-  shaping, event-cursor resume across a daemon restart, reconnect, and a
-  `load-lock dashboard --once` render smoke test).
+  PID-reuse, subprocess survival, installer round-trips, multi-copy
+  restarts; dashboard tests cover view-model shaping, event-cursor resume
+  across a daemon restart, reconnect, and a `load-lock dashboard --once`
+  render smoke test).
 - OpenCode adapter: implemented and **live-verified** (tools, policy
   injection, compaction-proof context hook, execution-boundary wakeup
   with tokens, skill).
 - Claude Code adapter: loose install (`load-lock install --harness
   claude-code`) implemented and **live-verified** in Docker; the
-  `load-lock-plugin` plugin is contract-tested, live verification pending
-  (#63).
+  `load-lock-plugin` plugin is **live-verified** in a real Claude Code
+  session (#63: policy at startup and after `/compact`, plugin tool names,
+  `agent_guide`, Stop offer continuation, `asyncRewake` idle wakeup). See
+  COMPATIBILITY.md for what was not observed.
 - Codex CLI adapter: implemented and **live-verified** end-to-end in
   Docker (interactive TUI via pty: policy injection, MCP round-trip,
   FIFO queueing behind a competing holder, Stop-hook decision-block

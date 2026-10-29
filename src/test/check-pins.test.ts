@@ -89,6 +89,23 @@ test("check-pins: mismatches are reported per pin, then --write fixes them all",
   }
 });
 
+test("check-pins: --write keeps a JSON file's own formatting", () => {
+  const body =
+    `{\n  "name": "load-lock-plugin",\n  "version": "1.5.0",\n  "keywords": ["a", "b"],\n` +
+    `  "deps": { "@aron98/load-lock": "1.5.0" }\n}\n`;
+  const root = plant({ "p.json": body });
+  const declared: PinEntry[] = [
+    { path: "p.json", kind: "json", key: "version" },
+    { path: "p.json", kind: "json", key: "deps.@aron98/load-lock" },
+  ];
+  try {
+    pins.writePins(root, "1.6.0", declared);
+    assert.equal(readFileSync(join(root, "p.json"), "utf8"), body.replaceAll("1.5.0", "1.6.0"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("check-pins: a declared file that is missing or lost its pin fails", () => {
   const root = plant({ "skills/load-lock/SKILL.md": "use `npx -y @aron98/load-lock@latest`\n" });
   try {

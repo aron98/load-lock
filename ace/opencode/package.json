@@ -15,6 +15,6 @@
     "directory": "ace/opencode"
   },
   "dependencies": {
-    "@aron98/load-lock": "1.5.0"
+    "@aron98/load-lock": "1.6.0"
   }
 }

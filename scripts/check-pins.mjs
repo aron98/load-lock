@@ -109,9 +109,15 @@ export function writePins(root, version, pinned = PINNED) {
       const parent = keys.slice(0, -1).reduce((o, k) => (o == null ? undefined : o[k]), json);
       const last = keys[keys.length - 1];
       if (parent == null || typeof parent[last] !== "string" || parent[last] === version) continue;
-      parent[last] = version;
-      const indent = text.match(/^[ \t]+(?=")/m)?.[0] ?? "  ";
-      next = JSON.stringify(json, null, indent) + (text.endsWith("\n") ? "\n" : "");
+      const pair = new RegExp(`("${escapeRe(last)}"\\s*:\\s*")${escapeRe(parent[last])}(")`, "g");
+      if ((text.match(pair) ?? []).length === 1) {
+        next = text.replace(pair, `$1${version}$2`);
+      } else {
+        // Ambiguous key/value pair: fall back to re-serializing.
+        parent[last] = version;
+        const indent = text.match(/^[ \t]+(?=")/m)?.[0] ?? "  ";
+        next = JSON.stringify(json, null, indent) + (text.endsWith("\n") ? "\n" : "");
+      }
     }
     if (next !== text) {
       writeFileSync(file, next);
