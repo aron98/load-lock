@@ -57,3 +57,18 @@ export function opencodeCacheRoot(platform: NodeJS.Platform, env: NodeJS.Process
   if (platform === "darwin") return join(env.HOME ?? homedir(), "Library", "Caches");
   return join(env.HOME ?? homedir(), ".cache");
 }
+
+/**
+ * Root of npx's install cache (`<npm cache>/_npx`), where `npx -y
+ * @aron98/load-lock@<pin>` (skill / ACE / pinned MCP entries) installs its
+ * copies as `<root>/<hash>/node_modules/@aron98/load-lock`. The npm cache
+ * dir follows npm's own resolution: `npm_config_cache` (set by npm/npx for
+ * the processes they launch, or by the user), else `%LocalAppData%\npm-cache`
+ * on Windows, else `~/.npm`.
+ */
+export function npxCacheRoot(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | null {
+  const configured = env.npm_config_cache || env.NPM_CONFIG_CACHE;
+  if (configured) return join(configured, "_npx");
+  if (platform === "win32") return env.LOCALAPPDATA ? join(env.LOCALAPPDATA, "npm-cache", "_npx") : null;
+  return join(env.HOME ?? homedir(), ".npm", "_npx");
+}

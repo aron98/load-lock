@@ -3,7 +3,9 @@
  * of load-lock commonly coexist — the globally-installed CLI on PATH, and
  * the private copy opencode maintains under its npm cache (because
  * `install --harness opencode` registers the bare package name, opencode
- * installs and refreshes its own copy on its own schedule).
+ * installs and refreshes its own copy on its own schedule), and copies npx
+ * installs under its cache when skill / ACE / pinned MCP entries launch
+ * `npx -y @aron98/load-lock@<pin>` (issue #57).
  *
  * All scanning is best-effort: missing paths, unreadable files, and
  * unexpected layouts yield skipped entries or null versions — never a throw.
@@ -12,13 +14,13 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "n
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isWindows } from "../shared/transport.js";
-import { enclosingPackage, opencodeCacheRoot, PKG_NAME } from "../shared/pkginfo.js";
+import { enclosingPackage, npxCacheRoot, opencodeCacheRoot, PKG_NAME } from "../shared/pkginfo.js";
 
-export { enclosingPackage, opencodeCacheRoot } from "../shared/pkginfo.js";
+export { enclosingPackage, npxCacheRoot, opencodeCacheRoot } from "../shared/pkginfo.js";
 
 export interface InstalledCopy {
   /** Where this copy was found. */
-  source: "cli" | "path" | "opencode-cache";
+  source: "cli" | "path" | "opencode-cache" | "npx-cache";
   /** Path of the copy's package root (its package.json's directory). */
   path: string;
   /** Version string, or null when the package.json could not be read. */
@@ -41,6 +43,7 @@ export function thisCopy(): InstalledCopy | null {
  *    so a symlink to the running copy is recognized and not double-listed
  *    — a copy is only listed under "path" when it differs from "cli").
  *  - "opencode-cache": copies under opencode's private npm cache.
+ *  - "npx-cache": copies under npx's cache (`<npm cache>/_npx/<hash>/...`).
  */
 export function findInstalledCopies(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): InstalledCopy[] {
   const copies: InstalledCopy[] = [];
@@ -159,6 +162,29 @@ export function findInstalledCopies(platform: NodeJS.Platform = process.platform
     }
   } catch {
     /* cache scan is best-effort */
+  }
+
+  // --- npx cache scan -------------------------------------------------------
+  // Layout: <npm cache>/_npx/<hash>/node_modules/@aron98/load-lock, one
+  // <hash> dir per distinct npx package spec (e.g. per pinned version).
+  try {
+    const npxRoot = npxCacheRoot(platform, env);
+    if (npxRoot && existsSync(npxRoot)) {
+      for (const hash of readdirSync(npxRoot)) {
+        try {
+          const cand = join(npxRoot, hash, "node_modules", "@aron98", "load-lock");
+          const pkgPath = join(cand, "package.json");
+          if (!existsSync(pkgPath)) continue;
+          const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+          if (pkg?.name !== PKG_NAME) continue;
+          add({ source: "npx-cache", path: cand, version: typeof pkg.version === "string" ? pkg.version : null });
+        } catch {
+          /* skip unreadable npx cache entry */
+        }
+      }
+    }
+  } catch {
+    /* npx cache scan is best-effort */
   }
 
   return copies;
