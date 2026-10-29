@@ -1,9 +1,10 @@
 /**
  * load-lock MCP server (stdio) — the universal adapter for harnesses that
  * speak MCP (Claude Code, Codex CLI, Gemini CLI, Copilot CLI, Cline, Roo,
- * Goose, ...). Each harness session spawns one MCP server process; the
- * process-scoped agent identity routes offers back through tool results and
- * watch pushes.
+ * Goose, ...). Each harness session spawns one MCP server process per
+ * registration; the session-derived agent identity (issue #50, see
+ * shared/identity.ts) routes offers back through tool results and watch
+ * pushes, and is shared by every registration in the same session.
  *
  * Notification honesty (see docs/COMPATIBILITY.md): MCP transports can
  * surface server-initiated *messages*, but most harnesses do not inject them
@@ -26,6 +27,7 @@ import { waitForLocalJob, waitForTrackedJob, type WaitableAdapterJob } from "../
 import { killProcessGroup } from "../shared/transport.js";
 import { detectCliDrift, type CliDrift } from "../shared/drift.js";
 import { packageVersion } from "../shared/version.js";
+import { sessionIdentity } from "../shared/identity.js";
 
 const ACQUIRE_DESC = `Acquire a machine-wide permit before starting resource-intensive local work (full builds, test suites, big compiles/containers).
 
@@ -50,7 +52,12 @@ export interface McpServerOptions {
 
 export function buildServer(opts: McpServerOptions): McpServer {
   const client = opts.client;
-  const defaultAgent = opts.agentId ?? "agt_" + process.pid.toString(36) + Math.random().toString(36).slice(2, 8);
+  // Session-derived (issue #50): two registrations in one harness session
+  // (plugin-bundled + standalone) resolve to the same id; the per-process
+  // random id remains the fallback when no session can be found.
+  const defaultAgent =
+    opts.agentId ??
+    sessionIdentity({ fallback: "agt_" + process.pid.toString(36) + Math.random().toString(36).slice(2, 8) }).id;
   // Drift notice (issue #38): one clear notice naming the exact command when
   // this adapter copy is newer than the PATH-installed CLI. Notify only —
   // never auto-install. Printed to stderr at init and embedded in the
@@ -620,6 +627,8 @@ Input: job_id OR request_id (one of them), timeout_ms (default 600000, clamped t
   // Automatic adapter heartbeat: while this server process lives, untracked
   // permits of this agent keep their lease; if the harness session dies, the
   // lease lapses and the daemon reclaims. The model never has to remember.
+  // Servers sharing a session identity each renew the same lease; heartbeats
+  // are idempotent, so that is harmless.
   const heartbeat = setInterval(() => {
     void client.request("heartbeat", { agentId: defaultAgent }).catch(() => {
       /* daemon unreachable; next tool call reconnects */
