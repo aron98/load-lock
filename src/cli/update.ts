@@ -3,7 +3,7 @@
  * version (npm is the only distribution channel), classify where THIS copy
  * lives before touching anything, and apply the update via the detected
  * package manager — or refuse honestly (repo checkouts, opencode-managed
- * cache copies, unknown locations) rather than guessing. After a
+ * cache copies, npx cache copies, unknown locations) rather than guessing. After a
  * successful apply, `service restart` moves the daemon onto the new code
  * immediately; the v1.3.0 version handshake stays as the safety net for
  * daemons nobody explicitly restarts.
@@ -25,13 +25,13 @@ import { dirname, join, sep } from "node:path";
 import { homedir } from "node:os";
 
 import { compareVersions, packageVersion } from "../shared/version.js";
-import { opencodeCacheRoot, PKG_NAME } from "../shared/pkginfo.js";
+import { npxCacheRoot, opencodeCacheRoot, PKG_NAME } from "../shared/pkginfo.js";
 import { thisCopy } from "./copies.js";
 import { serviceRestart, ServiceError } from "./service.js";
 
 // ------------------------------------------------------- pure classification
 
-export type SelfLocationKind = "bun-global" | "npm-global" | "opencode-cache" | "repo-checkout" | "unknown";
+export type SelfLocationKind = "bun-global" | "npm-global" | "opencode-cache" | "npx-cache" | "repo-checkout" | "unknown";
 
 export interface SelfLocation {
   kind: SelfLocationKind;
@@ -50,6 +50,8 @@ export interface ClassifyCtx {
   npmGlobalRoot: string | null;
   /** opencode cache root (XDG_CACHE_HOME | platform default); null when unknown. */
   cacheRoot: string | null;
+  /** npx cache root (<npm cache>/_npx); null/absent when unknown. */
+  npxRoot?: string | null;
 }
 
 /** Path containment with separator awareness ("a" contains "a" and "a/b"). */
@@ -64,6 +66,8 @@ function isUnder(dir: string, root: string): boolean {
  *  - npm global (under `npm root -g`) → update via npm
  *  - opencode cache copy (<cache>/opencode/npm/...) → refuse: opencode
  *    manages this copy and refreshes it on its own schedule
+ *  - npx cache copy (<npm cache>/_npx/...) → refuse: whatever launches it
+ *    via `npx @aron98/load-lock@<pin>` (skill / ACE / MCP entry) owns the pin
  *  - repo checkout (nearest .git found by walking up, like the omac
  *    read-grant logic) → refuse with a pointer to the git workflow
  *  - anything else → unknown → refuse honestly rather than guessing
@@ -79,6 +83,9 @@ export function classifySelf(pkgRoot: string, ctx: ClassifyCtx): SelfLocation {
   if (ctx.cacheRoot && isUnder(pkgRoot, join(ctx.cacheRoot, "opencode", "npm"))) {
     return { kind: "opencode-cache", path: pkgRoot, detail: `opencode-managed cache copy under ${ctx.cacheRoot}` };
   }
+  if (ctx.npxRoot && isUnder(pkgRoot, ctx.npxRoot)) {
+    return { kind: "npx-cache", path: pkgRoot, detail: `npx cache copy under ${ctx.npxRoot}` };
+  }
   for (let dir = pkgRoot; ; ) {
     if (existsSync(join(dir, ".git"))) {
       return { kind: "repo-checkout", path: pkgRoot, detail: `git checkout (.git at ${dir})` };
@@ -87,7 +94,7 @@ export function classifySelf(pkgRoot: string, ctx: ClassifyCtx): SelfLocation {
     if (parent === dir) break;
     dir = parent;
   }
-  return { kind: "unknown", path: pkgRoot, detail: "not a recognized bun/npm global, opencode cache, or git checkout location" };
+  return { kind: "unknown", path: pkgRoot, detail: "not a recognized bun/npm global, opencode/npx cache, or git checkout location" };
 }
 
 export type UpdatePlan =
@@ -107,6 +114,14 @@ export function planUpdate(loc: SelfLocation): UpdatePlan {
         reason:
           `this copy lives in opencode's npm cache (${loc.path}); opencode manages it and refreshes it on its own schedule — ` +
           `update the PATH-installed CLI instead (npm i -g ${PKG_NAME}@latest)`,
+      };
+    case "npx-cache":
+      return {
+        action: "refuse",
+        reason:
+          `this copy lives in the npx cache (${loc.path}); it is whatever version the launching npx command pins — ` +
+          `bump the pinned version (the \`npx -y ${PKG_NAME}@<version>\` in your MCP/skill config, or the ACE artifact) ` +
+          `to move it, and update the PATH-installed CLI separately (npm i -g ${PKG_NAME}@latest)`,
       };
     case "repo-checkout":
       return {
@@ -211,6 +226,7 @@ export async function updateCommand(opts: UpdateOptions): Promise<number> {
     home: process.env.HOME ?? homedir(),
     npmGlobalRoot: root,
     cacheRoot: opencodeCacheRoot(process.platform, process.env),
+    npxRoot: npxCacheRoot(process.platform, process.env),
   });
 
   // 2. Check the registry (npm is the only distribution channel).

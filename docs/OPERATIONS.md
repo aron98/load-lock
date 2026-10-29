@@ -156,6 +156,7 @@ detected package manager — or refuses honestly rather than guessing:
 | bun global (`~/.bun/install/global/…`)  | `bun i -g @aron98/load-lock@latest`                                |
 | npm global (under `npm root -g`)        | `npm i -g @aron98/load-lock@latest`                                |
 | opencode's npm-cache copy               | refuses — opencode manages this copy and refreshes it on its own schedule |
+| npx cache copy (`~/.npm/_npx/<hash>/…`, since #57) | refuses — it is whatever version the launching `npx -y @aron98/load-lock@<pin>` pins; bump that pin (MCP/skill config or ACE artifact) |
 | a git checkout (nearest `.git`)         | refuses — update it via your git workflow (`git pull` etc.)        |
 | anything else                           | refuses — "cannot tell how this copy was installed"                 |
 
@@ -186,6 +187,11 @@ on stderr and in the injected context / MCP `instructions`. Notify only —
 that was already running keeps the *old* adapter code in memory until the
 harness itself restarts, so the notice fires from the new copy at its init
 — sessions started before a refresh see it on their next restart.
+The same check covers **npx-vs-PATH skew** (#57): an MCP server launched
+via a pinned `npx -y @aron98/load-lock@<pin>` runs from the npx cache, and
+when that copy is newer than the PATH CLI the notice names it as the npx
+copy. (The reverse — a pin older than the PATH CLI — is not flagged here;
+the daemon's version handshake already keeps the daemon on the newer code.)
 
 Limits, stated honestly: the respawn re-runs the **same argv** — it picks up
 an updated copy only if the daemon's launching copy was updated *in place*

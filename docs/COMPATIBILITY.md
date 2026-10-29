@@ -103,6 +103,13 @@ Which copy is authoritative for what:
   different copy than the one you updated keeps running the old code until
   `load-lock service restart` (since #38) or `service stop` + any command
   re-spawns it from the new one.
+- **npx-launched copies** (since #57) — skill / ACE / pinned MCP entries run
+  `npx -y @aron98/load-lock@<pin>`, which installs a copy under the npm
+  cache at `~/.npm/_npx/<hash>/node_modules/@aron98/load-lock/` (or under
+  `$npm_config_cache/_npx`; `%LocalAppData%\npm-cache\_npx` on Windows).
+  `doctor` lists these as `npx-cache`. They are owned by the pin that
+  launches them: `load-lock update` refuses to touch them and points at
+  bumping the pinned version (or the ACE artifact) instead.
 
 The mirror drift — a *newer* adapter copy (opencode refreshed its cache)
 with an *older* CLI on PATH — surfaces at adapter init (issue #38): the

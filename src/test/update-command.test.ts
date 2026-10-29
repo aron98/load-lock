@@ -232,6 +232,24 @@ test("planUpdate: install argvs for bun/npm; honest refusals otherwise", () => {
   assert.ok(unknown.reason.includes("cannot tell"), "unknown refusal admits it cannot tell");
 });
 
+test("classifySelf + planUpdate: npx-cache copy refuses, naming the pin (issue #57)", () => {
+  const base = mkdtempSync(join(TMP_BASE, "classify-npx-"));
+  try {
+    const npxRoot = join(base, "home", ".npm", "_npx");
+    const ctx = { home: join(base, "home"), npmGlobalRoot: join(base, "npm-root"), cacheRoot: join(base, "cache"), npxRoot };
+    const loc = classifySelf(join(npxRoot, "0123abcd", "node_modules", "@aron98", "load-lock"), ctx);
+    assert.equal(loc.kind, "npx-cache");
+    const plan = planUpdate(loc);
+    assert.equal(plan.action, "refuse");
+    assert.ok(plan.action === "refuse" && plan.reason.includes("npx cache"), "refusal names the npx cache");
+    assert.ok(plan.action === "refuse" && plan.reason.includes("pinned version"), "refusal says to bump the pin");
+    // A sibling of the npx root is not misclassified.
+    assert.notEqual(classifySelf(join(base, "home", ".npm", "_npx-other", "x"), ctx).kind, "npx-cache");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 // --------------------------------------------------------- detectCliDrift (pure)
 
 test("detectCliDrift: older PATH copy -> one notice with the exact command", () => {
@@ -245,6 +263,26 @@ test("detectCliDrift: older PATH copy -> one notice with the exact command", () 
     assert.ok(d!.message.includes("load-lock update"), "notice names the exact command");
     assert.ok(d!.message.includes("0.9.0"), "notice names the old version");
     assert.ok(d!.message.includes("auto-install"), "notice states nothing is auto-installed");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("detectCliDrift: newer npx-cache copy vs older PATH CLI -> notice names the npx copy (issue #57)", () => {
+  const base = mkdtempSync(join(TMP_BASE, "drift-npx-"));
+  try {
+    const binDir = plantBinCopy(join(base, "copy"), "0.9.0");
+    const cache = join(base, "npm-cache");
+    const ownPath = join(cache, "_npx", "0123abcd", "node_modules", "@aron98", "load-lock");
+    const d = detectCliDrift("9.9.9", { PATH: binDir, npm_config_cache: cache }, "linux", ownPath);
+    assert.ok(d, "older PATH CLI is drift");
+    assert.equal(d!.ownSource, "npx-cache");
+    assert.ok(d!.message.includes("npx"), `notice names the npx copy: ${d!.message}`);
+    assert.ok(d!.message.includes("load-lock update"), "notice names the exact command");
+    // The same skew from a non-npx copy keeps the adapter wording.
+    const other = detectCliDrift("9.9.9", { PATH: binDir, npm_config_cache: cache }, "linux", join(base, "elsewhere"));
+    assert.equal(other!.ownSource, "adapter");
+    assert.ok(!other!.message.includes("npx"));
   } finally {
     rmSync(base, { recursive: true, force: true });
   }
@@ -426,6 +464,41 @@ test("update: npm-global apply installs via the stub and restarts the service", 
       killDaemonFromJson(d.dir);
       rmSync(d.dir, { recursive: true, force: true });
     }
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("update: run from a planted npx-cache copy refuses with a clear message (issue #57)", async () => {
+  const base = mkdtempSync(join(TMP_BASE, "upd-npx-"));
+  try {
+    const home = join(base, "home");
+    const plantedCli = plantCopy(join(home, ".npm", "_npx", "0123abcd", "node_modules", "@aron98", "load-lock"), packageVersion());
+    makeStubNpm(join(base, "bin"));
+    const mark = join(base, "marker");
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      HOME: home,
+      PATH: join(base, "bin") + ":" + (process.env.PATH ?? ""),
+      STUB_VERSION: "9.9.9",
+      STUB_ROOT: join(base, "no-such-npm-root"),
+      STUB_MARK: mark,
+    };
+    // Resolve the npx cache from the temp HOME, never the real npm cache.
+    delete env.npm_config_cache;
+    delete env.NPM_CONFIG_CACHE;
+
+    const check = await runCliEnv(env, ["update", "--check", "--json"], plantedCli);
+    assert.equal(check.code, 1, `an update exists; this copy cannot self-apply it; stderr: ${check.stderr}`);
+    const report = JSON.parse(check.stdout);
+    assert.equal(report.state, "refused");
+    assert.equal(report.location.kind, "npx-cache");
+    assert.ok(report.reason.includes("npx cache") && report.reason.includes("pinned version"), report.reason);
+
+    const apply = await runCliEnv(env, ["update"], plantedCli);
+    assert.equal(apply.code, 70, "refusal in apply mode is a failure exit");
+    assert.ok(apply.stderr.includes("update refused") && apply.stderr.includes("npx cache"), apply.stderr);
+    assert.ok(!existsSync(mark), "no package manager ran");
+  } finally {
     rmSync(base, { recursive: true, force: true });
   }
 });

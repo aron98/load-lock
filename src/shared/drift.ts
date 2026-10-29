@@ -14,13 +14,18 @@
  * harness restarts — this notice is emitted by the NEW copy at its init,
  * which is the best it can do for sessions started before the refresh.
  *
+ * npx-vs-PATH skew (issue #57): an MCP server launched via a pinned
+ * `npx -y @aron98/load-lock@<pin>` runs from the npx cache; when that copy
+ * is newer than the PATH CLI the notice names it as the npx copy.
+ *
  * Pure and synchronous (PATH scan + package.json reads only) so both the
  * OpenCode plugin setup and the MCP server startup can call it inline.
  */
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, sep as pathSep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isWindows } from "./transport.js";
-import { enclosingPackage, PKG_NAME } from "./pkginfo.js";
+import { enclosingPackage, npxCacheRoot, PKG_NAME } from "./pkginfo.js";
 import { compareVersions } from "./version.js";
 
 export interface CliDrift {
@@ -30,18 +35,30 @@ export interface CliDrift {
   cliVersion: string;
   /** Package root of the PATH-resolved CLI copy. */
   cliPath: string;
+  /** Where this (adapter) copy lives: the npx cache, or anywhere else. */
+  ownSource: "npx-cache" | "adapter";
   /** The one clear notice, with the exact command. */
   message: string;
 }
 
 /** The notice text (exported for tests and doc-sync checks). */
-export function driftMessage(ownVersion: string, cliVersion: string): string {
+export function driftMessage(ownVersion: string, cliVersion: string, ownSource: CliDrift["ownSource"] = "adapter"): string {
+  const own = ownSource === "npx-cache" ? "npx-cache copy (launched via npx)" : "adapter copy";
   return (
-    `load-lock: this load-lock adapter copy (v${ownVersion}) is newer than the installed CLI (v${cliVersion}). ` +
+    `load-lock: this load-lock ${own} (v${ownVersion}) is newer than the installed CLI (v${cliVersion}). ` +
     `Run \`load-lock update\` to update the CLI on PATH and restart the daemon. ` +
     `(Notify only — nothing is auto-installed; if your CLI predates the \`update\` command, run ` +
     `\`npm i -g ${PKG_NAME}@latest\` instead.)`
   );
+}
+
+/** Package root of the copy this module runs from, or null. */
+function ownPackageRoot(): string | null {
+  try {
+    return enclosingPackage(dirname(dirname(fileURLToPath(import.meta.url))))?.path ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -56,8 +73,12 @@ export function detectCliDrift(
   ownVersion: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  ownPath: string | null = ownPackageRoot(),
 ): CliDrift | null {
   try {
+    const npxRoot = npxCacheRoot(platform, env);
+    const ownSource: CliDrift["ownSource"] =
+      ownPath && npxRoot && (ownPath + pathSep).startsWith(npxRoot.endsWith(pathSep) ? npxRoot : npxRoot + pathSep) ? "npx-cache" : "adapter";
     const sep = isWindows(platform) ? ";" : ":";
     const binNames = isWindows(platform) ? ["load-lock.cmd", "load-lock.exe", "load-lock"] : ["load-lock"];
     const dirs = (env.PATH ?? "").split(sep).filter(Boolean);
@@ -79,7 +100,8 @@ export function detectCliDrift(
             ownVersion,
             cliVersion: found.version,
             cliPath: found.path,
-            message: driftMessage(ownVersion, found.version),
+            ownSource,
+            message: driftMessage(ownVersion, found.version, ownSource),
           };
         }
         return null; // PATH CLI is same/newer — no drift

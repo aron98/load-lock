@@ -9,7 +9,7 @@
  *  - `service stop` waits bounded, escalates to SIGKILL, verifies the
  *    socket is free, and reports honestly
  *  - `service start` refusals name the conflicting pid
- *  - `doctor` reports installed copies and warns on drift
+ *  - `doctor` reports installed copies (incl. npx-cache, #57) and warns on drift
  *
  * Modeled after daemon.test.ts: real daemons over real sockets in temp
  * state dirs (LL_TEST_TMP / $TMPDIR/opencode — never the user's real dir).
@@ -478,5 +478,42 @@ test("doctor: reports installed copies, versions, daemon skew, and copy drift", 
     await d.stop();
     rmSync(cacheHome, { recursive: true, force: true });
     rmSync(fakePkg, { recursive: true, force: true });
+  }
+});
+
+test("doctor: lists a planted npx-cache copy (issue #57)", async () => {
+  const d = await startDaemon();
+  const home = mkdtempSync(join(TMP_BASE, "ll-npxhome-"));
+  try {
+    // npx layout under the default npm cache: ~/.npm/_npx/<hash>/node_modules/@aron98/load-lock
+    const npxCopy = join(home, ".npm", "_npx", "0123abcd4567ef89", "node_modules", "@aron98", "load-lock");
+    mkdirSync(npxCopy, { recursive: true });
+    writeFileSync(join(npxCopy, "package.json"), JSON.stringify({ name: "@aron98/load-lock", version: "0.4.2" }));
+    // A foreign npx entry is ignored.
+    const foreign = join(home, ".npm", "_npx", "ffff", "node_modules", "@aron98", "load-lock");
+    mkdirSync(foreign, { recursive: true });
+    writeFileSync(join(foreign, "package.json"), JSON.stringify({ name: "something-else", version: "1.0.0" }));
+
+    const env = { ...d.env, HOME: home } as Record<string, string>;
+    // npm sets npm_config_cache for scripts it runs (`npm test`); the test
+    // must resolve the planted temp HOME's default cache, never the real one.
+    delete env.npm_config_cache;
+    delete env.NPM_CONFIG_CACHE;
+
+    const r = await runCliEnv(env, ["doctor", "--json"]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const report = JSON.parse(r.stdout);
+    const copies = report.copies as Array<{ source: string; path: string; version: string | null }>;
+    const npx = copies.filter((c) => c.source === "npx-cache");
+    assert.equal(npx.length, 1, `exactly the planted npx copy: ${JSON.stringify(copies)}`);
+    assert.equal(npx[0].version, "0.4.2");
+    assert.equal(npx[0].path, npxCopy);
+    assert.ok(
+      report.warnings.some((w: string) => w.includes("multiple load-lock versions") && w.includes("npx-cache=0.4.2")),
+      `drift warning names the npx copy: ${JSON.stringify(report.warnings)}`,
+    );
+  } finally {
+    await d.stop();
+    rmSync(home, { recursive: true, force: true });
   }
 });
