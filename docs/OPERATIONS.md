@@ -1050,3 +1050,24 @@ Caveats to watch for (unverified expectations):
   `LOAD_LOCK_SOCKET` at a different pipe name if that is a problem.
 - `inspect_machine` cgroup detection reads `/sys/fs/cgroup` and will
   degrade gracefully (`cgroupVersion: "none"`), reporting raw host numbers.
+
+## Releasing (maintainers)
+
+Publishing is automated: publishing a GitHub Release runs
+`.github/workflows/publish.yml` (npm Trusted Publishing; read its comments
+before changing the flow). The release commit itself is manual:
+
+1. Bump `version` in `package.json` (and `package-lock.json`), e.g.
+   `npm version 1.6.0 --no-git-tag-version`.
+2. Sync every pinned `@aron98/load-lock@<version>` to it:
+   `npm run check-pins -- --write` (alias for
+   `node scripts/check-pins.mjs --write`), then `npm run check-pins` must
+   print `pins ok`. Commit the bump and the pin updates together.
+3. Merge, then publish a GitHub Release tagged `v<version>`.
+
+Pinned files (the skill's npx fallback, ACE `mcp.json`, the Claude Code
+plugin's `plugin.json` and launcher, once they exist) are declared in the
+`PINNED` list at the top of `scripts/check-pins.mjs`; add an entry whenever
+a new artifact pins a version. CI (`pins` job in `ci.yml`) fails on any
+pin that differs from `package.json`, on a declared file that is missing,
+and on a declared file that no longer contains a pin.
