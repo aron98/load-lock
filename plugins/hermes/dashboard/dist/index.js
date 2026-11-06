@@ -71,6 +71,18 @@
     return d + "d " + hr + "h";
   }
 
+  // Wall-clock time of an event: unlike an age it never changes once
+  // rendered, so the feed doesn't churn every second. Older than today
+  // gets a date prefix.
+  function fmtClock(ts) {
+    if (ts == null || isNaN(ts)) return "—";
+    var d = new Date(ts);
+    var time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return d.toDateString() === new Date().toDateString()
+      ? time
+      : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + time;
+  }
+
   function fmtBytes(bytes) {
     if (bytes == null || isNaN(bytes)) return "—";
     var units = ["B", "KB", "MB", "GB", "TB"];
@@ -133,11 +145,10 @@
 
   function EventRow(props) {
     var ev = props.event;
-    var now = props.now;
     var tone = EVENT_TONE[ev.type] || "ll-tone-muted";
     var text = eventText(ev);
     return h("div", { className: "ll-evt", key: ev.id },
-      h("span", { className: "ll-evt-time" }, fmtAge(now - ev.ts) + " ago"),
+      h("span", { className: "ll-evt-time", title: new Date(ev.ts).toLocaleString() }, fmtClock(ev.ts)),
       h("span", { className: "ll-badge " + tone }, String(ev.type || "?").replace(/_/g, " ")),
       h("span", { className: "ll-evt-agent", title: ev.targetAgent || "" }, shortAgent(ev.targetAgent)),
       text
@@ -345,7 +356,8 @@
         ),
         h("div", { className: "ll-head-right" },
           updatedAt
-            ? h("span", { className: "ll-updated" }, "updated " + fmtAge(Date.now() - updatedAt) + " ago")
+            ? h("span", { className: "ll-updated", title: "last update " + fmtClock(updatedAt) },
+                auto ? "live" : "updated " + fmtClock(updatedAt))
             : null,
           h("button", { className: "ll-btn", onClick: refresh, title: "Refresh now" }, "Refresh"),
           h("button", {
@@ -367,7 +379,7 @@
         h(CardContent, null,
           events.length
             ? events.slice().reverse().map(function (ev) {
-                return h(EventRow, { event: ev, now: now, key: ev.id });
+                return h(EventRow, { event: ev, key: ev.id });
               })
             : h("div", { className: "ll-empty" }, "no events yet — acquire a permit to see the flow")
         )

@@ -35,7 +35,7 @@ import {
   Tip,
   useQuery
 } from '@hermes/plugin-sdk'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 // createElement-style helper. jsx() from the automatic JSX runtime only takes
@@ -63,6 +63,7 @@ const CSS = `
 .hermes-ll-title{font-weight:600;letter-spacing:-.01em;white-space:nowrap;flex:none}
 .hermes-ll-machine{font-size:11px;color:var(--ui-text-tertiary);cursor:help;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
 .hermes-ll-updated{margin-left:auto;font-size:11px;color:var(--ui-text-tertiary);white-space:nowrap;flex:none}
+.hermes-ll-updated[data-stale=true]{color:var(--ui-warning,#d97706)}
 .hermes-ll-chip{display:inline-flex;height:100%;align-items:center;gap:4px;padding:0 6px;font-size:11px;line-height:1;color:var(--ui-text-tertiary);background:none;border:0;cursor:pointer;font-variant-numeric:tabular-nums}
 .hermes-ll-chip:hover{background:var(--chrome-action-hover);color:var(--ui-text-primary)}
 .hermes-ll-error{border:1px solid color-mix(in srgb,#ef4444 55%,transparent);background:color-mix(in srgb,#ef4444 12%,transparent);color:#fca5a5;padding:6px 10px;border-radius:8px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -90,7 +91,7 @@ const CSS = `
 .hermes-ll-age{color:var(--ui-text-tertiary);font-size:10px;flex:none;min-width:2.75rem;text-align:right;font-variant-numeric:tabular-nums}
 .hermes-ll-empty{color:var(--ui-text-tertiary);font-size:11px;padding:2px 0}
 .hermes-ll-evt{display:flex;align-items:baseline;gap:6px;font-size:11px;padding:1px 0;min-width:0}
-.hermes-ll-evt-time{color:var(--ui-text-tertiary);min-width:3.25rem;flex:none;font-variant-numeric:tabular-nums}
+.hermes-ll-evt-time{color:var(--ui-text-tertiary);min-width:3.75rem;flex:none;font-variant-numeric:tabular-nums}
 .hermes-ll-evt-agent{font-family:var(--font-mono,ui-monospace,monospace);font-size:10px;color:var(--ui-text-tertiary);flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hermes-ll-evt-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text-secondary)}
 .hermes-ll-events{border:1px solid var(--ui-border,#8884);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:1px}
@@ -118,6 +119,18 @@ function fmtAge(ms) {
   const d = Math.floor(hr / 24)
   hr %= 24
   return d + 'd ' + hr + 'h'
+}
+
+// Wall-clock time of an event: unlike an age, it never changes once
+// rendered, so the feed doesn't churn every second. Older than today
+// gets a date prefix.
+function fmtClock(ts) {
+  if (ts == null || Number.isNaN(ts)) return '—'
+  const d = new Date(ts)
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return d.toDateString() === new Date().toDateString()
+    ? time
+    : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time
 }
 
 function fmtBytes(bytes) {
@@ -321,11 +334,11 @@ function PoolCard({ pool, now }) {
   })
 }
 
-function EventRow({ event: ev, now }) {
+function EventRow({ event: ev }) {
   const tone = EVENT_TONE[ev.type] || 'hermes-ll-tone-muted'
   const text = ev.entry && ev.entry.reason ? ev.entry.reason : ev.detail || ''
   return jsxs('div', { className: 'hermes-ll-evt', children: [
-    h('span', { className: 'hermes-ll-evt-time' }, fmtAge(now - ev.ts) + ' ago'),
+    h('span', { className: 'hermes-ll-evt-time', title: new Date(ev.ts).toLocaleString() }, fmtClock(ev.ts)),
     h('span', { className: 'hermes-ll-badge ' + tone }, String(ev.type || '?').replace(/_/g, ' ')),
     h('span', { className: 'hermes-ll-evt-agent', title: ev.targetAgent || '' }, shortAgent(ev.targetAgent)),
     text ? h('span', { className: 'hermes-ll-evt-text', title: text }, text) : null
@@ -375,11 +388,7 @@ function LoadLockPane({ ctx }) {
   const snapQuery = useSnapshot(ctx)
   const machineQuery = useMachine(ctx)
   const eventsQuery = useEvents(ctx)
-  const updatedAtRef = useRef(0)
   const snap = snapQuery.data
-  if (snap && snap.generated_at && updatedAtRef.current !== snap.generated_at) {
-    updatedAtRef.current = snap.generated_at
-  }
 
   const error = snapQuery.isError
     ? parseRestError(snapQuery.error)
@@ -416,10 +425,16 @@ function LoadLockPane({ ctx }) {
           title: [machineLabel, pressure && pressure.note].filter(Boolean).join(' — ')
         }, machineLabel)
         : null,
-      // Stable text across refetches: swapping in a shorter placeholder
-      // re-flowed the header and made everything below it jump every poll.
-      h('span', { className: 'hermes-ll-updated' },
-        'updated ' + fmtAge(Date.now() - (updatedAtRef.current || Date.now())) + ' ago')
+      // A static label, not a ticking age: interval polls pause while the
+      // window is unfocused (push invalidation still lands instantly), so an
+      // age would both churn and cry wolf. Only a failing feed changes it.
+      snapQuery.dataUpdatedAt
+        ? h('span', {
+          className: 'hermes-ll-updated',
+          'data-stale': snapQuery.isError,
+          title: 'last update ' + fmtClock(snapQuery.dataUpdatedAt)
+        }, snapQuery.isError ? 'offline' : 'live')
+        : null
     ] }),
     !pools.length && !error
       ? h('div', { className: 'hermes-ll-empty' }, 'connecting to load-lock…')
@@ -432,7 +447,7 @@ function LoadLockPane({ ctx }) {
           ? events
             .slice()
             .reverse()
-            .map(ev => h(EventRow, { event: ev, now }, ev.id))
+            .map(ev => h(EventRow, { event: ev }, ev.id))
           : h('div', { className: 'hermes-ll-empty' }, 'no events yet — acquire a permit to see the flow')
       ] })
     ] })

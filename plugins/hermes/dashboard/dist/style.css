@@ -243,6 +243,7 @@
   color: var(--color-muted-foreground, inherit);
   min-width: 4.5rem;
   flex: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .ll-evt-agent {
