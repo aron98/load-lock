@@ -121,20 +121,24 @@
    * event feed                                                          *
    * ------------------------------------------------------------------ */
 
+  // Keyed by the daemon's EventType union (src/shared/protocol.ts).
   var EVENT_TONE = {
     granted: "ll-tone-good",
     claimed: "ll-tone-good",
+    started: "ll-tone-info",
     released: "ll-tone-muted",
+    auto_released: "ll-tone-good",
     queued: "ll-tone-muted",
+    rejoined: "ll-tone-muted",
     offered: "ll-tone-info",
     paused: "ll-tone-warn",
     reclaimed: "ll-tone-warn",
     cancelled: "ll-tone-warn",
-    expired: "ll-tone-warn",
+    offer_expired: "ll-tone-warn",
     declined: "ll-tone-warn",
     daemon_started: "ll-tone-info",
     daemon_recovered: "ll-tone-info",
-    configured: "ll-tone-info"
+    config_changed: "ll-tone-info"
   };
 
   function eventText(ev) {

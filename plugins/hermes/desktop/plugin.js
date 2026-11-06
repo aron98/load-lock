@@ -177,20 +177,24 @@ function pressureTone(pools) {
   return worst
 }
 
+// Keyed by the daemon's EventType union (src/shared/protocol.ts).
 const EVENT_TONE = {
   granted: 'hermes-ll-tone-good',
   claimed: 'hermes-ll-tone-good',
+  started: 'hermes-ll-tone-info',
   released: 'hermes-ll-tone-muted',
+  auto_released: 'hermes-ll-tone-good',
   queued: 'hermes-ll-tone-muted',
+  rejoined: 'hermes-ll-tone-muted',
   offered: 'hermes-ll-tone-info',
   paused: 'hermes-ll-tone-warn',
   reclaimed: 'hermes-ll-tone-warn',
   cancelled: 'hermes-ll-tone-warn',
-  expired: 'hermes-ll-tone-warn',
+  offer_expired: 'hermes-ll-tone-warn',
   declined: 'hermes-ll-tone-warn',
   daemon_started: 'hermes-ll-tone-info',
   daemon_recovered: 'hermes-ll-tone-info',
-  configured: 'hermes-ll-tone-info'
+  config_changed: 'hermes-ll-tone-info'
 }
 
 /* ------------------------------------------------------------------ *
