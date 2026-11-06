@@ -1,0 +1,14 @@
+{
+  "name": "load-lock",
+  "label": "Load Lock",
+  "description": "Live view of the machine-wide heavy-work budget: pool capacity, permit holders, pending offers and queue — one glance across every coding agent sharing this machine.",
+  "icon": "Cpu",
+  "version": "1.7.0",
+  "tab": {
+    "path": "/load-lock",
+    "position": "end"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

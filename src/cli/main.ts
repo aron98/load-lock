@@ -104,9 +104,11 @@ const HELP_GROUPS: { title: string; items: HelpItem[] }[] = [
       { names: ["claim"], desc: "claim an offered permit before its window expires: --offer <token>" },
       { names: ["release"], desc: "release a held permit: --permit <token> [--outcome success|failure]" },
       { names: ["cancel"], desc: "cancel a queued/offered/paused request: --id <request-id> [--admin]" },
+      { names: ["decline"], desc: "decline an offered permit (capacity passes to the next waiter): --offer <token>" },
       { names: ["rejoin"], desc: "rejoin the queue after your offer expired or you declined: --id <request-id>" },
       { names: ["mark-started"], desc: "mark a permit as started when no pid can be attached: --permit <token>" },
       { names: ["attach-pid"], desc: "tie a running process to a permit (auto-release on exit): --permit <token> --pid <pid>" },
+      { names: ["heartbeat"], desc: "renew the untracked-permit lease of an agent (adapters call this periodically): --agent <id>" },
     ],
   },
   {
@@ -344,6 +346,15 @@ async function main(): Promise<void> {
       return;
     }
 
+    // Explicit decline: named counterpart of an ignored offer, for agents
+    // that want to hand capacity to the next waiter immediately (the same
+    // daemon op the decline MCP tool uses).
+    case "decline": {
+      const token = S("offer") || fail("decline: --offer <token> required");
+      out(await withClient((c) => c.request("decline", { offerToken: token })));
+      return;
+    }
+
     case "rejoin": {
       const id = S("id") || fail("rejoin: --id <request-id> required");
       out(await withClient((c) => c.request("rejoin", { requestId: id })));
@@ -360,6 +371,16 @@ async function main(): Promise<void> {
       const token = S("permit") || fail("attach-pid: --permit <token> required");
       const pid = N("pid", 0) || fail("attach-pid: --pid required");
       out(await withClient((c) => c.request("attach_pid", { permitToken: token, pid })));
+      return;
+    }
+
+    // Adapter heartbeat: renews the untracked-permit lease of this agent and
+    // records liveness, exactly like the MCP server's and OpenCode plugin's
+    // automatic heartbeats. Long-lived adapters (e.g. the Hermes plugin)
+    // call this periodically so their sessions' mark_started permits
+    // survive; a dead adapter lets the lease lapse and the daemon reclaims.
+    case "heartbeat": {
+      out(await withClient((c) => c.request("heartbeat", { agentId: S("agent", defaultAgent()) })));
       return;
     }
 
