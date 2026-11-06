@@ -149,9 +149,15 @@ dashboard tab) cover the same jobs.
   `load-lock events --follow` tail to push state changes to an attached
   Desktop (started lazily on first dashboard request, fire-and-forget,
   restarted with backoff if it dies).
-- **Approvals**: all tools are plain local calls and respect whatever
-  approval flow Hermes applies to tool calls; the plugin never bypasses
-  approvals or unattended-mode switches.
+- **Approvals**: `load_lock_run_with_permit` spawns the command the agent
+  passes, so a `pre_tool_call` hook runs it past Hermes's own
+  dangerous-command detector and escalates anything flagged to the same
+  human-approval gate the `terminal` tool uses (allowlist, prompts, cron
+  mode, fail-closed). Ordinary heavy work such as `npm test` is not
+  flagged and never prompts. The detector is imported from
+  `tools.approval_detection`; if it cannot be loaded, every command is
+  escalated. The plugin never bypasses approvals or unattended-mode
+  switches.
 - **Credentials**: none required, none stored.
 - **No Python dependencies** — the plugin uses only the Hermes-provided
   environment (FastAPI for the dashboard routes).

@@ -104,6 +104,9 @@ What it registers:
 - `on_session_end` cancelling the session's queued requests, and a
   background heartbeat thread (interval ≈ `untracked_lease_ms / 3`) so
   untracked permits of live-but-quiet sessions aren't reclaimed.
+- `pre_tool_call` giving `run_with_permit` the `terminal` tool's
+  dangerous-command gate: a command Hermes's detector flags is escalated
+  to the human-approval gate via the `approve` directive.
 - A read-only dashboard tab (`dashboard/`): API routes shell out to
   `status` / `inspect` / `events --since`, the frontend polls them.
 - A desktop half (`desktop/plugin.js`, Hermes Desktop 0.23+): a Load Lock

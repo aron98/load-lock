@@ -10,7 +10,9 @@ runtime copy, or pinned npx — see runtime.py). Provides:
 - hooks: pre_llm_call injects the short policy on the first turn and after
   context compaction (post_compaction re-arms it on 0.23+, a
   history-shrink heuristic covers older builds); on_session_end
-  best-effort-cancels queued requests;
+  best-effort-cancels queued requests; pre_tool_call sends a
+  run_with_permit command Hermes flags as dangerous through the same
+  human-approval gate the terminal tool uses;
 - a background heartbeat that keeps mark_started (untracked) permits of
   living sessions alive, so a dead agent never strands a permit;
 - the ``/load-lock`` slash command and the ``load-lock:agent-guide`` skill.
@@ -78,6 +80,7 @@ def register(ctx) -> None:
         ("pre_llm_call", tools.pre_llm_call),
         ("post_compaction", tools.post_compaction),
         ("on_session_end", tools.on_session_end),
+        ("pre_tool_call", tools.pre_tool_call),
     ):
         try:
             ctx.register_hook(event, callback)

@@ -793,6 +793,40 @@ def post_compaction(**kwargs):
     return None
 
 
+def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, task_id: str = "", **kwargs):
+    """Give load_lock_run_with_permit the terminal tool's dangerous-command gate.
+
+    run_with_permit spawns a model-chosen shell command, so a command
+    Hermes's own detector flags as dangerous is escalated to the
+    human-approval gate through the public ``approve`` directive (same
+    allowlist, prompts, cron mode and fail-closed rules as ``terminal``).
+    Ordinary heavy work (``npm test``) is not flagged and never prompts.
+    If the detector cannot be loaded, every command is escalated instead.
+    """
+    if tool_name != "load_lock_run_with_permit":
+        return None
+    command = _as_str((args or {}).get("command"))
+    if not command:
+        return None
+    try:
+        from tools.approval_detection import detect_dangerous_command
+
+        dangerous, pattern_key, description = detect_dangerous_command(command)
+    except Exception:
+        return {
+            "action": "approve",
+            "message": f"load-lock run_with_permit wants to run: {command[:200]}",
+            "rule_key": "load-lock:run_with_permit",
+        }
+    if not dangerous:
+        return None
+    return {
+        "action": "approve",
+        "message": f"load-lock run_with_permit: {description}",
+        "rule_key": f"load-lock:{pattern_key}",
+    }
+
+
 def on_session_end(**kwargs):
     """Best-effort cleanup: cancel this session's queued/offered/paused
     requests so a finished conversation does not hold queue slots. Held

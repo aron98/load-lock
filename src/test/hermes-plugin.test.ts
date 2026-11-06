@@ -47,13 +47,14 @@ test("hermes plugin: hooks and skill are declared and present", () => {
   const declaredHooks = yamlStringList(manifest, "provides_hooks");
   assert.deepEqual(
     declaredHooks.sort(),
-    ["on_session_end", "post_compaction", "pre_llm_call"],
+    ["on_session_end", "post_compaction", "pre_llm_call", "pre_tool_call"],
     "unexpected provides_hooks",
   );
   const tools = read("tools.py");
   assert.match(tools, /\bdef pre_llm_call\(/, "pre_llm_call handler missing");
   assert.match(tools, /\bdef post_compaction\(/, "post_compaction handler missing");
   assert.match(tools, /\bdef on_session_end\(/, "on_session_end handler missing");
+  assert.match(tools, /\bdef pre_tool_call\(/, "pre_tool_call handler missing");
   assert.match(read("__init__.py"), /register_skill\(/, "skill registration missing");
 });
 
