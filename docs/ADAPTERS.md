@@ -76,6 +76,55 @@ and returns a `permit_token`) as the primary idle mechanism, and to
 `wait_for_completion` (bounded execution-phase sleep) once a job runs.
 Document the remaining gap honestly (see docs/COMPATIBILITY.md).
 
+## Shipped adapter: Hermes Agent (plugins/hermes)
+
+The Hermes plugin is a hybrid: **tier-1-style native plugin** (tools, hooks,
+slash command, skill, dashboard tab registered in-process) with **tier-2
+transport** (each tool shells out to the local `load-lock` CLI in `--json`
+mode instead of speaking the socket protocol from Python). Rationale: one
+runtime to keep honest (the CLI already implements the lifecycle contract,
+exit-code conventions, and `run`), zero Python dependencies, and the same
+daemon either way.
+
+What it registers:
+
+- 19 `load_lock_*` tools (full MCP surface minus `agent_guide`, which ships
+  as the bundled `load-lock:agent-guide` skill), wrapping the CLI with
+  `--agent hermes:<session_id>` derived from handler kwargs. CLI exit codes
+  (68 queued / 69 wait-resolution) map into structured JSON results — tools
+  never raise.
+- A local Python job registry for `run_with_permit` mirroring the MCP
+  server's semantics: spawn via `load-lock run --permit ... -- <cmd>`,
+  output ring buffer, watcher/reaper threads, auto-release on exit,
+  `job_status` / `job_stop` / `wait_for_completion(job_id)`.
+- `pre_llm_call` hook injecting `POLICY_BRIEF` on the first turn and
+  re-injecting after compaction (the `post_compaction` hook on 0.23+,
+  with a shrinking-history heuristic as the fallback for older builds),
+  plus a best-effort machine status line.
+- `on_session_end` cancelling the session's queued requests, and a
+  background heartbeat thread (interval ≈ `untracked_lease_ms / 3`) so
+  untracked permits of live-but-quiet sessions aren't reclaimed.
+- A read-only dashboard tab (`dashboard/`): API routes shell out to
+  `status` / `inspect` / `events --since`, the frontend polls them.
+- A desktop half (`desktop/plugin.js`, Hermes Desktop 0.23+): a Load Lock
+  tiling pane on the workspace's right edge, an `LL used/total` status-bar
+  chip colored by pressure, and a command-palette row — all fed by the
+  same routes through `ctx.rest`. Polling (2s) stays the source of truth;
+  the backend additionally tails `events --follow` and broadcasts
+  `plugin.load-lock.state.changed` (0.23+ plugin events) so an attached
+  Desktop invalidates instantly.
+
+Runtime resolution mirrors `plugins/claude-code/scripts/load-lock.mjs`:
+`load_lock_command` setting → `load-lock` on PATH (version-checked) →
+newest state-dir copy → optional pinned `npx` fallback (`auto_install`,
+off by default).
+
+Known gap, documented honestly: Hermes has no idle-wakeup/synthetic
+message hook, so offers are surfaced tool-boundary only (every result
+embeds `pending`) and agents are steered to `wait_for_turn` — the same
+baseline as tier 3. `docs/COMPATIBILITY.md` labels it live-verified
+against Hermes 0.23.0 (agent tools also verified on 0.19.0).
+
 ## Protocol quick reference
 
 Wire protocol: NDJSON over a Unix domain socket (named pipe on Windows);

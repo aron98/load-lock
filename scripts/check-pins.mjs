@@ -25,6 +25,8 @@ export const PACKAGE_NAME = "@aron98/load-lock";
  *                                        in the file (`@latest` etc. ignored)
  *  - { path, kind: "json", key: "a.b" }  a JSON string field (dotted path),
  *                                        e.g. plugin.json `version`
+ *  - { path, kind: "yaml", key: "a" }    a top-level YAML scalar field,
+ *                                        e.g. plugin.yaml `version`
  * A declared file that is missing, or has no pin, is an error: a declared
  * pin that silently disappears would otherwise pass forever.
  */
@@ -37,6 +39,10 @@ export const PINNED = [
   { path: "ace/mcp/mcp.json", kind: "spec" },
   { path: "plugins/claude-code/scripts/load-lock.mjs", kind: "spec" },
   { path: "plugins/claude-code/.claude-plugin/plugin.json", kind: "json", key: "version" },
+  { path: "plugins/hermes/plugin.yaml", kind: "yaml", key: "version" },
+  { path: "plugins/hermes/dashboard/manifest.json", kind: "json", key: "version" },
+  { path: "plugins/hermes/runtime.py", kind: "spec" },
+  { path: "plugins/hermes/skills/load-lock/SKILL.md", kind: "spec" },
 ];
 
 const SEMVER = String.raw`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?`;
@@ -70,6 +76,13 @@ export function scanPins(root, pinned = PINNED) {
       }
       if (typeof value !== "string") errors.push(`${entry.path}: no string field "${entry.key}"`);
       else pins.push({ path: entry.path, key: entry.key, found: value });
+    } else if (entry.kind === "yaml") {
+      // Top-level scalar field only (`key: value`, optional quotes) — enough
+      // for plugin manifests; nested keys would need a real YAML parser.
+      const re = new RegExp(`^${escapeRe(entry.key)}:[ \\t]*"?(${SEMVER})"?[ \\t]*$`, "m");
+      const m = text.match(re);
+      if (!m) errors.push(`${entry.path}: no version field "${entry.key}"`);
+      else pins.push({ path: entry.path, key: entry.key, found: m[1] });
     } else {
       errors.push(`${entry.path}: unknown pin kind ${JSON.stringify(entry.kind)}`);
     }
@@ -118,6 +131,10 @@ export function writePins(root, version, pinned = PINNED) {
         const indent = text.match(/^[ \t]+(?=")/m)?.[0] ?? "  ";
         next = JSON.stringify(json, null, indent) + (text.endsWith("\n") ? "\n" : "");
       }
+    } else if (entry.kind === "yaml") {
+      // Replace the value textually so the file's formatting survives.
+      const pair = new RegExp(`^(${escapeRe(entry.key)}:[ \\t]*"?)(?:${SEMVER})("?[ \\t]*$)`, "m");
+      if (pair.test(text)) next = text.replace(pair, `$1${version}$2`);
     }
     if (next !== text) {
       writeFileSync(file, next);

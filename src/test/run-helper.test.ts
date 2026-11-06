@@ -54,6 +54,56 @@ test("run: exits 68 (queued) while another process holds the permit; FIFO contin
   }
 });
 
+test("decline: CLI declines an offer and capacity passes on; heartbeat renews a lease", async () => {
+  const d = await startDaemon();
+  const c = d.client();
+  try {
+    await c.connect();
+    // A holds; B queues; release A -> B is offered.
+    const acqA = await runCli(d, ["acquire", "--agent", "agentA", "--op-key", "a1", "--reason", "hold", "--json"]);
+    assert.equal(acqA.code, 0);
+    const aPermit = (JSON.parse(acqA.stdout) as any).entry.permitToken;
+    const acqB = await runCli(d, ["acquire", "--agent", "agentB", "--op-key", "b1", "--reason", "waiter", "--json"]);
+    assert.equal(acqB.code, 68);
+    const bReqId = (JSON.parse(acqB.stdout) as any).entry.requestId;
+    await c.request("release", { permitToken: aPermit });
+    const pend = (await c.request("pending", { agentId: "agentB" })) as any;
+    assert.equal(pend.offers.length, 1, "B holds an offer after A releases");
+    const offer = pend.offers[0].offerToken;
+
+    // The new CLI command declines it explicitly.
+    const dec = await runCli(d, ["decline", "--offer", offer, "--json"]);
+    assert.equal(dec.code, 0, `decline stdout: ${dec.stdout}\nstderr: ${dec.stderr}`);
+    assert.equal((JSON.parse(dec.stdout) as any).ok, true);
+    const st = (await c.request("status", {})) as any;
+    assert.equal(st.pools[0].used, 0, "declined offer frees the reserved capacity");
+    assert.equal(st.pools[0].paused.length, 1, "B's request is paused after declining");
+
+    // rejoin (already covered) puts B back; instead exercise heartbeat: A
+    // claims a fresh permit and marks it started (untracked lease), then the
+    // CLI heartbeat command renews the lease under an explicit agent id.
+    const acqC = await runCli(d, ["acquire", "--agent", "agentA", "--op-key", "a2", "--reason", "untracked", "--json"]);
+    assert.equal(acqC.code, 0, `reacquire stdout: ${acqC.stdout}`);
+    const cPermit = (JSON.parse(acqC.stdout) as any).entry.permitToken;
+    await runCli(d, ["mark-started", "--permit", cPermit, "--json"]);
+    const hb = await runCli(d, ["heartbeat", "--agent", "agentA", "--json"]);
+    assert.equal(hb.code, 0, `heartbeat stdout: ${hb.stdout}\nstderr: ${hb.stderr}`);
+    assert.equal((JSON.parse(hb.stdout) as any).ok, true);
+    const pendA = (await c.request("pending", { agentId: "agentA" })) as any;
+    assert.equal(pendA.held.length, 1, "the untracked permit is still held after heartbeat");
+    await c.request("release", { permitToken: cPermit });
+
+    // B rejoins and cleans up its paused request.
+    await runCli(d, ["rejoin", "--id", bReqId, "--json"]);
+    const dec2 = (await c.request("pending", { agentId: "agentB" })) as any;
+    const newOffer = dec2.offers[0]?.offerToken;
+    assert.ok(newOffer, "B is offered again after rejoin");
+    await runCli(d, ["claim", "--offer", newOffer, "--json"]);
+  } finally {
+    await d.stop();
+  }
+});
+
 test("wait: bounded blocking offer-watcher for scriptable flows", async () => {
   const d: DaemonHandle = await startDaemon();
   const c = d.client();

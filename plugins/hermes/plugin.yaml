@@ -1,0 +1,86 @@
+name: load-lock
+version: 1.7.0
+description: >-
+  Machine-wide heavy-work budget for parallel coding agents. Coordinates
+  builds, test suites and big compiles across every agent on the machine —
+  Hermes, Claude Code, OpenCode, MCP clients, plain CLI users — through a
+  shared counting semaphore with a FIFO queue, expiring offers, honest
+  bounded sleeps (wait for your turn, wait for the job to finish),
+  background jobs with automatic permit release, machine inspection and
+  cooperative capacity tuning.
+author: aron98
+kind: standalone
+provides_tools:
+  - load_lock_acquire
+  - load_lock_claim
+  - load_lock_release
+  - load_lock_cancel
+  - load_lock_decline
+  - load_lock_rejoin
+  - load_lock_wait_for_turn
+  - load_lock_pending
+  - load_lock_status
+  - load_lock_inspect_machine
+  - load_lock_get_config
+  - load_lock_configure
+  - load_lock_attach_pid
+  - load_lock_mark_started
+  - load_lock_run_with_permit
+  - load_lock_job_status
+  - load_lock_job_stop
+  - load_lock_wait_for_completion
+  - load_lock_agent_guide
+provides_hooks:
+  - pre_llm_call
+  - post_compaction
+  - on_session_end
+requires_env: []
+
+# ---- forward-compatibility fields (used by newer Hermes and the catalog;
+# ---- silently ignored by Hermes versions that do not parse them yet) ----
+requires_hermes: ">=0.23.0"
+config_schema:
+  load_lock_command:
+    type: str
+    label: load-lock command override
+    description: >-
+      Override the load-lock launcher (e.g. /usr/local/bin/load-lock or a
+      wrapper command). By default the plugin resolves load-lock from PATH,
+      then the newest known runtime copy in the state dir, then pinned npx
+      when auto_install is on.
+    default: ""
+  auto_install:
+    type: bool
+    label: Allow npx fallback
+    description: >-
+      When no local load-lock >= the pinned version is found, fetch the
+      pinned npm package via npx on first use (a network call to the npm
+      registry). Off by default.
+    default: false
+  pool:
+    type: str
+    label: Default pool
+    description: Resource pool permits are acquired from (built-in "heavy").
+    default: heavy
+  heartbeat:
+    type: bool
+    label: Adapter heartbeat
+    description: >-
+      Automatically renew untracked-permit leases for active Hermes
+      sessions so a dead agent never strands a permit (recommended).
+    default: true
+  inject_policy:
+    type: bool
+    label: Inject policy brief
+    description: >-
+      Inject the short load-lock policy into the first turn of each session
+      and again after context compaction.
+    default: true
+tags:
+  - coordination
+  - resource-management
+  - builds
+  - testing
+  - multi-agent
+license: MIT
+homepage: https://github.com/aron98/load-lock

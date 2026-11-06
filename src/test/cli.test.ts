@@ -32,7 +32,7 @@ test("load-lock help prints a grouped one-screen usage", async () => {
   }
   // Every command (primary names and aliases) gets a one-liner.
   for (const name of [
-    "acquire", "claim", "release", "cancel", "rejoin", "mark-started", "attach-pid",
+    "acquire", "claim", "release", "cancel", "decline", "rejoin", "mark-started", "attach-pid", "heartbeat",
     "wait", "run", "status", "pending", "events", "inspect", "config", "configure",
     "dashboard", "top", "service", "doctor", "recover", "install", "uninstall",
     "hook", "agent-guide", "help",

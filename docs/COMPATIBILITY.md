@@ -36,6 +36,7 @@ Status labels mean exactly this:
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | **OpenCode** (v2) | Native plugin, `load_lock_*` (better than MCP) | Context hook every model call | Yes (hook re-fires per model call) | Yes — `session.synthetic` at execution boundary (live-verified; never interrupts in-flight shell) | Yes (live-verified) | Full: `run_with_permit` tracked jobs + session heartbeats | **Implemented + live-verified** |
 | **Claude Code** | MCP `mcp__load-lock__*` (user scope) — live-verified round-trip | `SessionStart` hook plain-stdout context (live-verified: model quoted the brief verbatim) | Yes (SessionStart matcher `compact`) — live-verified after `/compact` | Yes — `Stop` hook decision-block + async `await-offer` (`asyncRewake`), both live-verified | Yes, via asyncRewake (live-verified; the wake text itself is not rendered by the TTY, but the wake drives the full claim lifecycle) | Full via MCP `run_with_permit` + server heartbeats (live-verified incl. a job outliving the claude process) | **Implemented + live-verified** |
+| **Hermes Agent** | Native plugin, `load_lock_*` (19 tools wrapping the CLI) | `pre_llm_call` hook, first turn + after compaction | Yes — `post_compaction` hook (0.23+), history-shrink heuristic fallback on older builds | No idle-wakeup hook — tool-boundary `pending` in every result + `wait_for_turn` (documented gap, tier-3 baseline) | No | Full: local job registry for `run_with_permit`, per-session heartbeat thread, `on_session_end` queue cleanup | **Implemented + live-verified** (validate + doctor + live flow on 0.23.0; tool surface also verified on 0.19.0) |
 | **Codex CLI** | MCP `mcp__load-lock__*` (config.toml) | `SessionStart` + `SubagentStart` additionalContext; `~/.codex/AGENTS.md` | Yes (SessionStart matcher `compact`) | Yes — `Stop` hook `decision:"block"` continuation | Partial: async background hooks do NOT start a new turn (documented limitation); stop-hook covers turn boundaries | Full via MCP `run_with_permit` + server heartbeats | **Implemented + live-verified** (interactive TUI in Docker; exec-mode MCP blocked upstream — see Tier 2 notes) |
 | **Gemini CLI** | Yes (`settings.json` mcpServers, first-class installer) | `GEMINI.md` global (config `context.fileName`) | Via global GEMINI.md (always loaded) | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **GitHub Copilot CLI** | Yes (`~/.copilot/mcp-config.json`, merge-only installer; verify with `copilot mcp list`) | `~/.copilot/copilot-instructions.md` (marked section) | Via global instructions file | Hooks reported in ecosystem content but **not verified in official docs** — none installed; `wait_for_turn` bounded sleep is the primary idle mechanism | Unverified | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
@@ -59,6 +60,7 @@ as `plugin`, `loose`, `MCP only`, `skill only` or `not installed`.
 | Harness | MCP server (1) | Plugin (2) | Loose `install` | Highest rung |
 | --- | --- | --- | --- | --- |
 | **OpenCode** | generic stdio registration works; the plugin's native `load_lock_*` tools are better | npm plugin `@aron98/load-lock` (also listed on ACE via `ace/opencode/`) — live-verified | `install --harness opencode` registers that same npm plugin | **plugin** |
+| **Hermes Agent** | generic stdio registration works | `plugins/hermes` native plugin (catalog entry: repo `aron98/load-lock`, subdir `plugins/hermes`) — enable with `hermes plugins enable load-lock` | none (the plugin is the artifact; no loose installer shipped) | **plugin** |
 | **Claude Code** | ACE `ace/mcp` or a manual stdio registration | `load-lock-plugin` from this repo's marketplace — contract-tested, passes `claude plugin validate --strict`; not yet live-verified as a plugin (pending #63); ACE's skills-dir install unverified (#63/#66) | `install --harness claude-code`: MCP + hooks + `CLAUDE.md` section + skill — live-verified in Docker | **plugin** (loose gives the same capability) |
 | **Codex CLI** | `[mcp_servers]` entry in `~/.codex/config.toml` | none shipped | `install --harness codex`: MCP + hooks + `AGENTS.md` section — live-verified in Docker | **loose** |
 | **Cursor** | project `.cursor/mcp.json` | none shipped | `install --harness cursor --project <dir>`: MCP + stop hook + rule — contract-tested | **loose** |
@@ -427,6 +429,7 @@ UI** — where no UI surface exists, we say so rather than claim parity.
 | Harness | In-harness dashboard | Also available |
 | --- | --- | --- |
 | **OpenCode** | Native TUI panel: `/load-lock` opens `load-lock.dashboard` **in-window** as a side panel (also opened by clicking the sidebar widget; deliberately **not** bound to any key — issue #28: the old `gl` sequence swallowed plain `g` typing, and the candidate `ctrl+g` is the host's `session.first` default) with pools, holder cards, offer claim-window countdowns, queue, paused, event feed, `inspect_machine`; home-footer `lock 1/1` indicator on the home screen plus a clickable, health-colored `load-lock 0/3` widget in the session sidebar; `x` force-release behind select + confirm. Implemented as the package's `./tui` companion plugin (main plugin unchanged). Live-verified: opencode 2.0.29 (panel render, palette/slash command, confirm-gated force-release) and opencode 2.0.32 in a real pty (sidebar widget render, click-to-open, in-window presentation, plain `g` reaches the composer, `ctrl+g` not intercepted by load-lock). | `load-lock dashboard` (alias `top`) |
+| **Hermes Agent** | Native plugin surfaces, all read-only over the same API routes: a **Load Lock tab** in `hermes dashboard` (browser/webapp) with capacity bars, holders, offer countdowns, queue and activity feed; on Hermes Desktop (0.23+) a **Load Lock tiling pane** on the workspace's right edge, an `LL used/total` **status-bar chip** colored by pressure (click reveals the pane) and an **Open Load Lock** palette row (desktop half loads disabled — enable under Capabilities ▸ Plugins). Updates poll at 2s with instant invalidation via the backend's `plugin.load-lock.state.changed` broadcast. | `load-lock dashboard` (alias `top`) |
 | **Claude Code** | None in-app — load-lock ships no in-app view for Claude Code: `load-lock-plugin` bundles the MCP server + hooks only, and the loose install adds no UI either. The model can report status via the load-lock `status` MCP tool at tool boundaries, and each `SessionStart` hook injects a one-line machine summary. | `load-lock dashboard` (any terminal) |
 | **Codex CLI** | None in-app — same reason. `load_lock_status` MCP tool; `SessionStart`/`SubagentStart` machine summary. | `load-lock dashboard` (alias `top`) |
 | **Gemini CLI** | None in-app (no hooks, no UI plugin surface). `load_lock_status` MCP tool at tool boundaries. | `load-lock dashboard` (alias `top`) |
@@ -480,6 +483,7 @@ Labels stay human-readable: session-derived ids get a short holder label
 | Harness | Identity | Notes |
 | --- | --- | --- |
 | OpenCode | plugin context `sessionID` (also MCP `_meta` when used); CLI via `OPENCODE_SESSION_ID` (same id) | automatic |
+| Hermes | plugin handlers derive `hermes:<session_id>` from tool-call kwargs (falls back to task_id, else `hermes:pid-N`); `on_session_end` looks up the same id | automatic |
 | Claude Code | hooks get `session_id`; CLI and MCP server via `CLAUDE_CODE_SESSION_ID`, else the harness ancestor; MCP tools also take explicit `agent_id` | automatic; explicit `agent_id` still wins |
 | Codex | hooks get `session_id`; CLI and MCP server via harness ancestor process; MCP tools also take explicit `agent_id` | same |
 | Cursor | hooks get `conversation_id` (no `cwd` — `workspace_roots[0]` identifies the request); CLI and MCP server via harness ancestor process; MCP tools also take explicit `agent_id` | same |
@@ -498,7 +502,11 @@ Labels stay human-readable: session-derived ids get a short holder label
 
 - Live-verified: OpenCode (full adapter, including wakeup); Claude Code
   (full adapter in Docker: policy injection, compact restore, Stop-hook and
-  asyncRewake wakeup paths, subagents, background-job cleanup); Codex CLI
+  asyncRewake wakeup paths, subagents, background-job cleanup); Hermes
+  Agent 0.23.0 (native plugin: `hermes plugins validate` + `doctor` clean,
+  live acquire→run→release flow, dashboard tab over HTTP, and the desktop
+  half's pane/chip/palette source-level verification — agent tool surface
+  also verified on 0.19.0); Codex CLI
   (Docker, interactive TUI: policy injection, MCP round-trip, FIFO queueing
   behind a CLI holder, Stop-hook decision-block wakeup; exec-mode MCP
   injection blocked upstream — see Tier 2 notes); omac 0.11.0 (sandbox
