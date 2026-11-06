@@ -34,6 +34,24 @@ This plugin brings that budget into Hermes:
   view docks as a tiling pane on the workspace's right edge, a `LL 2/3`
   chip in the status bar (colored by pressure, click to open the pane),
   and an "Open Load Lock" command-palette row.
+- **Approval parity** — `load_lock_run_with_permit` goes through the same
+  dangerous-command approval gate as Hermes's `terminal` tool.
+
+## Screenshots
+
+Hermes waits its turn: both `heavy` permits are held by other agents, so
+its test run queues (`wait_for_turn`) instead of piling on.
+
+![Hermes Desktop: Hermes queued behind other agents in the Load Lock pane](docs/01-desktop-queued.png)
+
+Its turn came, the suite ran under the permit, and the permit was released
+automatically when the job exited.
+
+![Hermes Desktop: tests passed, permit auto-released](docs/02-desktop-done.png)
+
+| Desktop pane | Dashboard tab |
+| --- | --- |
+| ![Load Lock pane: pools, holders, queue, activity](docs/03-pane.png) | ![Load Lock tab in hermes dashboard](docs/04-dashboard-tab.png) |
 
 ## Install
 
