@@ -59,9 +59,9 @@ const MAX_EVENTS = 40
 const CSS = `
 .hermes-ll-pane{display:flex;flex-direction:column;gap:10px;height:100%;min-height:0;padding:10px 12px;font-size:12px;color:var(--ui-text-primary)}
 .hermes-ll-scroll{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:10px}
-.hermes-ll-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
-.hermes-ll-title{font-weight:600;letter-spacing:-.01em}
-.hermes-ll-machine{font-size:11px;color:var(--ui-text-tertiary);cursor:help;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.hermes-ll-head{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;min-width:0}
+.hermes-ll-title{font-weight:600;letter-spacing:-.01em;white-space:nowrap;flex:none}
+.hermes-ll-machine{font-size:11px;color:var(--ui-text-tertiary);cursor:help;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
 .hermes-ll-updated{margin-left:auto;font-size:11px;color:var(--ui-text-tertiary);white-space:nowrap;flex:none}
 .hermes-ll-chip{display:inline-flex;height:100%;align-items:center;gap:4px;padding:0 6px;font-size:11px;line-height:1;color:var(--ui-text-tertiary);background:none;border:0;cursor:pointer;font-variant-numeric:tabular-nums}
 .hermes-ll-chip:hover{background:var(--chrome-action-hover);color:var(--ui-text-primary)}
@@ -411,10 +411,15 @@ function LoadLockPane({ ctx }) {
     jsxs('div', { className: 'hermes-ll-head', children: [
       h('span', { className: 'hermes-ll-title' }, 'Load Lock'),
       machineLabel
-        ? h('span', { className: 'hermes-ll-machine', title: (pressure && pressure.note) || '' }, machineLabel)
+        ? h('span', {
+          className: 'hermes-ll-machine',
+          title: [machineLabel, pressure && pressure.note].filter(Boolean).join(' — ')
+        }, machineLabel)
         : null,
+      // Stable text across refetches: swapping in a shorter placeholder
+      // re-flowed the header and made everything below it jump every poll.
       h('span', { className: 'hermes-ll-updated' },
-        snapQuery.isFetching ? '…' : 'updated ' + fmtAge(Date.now() - (updatedAtRef.current || Date.now())) + ' ago')
+        'updated ' + fmtAge(Date.now() - (updatedAtRef.current || Date.now())) + ' ago')
     ] }),
     !pools.length && !error
       ? h('div', { className: 'hermes-ll-empty' }, 'connecting to load-lock…')
