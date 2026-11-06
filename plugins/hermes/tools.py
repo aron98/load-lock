@@ -7,7 +7,8 @@ JSON envelope that the model can rely on:
   {"ok": <bool>, "exit_code": <int>, ...<merged CLI JSON fields>...}
 
 The CLI's exit-code convention carries queue semantics through the envelope:
-0 ok; 64 usage; 65 protocol; 68 queued / still running (JSON still printed);
+0 ok; 64 usage; 65 protocol; 68 queued / still running (JSON still printed,
+and ok stays true — a queue position is not a failure);
 69 offer or wait resolution (e.g. paused, cancelled); 70 internal. Handlers
 never raise — every failure path is a JSON result.
 

@@ -326,7 +326,9 @@ def call_cli(
     """Run the CLI and return a snake_cased envelope: ok/exit_code + merged fields.
 
     The envelope always carries exit_code (the CLI's queue/offer conventions:
-    68 = queued / still running, 69 = offer or wait resolution). When the CLI
+    68 = queued / still running, 69 = offer or wait resolution). 68 counts as
+    ok: being queued or still running is a normal outcome, not a failed call
+    (Hermes UIs flag any ``ok: false`` result as a failed tool call). When the CLI
     printed a JSON object, its fields are merged into the envelope top level
     (queued results DO print JSON); non-JSON text stays under "result".
     """
@@ -343,7 +345,7 @@ def call_cli(
     else:
         data = None
     envelope: Dict[str, Any] = {
-        "ok": code == 0,
+        "ok": code in (0, EXIT_PENDING),
         "exit_code": code,
     }
     if isinstance(data, dict):
