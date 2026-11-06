@@ -120,7 +120,8 @@ CLI is missing.
 
 Verified against **Hermes Agent 0.23.0** (`hermes plugins validate` +
 `doctor` + live session) and against 0.19.0 (PyPI release) for the agent
-tool surface. `requires_hermes: ">=0.19.0"`: on older builds the newer
+tool surface. `requires_hermes: ">=0.23.0"`: the floor matches what is
+fully tested (desktop half + `post_compaction`). On older builds the newer
 hooks (e.g. `post_compaction`) and the desktop half simply don't activate,
 and the documented fallbacks (history-shrink compaction detection, the
 dashboard tab) cover the same jobs.

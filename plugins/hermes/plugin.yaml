@@ -38,7 +38,7 @@ requires_env: []
 
 # ---- forward-compatibility fields (used by newer Hermes and the catalog;
 # ---- silently ignored by Hermes versions that do not parse them yet) ----
-requires_hermes: ">=0.19.0"
+requires_hermes: ">=0.23.0"
 config_schema:
   load_lock_command:
     type: str
