@@ -67,7 +67,7 @@ const CSS = `
 .hermes-ll-chip{display:inline-flex;height:100%;align-items:center;gap:4px;padding:0 6px;font-size:11px;line-height:1;color:var(--ui-text-tertiary);background:none;border:0;cursor:pointer;font-variant-numeric:tabular-nums}
 .hermes-ll-chip:hover{background:var(--chrome-action-hover);color:var(--ui-text-primary)}
 .hermes-ll-error{border:1px solid color-mix(in srgb,#ef4444 55%,transparent);background:color-mix(in srgb,#ef4444 12%,transparent);color:#fca5a5;padding:6px 10px;border-radius:8px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.hermes-ll-pool{display:flex;flex-direction:column;gap:2px;border:1px solid var(--ui-border,#8884);border-radius:8px;padding:8px 10px}
+.hermes-ll-pool{flex:none;display:flex;flex-direction:column;gap:2px;border:1px solid var(--ui-border,#8884);border-radius:8px;padding:8px 10px}
 .hermes-ll-pool-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .hermes-ll-pool-name{font-weight:600;font-size:12px}
 .hermes-ll-badge{display:inline-flex;align-items:center;font-size:10px;line-height:1.5;padding:1px 7px;border-radius:9999px;border:1px solid transparent;white-space:nowrap;flex:none}
@@ -91,10 +91,11 @@ const CSS = `
 .hermes-ll-age{color:var(--ui-text-tertiary);font-size:10px;flex:none;min-width:2.75rem;text-align:right;font-variant-numeric:tabular-nums}
 .hermes-ll-empty{color:var(--ui-text-tertiary);font-size:11px;padding:2px 0}
 .hermes-ll-evt{display:flex;align-items:baseline;gap:6px;font-size:11px;padding:1px 0;min-width:0}
-.hermes-ll-evt-time{color:var(--ui-text-tertiary);min-width:3.75rem;flex:none;font-variant-numeric:tabular-nums}
+.hermes-ll-evt-time{color:var(--ui-text-tertiary);min-width:2.5rem;flex:none;font-variant-numeric:tabular-nums}
 .hermes-ll-evt-agent{font-family:var(--font-mono,ui-monospace,monospace);font-size:10px;color:var(--ui-text-tertiary);flex:none;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hermes-ll-evt-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text-secondary)}
-.hermes-ll-events{border:1px solid var(--ui-border,#8884);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:1px}
+.hermes-ll-events{border:1px solid var(--ui-border,#8884);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:1px;flex:0 1 auto;min-height:6rem;overflow:hidden}
+.hermes-ll-evt-list{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:flex;flex-direction:column;gap:1px}
 `
 
 /* ------------------------------------------------------------------ *
@@ -121,13 +122,13 @@ function fmtAge(ms) {
   return d + 'd ' + hr + 'h'
 }
 
-// Wall-clock time of an event: unlike an age, it never changes once
-// rendered, so the feed doesn't churn every second. Older than today
-// gets a date prefix.
+// Wall-clock time of an event (24h HH:MM): unlike an age, it never
+// changes once rendered, so the feed doesn't churn every second. Older
+// than today gets a date prefix; the full timestamp is in the tooltip.
 function fmtClock(ts) {
   if (ts == null || Number.isNaN(ts)) return '—'
   const d = new Date(ts)
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
   return d.toDateString() === new Date().toDateString()
     ? time
     : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time
@@ -444,10 +445,10 @@ function LoadLockPane({ ctx }) {
       jsxs('div', { className: 'hermes-ll-events', children: [
         h(SectionLabel, { children: 'Recent activity' }),
         events.length
-          ? events
+          ? h('div', { className: 'hermes-ll-evt-list' }, events
             .slice()
             .reverse()
-            .map(ev => h(EventRow, { event: ev }, ev.id))
+            .map(ev => h(EventRow, { event: ev }, ev.id)))
           : h('div', { className: 'hermes-ll-empty' }, 'no events yet — acquire a permit to see the flow')
       ] })
     ] })

@@ -71,13 +71,13 @@
     return d + "d " + hr + "h";
   }
 
-  // Wall-clock time of an event: unlike an age it never changes once
-  // rendered, so the feed doesn't churn every second. Older than today
-  // gets a date prefix.
+  // Wall-clock time of an event (24h HH:MM): unlike an age it never
+  // changes once rendered, so the feed doesn't churn every second. Older
+  // than today gets a date prefix; the full timestamp is in the tooltip.
   function fmtClock(ts) {
     if (ts == null || isNaN(ts)) return "—";
     var d = new Date(ts);
-    var time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    var time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     return d.toDateString() === new Date().toDateString()
       ? time
       : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + time;
