@@ -4,7 +4,7 @@
  * Runtime-loaded plain ESM: this file ships as raw text and goes through the
  * desktop's plugin pipeline (import allowlist → SDK/react shim blobs → blob
  * import → register). No build step, no JSX syntax — every element is built
- * with jsx()/jsxs() from react/jsx-runtime, and ONLY '@hermes/plugin-sdk'
+ * with h()/jsxs() from react/jsx-runtime, and ONLY '@hermes/plugin-sdk'
  * and 'react*' may be imported.
  *
  * What it contributes:
@@ -37,6 +37,14 @@ import {
 } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
+
+// createElement-style helper. jsx() from the automatic JSX runtime only takes
+// children via props.children — positional children go through here.
+function h(type, props, ...children) {
+  const p = { ...(props || {}) }
+  if (children.length) p.children = children.length === 1 ? children[0] : children
+  return jsxs(type, p)
+}
 
 const ID = 'load-lock'
 const PANE_ID = `${ID}:pane`
@@ -233,11 +241,11 @@ function HolderRow({ entry: e, now }) {
     className: 'hermes-ll-row',
     title,
     children: [
-      jsx('span', { className: 'hermes-ll-dot', 'data-run': running, 'data-hold': !running, 'aria-hidden': true }),
-      jsx('span', { className: 'hermes-ll-agent' }, e.agentLabel || shortAgent(e.agentId)),
-      jsx('span', { className: 'hermes-ll-reason' }, e.reason || e.opKey || ''),
-      running ? jsx('span', { className: 'hermes-ll-badge hermes-ll-tone-good' }, 'running') : null,
-      jsx('span', { className: 'hermes-ll-age' }, fmtAge(e.heldFor != null ? e.heldFor : now - (e.since || now)))
+      h('span', { className: 'hermes-ll-dot', 'data-run': running, 'data-hold': !running, 'aria-hidden': true }),
+      h('span', { className: 'hermes-ll-agent' }, e.agentLabel || shortAgent(e.agentId)),
+      h('span', { className: 'hermes-ll-reason' }, e.reason || e.opKey || ''),
+      running ? h('span', { className: 'hermes-ll-badge hermes-ll-tone-good' }, 'running') : null,
+      h('span', { className: 'hermes-ll-age' }, fmtAge(e.heldFor != null ? e.heldFor : now - (e.since || now)))
     ]
   })
 }
@@ -248,10 +256,10 @@ function OfferRow({ entry: e, now }) {
     className: 'hermes-ll-row',
     title: e.agentId || '',
     children: [
-      jsx('span', { className: 'hermes-ll-dot', 'data-info': true, 'aria-hidden': true }),
-      jsx('span', { className: 'hermes-ll-agent' }, e.agentLabel || shortAgent(e.agentId)),
-      jsx('span', { className: 'hermes-ll-reason' }, e.reason || 'offered — claim it (offers expire)'),
-      jsx('span', { className: 'hermes-ll-badge hermes-ll-tone-info' }, expires ? 'expires in ' + fmtAge(expires - now) : 'offered')
+      h('span', { className: 'hermes-ll-dot', 'data-info': true, 'aria-hidden': true }),
+      h('span', { className: 'hermes-ll-agent' }, e.agentLabel || shortAgent(e.agentId)),
+      h('span', { className: 'hermes-ll-reason' }, e.reason || 'offered — claim it (offers expire)'),
+      h('span', { className: 'hermes-ll-badge hermes-ll-tone-info' }, expires ? 'expires in ' + fmtAge(expires - now) : 'offered')
     ]
   })
 }
@@ -261,16 +269,16 @@ function QueueRow({ entry: e }) {
     className: 'hermes-ll-row',
     title: e.agentId || '',
     children: [
-      jsx('span', { className: 'hermes-ll-badge hermes-ll-tone-muted' }, '#' + (e.position != null ? e.position : '?')),
-      jsx('span', { className: 'hermes-ll-agent' }, e.agentLabel || shortAgent(e.agentId)),
-      jsx('span', { className: 'hermes-ll-reason' }, e.reason || ''),
-      e.paused ? jsx('span', { className: 'hermes-ll-badge hermes-ll-tone-warn' }, 'paused') : null
+      h('span', { className: 'hermes-ll-badge hermes-ll-tone-muted' }, '#' + (e.position != null ? e.position : '?')),
+      h('span', { className: 'hermes-ll-agent' }, e.agentLabel || shortAgent(e.agentId)),
+      h('span', { className: 'hermes-ll-reason' }, e.reason || ''),
+      e.paused ? h('span', { className: 'hermes-ll-badge hermes-ll-tone-warn' }, 'paused') : null
     ]
   })
 }
 
 function SectionLabel({ children }) {
-  return jsx('div', { className: 'hermes-ll-section' }, children)
+  return h('div', { className: 'hermes-ll-section' }, children)
 }
 
 function PoolCard({ pool, now }) {
@@ -286,29 +294,29 @@ function PoolCard({ pool, now }) {
     className: 'hermes-ll-pool',
     children: [
       jsxs('div', { className: 'hermes-ll-pool-head', children: [
-        jsx('span', { className: 'hermes-ll-pool-name' }, pool.pool),
-        jsx('span', {
+        h('span', { className: 'hermes-ll-pool-name' }, pool.pool),
+        h('span', {
           className:
             'hermes-ll-badge ' +
             (used >= cap ? 'hermes-ll-tone-warn' : used > 0 ? 'hermes-ll-tone-info' : 'hermes-ll-tone-good')
         }, used + ' / ' + cap + ' in use')
       ] }),
-      jsx('div', { className: 'hermes-ll-bar', title: used + ' of ' + cap + ' permits in use', children:
-        jsx('div', {
+      h('div', { className: 'hermes-ll-bar', title: used + ' of ' + cap + ' permits in use', children:
+        h('div', {
           className: 'hermes-ll-bar-fill',
           'data-mid': ratio >= 0.67 && ratio < 1,
           'data-full': ratio >= 1,
           style: { width: Math.min(100, ratio * 100) + '%' }
         }) }),
-      idle ? jsx('div', { className: 'hermes-ll-empty' }, 'idle — full capacity available for heavy work') : null,
-      holders.length ? jsx(SectionLabel, { children: 'Holders' }) : null,
-      ...holders.map(e => jsx(HolderRow, { entry: e, now }, e.requestId)),
-      offers.length ? jsx(SectionLabel, { children: 'Offers' }) : null,
-      ...offers.map(e => jsx(OfferRow, { entry: e, now }, e.requestId)),
-      queue.length ? jsx(SectionLabel, { children: 'Queue' }) : null,
-      ...queue.map(e => jsx(QueueRow, { entry: e }, e.requestId)),
-      paused.length ? jsx(SectionLabel, { children: 'Paused' }) : null,
-      ...paused.map(e => jsx(QueueRow, { entry: e }, e.requestId))
+      idle ? h('div', { className: 'hermes-ll-empty' }, 'idle — full capacity available for heavy work') : null,
+      holders.length ? h(SectionLabel, { children: 'Holders' }) : null,
+      ...holders.map(e => h(HolderRow, { entry: e, now }, e.requestId)),
+      offers.length ? h(SectionLabel, { children: 'Offers' }) : null,
+      ...offers.map(e => h(OfferRow, { entry: e, now }, e.requestId)),
+      queue.length ? h(SectionLabel, { children: 'Queue' }) : null,
+      ...queue.map(e => h(QueueRow, { entry: e }, e.requestId)),
+      paused.length ? h(SectionLabel, { children: 'Paused' }) : null,
+      ...paused.map(e => h(QueueRow, { entry: e }, e.requestId))
     ]
   })
 }
@@ -317,10 +325,10 @@ function EventRow({ event: ev, now }) {
   const tone = EVENT_TONE[ev.type] || 'hermes-ll-tone-muted'
   const text = ev.entry && ev.entry.reason ? ev.entry.reason : ev.detail || ''
   return jsxs('div', { className: 'hermes-ll-evt' }, [
-    jsx('span', { className: 'hermes-ll-evt-time' }, fmtAge(now - ev.ts) + ' ago'),
-    jsx('span', { className: 'hermes-ll-badge ' + tone }, String(ev.type || '?').replace(/_/g, ' ')),
-    jsx('span', { className: 'hermes-ll-evt-agent', title: ev.targetAgent || '' }, shortAgent(ev.targetAgent)),
-    text ? jsx('span', { className: 'hermes-ll-evt-text', title: text }, text) : null
+    h('span', { className: 'hermes-ll-evt-time' }, fmtAge(now - ev.ts) + ' ago'),
+    h('span', { className: 'hermes-ll-badge ' + tone }, String(ev.type || '?').replace(/_/g, ' ')),
+    h('span', { className: 'hermes-ll-evt-agent', title: ev.targetAgent || '' }, shortAgent(ev.targetAgent)),
+    text ? h('span', { className: 'hermes-ll-evt-text', title: text }, text) : null
   ])
 }
 
@@ -341,9 +349,9 @@ function LoadLockChip({ ctx }) {
         return `${p.pool} ${p.used || 0}/${p.capacity || 0}${q ? ` · ${q} queued` : ''}`
       })
       .join(' · ') + ' — click to open the Load Lock pane'
-  return jsx(Tip, {
+  return h(Tip, {
     label: tip,
-    children: jsx('button', {
+    children: h('button', {
       type: 'button',
       className: 'hermes-ll-chip',
       'aria-label': `Load Lock: ${used} of ${cap} heavy-work permits in use`,
@@ -351,8 +359,8 @@ function LoadLockChip({ ctx }) {
         if (typeof host.revealPane === 'function') host.revealPane(PANE_ID)
       },
       children: jsxs('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 4 }, children: [
-        jsx(StatusDot, { tone }),
-        jsx('span', {}, `LL ${used}/${cap}`)
+        h(StatusDot, { tone }),
+        h('span', {}, `LL ${used}/${cap}`)
       ] })
     })
   })
@@ -398,29 +406,29 @@ function LoadLockPane({ ctx }) {
 
   return jsxs('div', { className: 'hermes-ll-pane', children: [
     error
-      ? jsx('div', { className: 'hermes-ll-error', title: error }, 'load-lock: ' + error)
+      ? h('div', { className: 'hermes-ll-error', title: error }, 'load-lock: ' + error)
       : null,
     jsxs('div', { className: 'hermes-ll-head', children: [
-      jsx('span', { className: 'hermes-ll-title' }, 'Load Lock'),
+      h('span', { className: 'hermes-ll-title' }, 'Load Lock'),
       machineLabel
-        ? jsx('span', { className: 'hermes-ll-machine', title: (pressure && pressure.note) || '' }, machineLabel)
+        ? h('span', { className: 'hermes-ll-machine', title: (pressure && pressure.note) || '' }, machineLabel)
         : null,
-      jsx('span', { className: 'hermes-ll-updated' },
+      h('span', { className: 'hermes-ll-updated' },
         snapQuery.isFetching ? '…' : 'updated ' + fmtAge(Date.now() - (updatedAtRef.current || Date.now())) + ' ago')
     ] }),
     !pools.length && !error
-      ? jsx('div', { className: 'hermes-ll-empty' }, 'connecting to load-lock…')
+      ? h('div', { className: 'hermes-ll-empty' }, 'connecting to load-lock…')
       : null,
     jsxs('div', { className: 'hermes-ll-scroll', children: [
-      ...pools.map(p => jsx(PoolCard, { pool: p, now }, p.pool)),
+      ...pools.map(p => h(PoolCard, { pool: p, now }, p.pool)),
       jsxs('div', { className: 'hermes-ll-events', children: [
-        jsx(SectionLabel, { children: 'Recent activity' }),
+        h(SectionLabel, { children: 'Recent activity' }),
         events.length
           ? events
             .slice()
             .reverse()
-            .map(ev => jsx(EventRow, { event: ev, now }, ev.id))
-          : jsx('div', { className: 'hermes-ll-empty' }, 'no events yet — acquire a permit to see the flow')
+            .map(ev => h(EventRow, { event: ev, now }, ev.id))
+          : h('div', { className: 'hermes-ll-empty' }, 'no events yet — acquire a permit to see the flow')
       ] })
     ] })
   ] })
@@ -460,13 +468,13 @@ export default {
         // gesture) so the panel is a first-class tiling pane, visible by
         // default and draggable anywhere the user likes.
         data: { placement: 'main', dock: { pane: 'workspace', pos: 'right' }, width: '320px' },
-        render: () => jsx(LoadLockPane, { ctx })
+        render: () => h(LoadLockPane, { ctx })
       },
       {
         id: 'chip',
         area: STATUSBAR_AREAS.right,
         order: 130,
-        render: () => jsx(LoadLockChip, { ctx })
+        render: () => h(LoadLockChip, { ctx })
       },
       {
         id: 'open',
