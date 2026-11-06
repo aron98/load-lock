@@ -359,9 +359,10 @@
             : null
         ),
         h("div", { className: "ll-head-right" },
-          updatedAt
-            ? h("span", { className: "ll-updated", title: "last update " + fmtClock(updatedAt) },
-                auto ? "live" : "updated " + fmtClock(updatedAt))
+          // The live toggle beside it already says "live"; only a paused
+          // feed needs its (fixed) last-update time.
+          updatedAt && !auto
+            ? h("span", { className: "ll-updated" }, "updated " + fmtClock(updatedAt))
             : null,
           h("button", { className: "ll-btn", onClick: refresh, title: "Refresh now" }, "Refresh"),
           h("button", {
