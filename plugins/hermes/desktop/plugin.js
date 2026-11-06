@@ -324,12 +324,12 @@ function PoolCard({ pool, now }) {
 function EventRow({ event: ev, now }) {
   const tone = EVENT_TONE[ev.type] || 'hermes-ll-tone-muted'
   const text = ev.entry && ev.entry.reason ? ev.entry.reason : ev.detail || ''
-  return jsxs('div', { className: 'hermes-ll-evt' }, [
+  return jsxs('div', { className: 'hermes-ll-evt', children: [
     h('span', { className: 'hermes-ll-evt-time' }, fmtAge(now - ev.ts) + ' ago'),
     h('span', { className: 'hermes-ll-badge ' + tone }, String(ev.type || '?').replace(/_/g, ' ')),
     h('span', { className: 'hermes-ll-evt-agent', title: ev.targetAgent || '' }, shortAgent(ev.targetAgent)),
     text ? h('span', { className: 'hermes-ll-evt-text', title: text }, text) : null
-  ])
+  ] })
 }
 
 /* ------------------------------------------------------------------ *

@@ -90,6 +90,13 @@ test("hermes plugin: desktop half is coherent", () => {
     );
   }
   assert.doesNotMatch(plugin, /<[A-Z][A-Za-z]*>/, "no JSX syntax: use jsx()/jsxs() from react/jsx-runtime");
+  // jsx()/jsxs() take children only via props.children; a third positional
+  // argument is the key, so `jsxs(type, props, [kids])` renders an empty element.
+  assert.doesNotMatch(
+    plugin,
+    /\bjsxs?\([^()]*\{[^{}]*\}\s*,\s*\[/,
+    "jsx()/jsxs() positional children are dropped: pass children in props or use h()",
+  );
 
   // Default HermesPlugin export with the load-lock id and a register().
   assert.match(plugin, /const ID = ["']load-lock["']/, "missing ID constant");
