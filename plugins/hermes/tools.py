@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import policy, runtime
-from .runtime import EXIT_INTERNAL, EXIT_PENDING, RuntimeNotFound
+from .runtime import EXIT_INTERNAL, EXIT_PENDING, EXIT_WAIT_FAIL, RuntimeNotFound
 
 TOOLSET = "load-lock"
 
@@ -588,16 +588,19 @@ def h_run_with_permit(args: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         return {"ok": False, "error": f"failed to spawn job: {exc}"}
     # Early-exit probe: a permit that was reclaimed mid-flight makes the CLI
     # kill the job and exit 69 almost immediately — surface that instead of
-    # reporting a phantom running job.
+    # reporting a phantom running job. Any other quick exit is a real result
+    # (a fast command), reported as finished.
     if job.done.wait(0.25):
-        envelope = job.snapshot()
-        envelope.update({
-            "state": "failed",
-            "ok": False,
-            "permit_released": True,
-            "next_action": "The permit was no longer startable; the job was killed before doing work. Acquire again.",
-        })
-        return envelope
+        if job.exit_code == EXIT_WAIT_FAIL and "no longer startable" in job.tail():
+            envelope = job.snapshot()
+            envelope.update({
+                "state": "failed",
+                "ok": False,
+                "permit_released": True,
+                "next_action": "The permit was no longer startable; the job was killed before doing work. Acquire again.",
+            })
+            return envelope
+        return wait_local_job(job, 0)
     note = (
         "Background job started under permit. Do NOT release the permit "
         "manually — it auto-releases when the job exits. Sleep through the "
