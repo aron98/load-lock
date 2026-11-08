@@ -58,7 +58,7 @@ automatically when the job exited.
 1. Install the load-lock CLI (Node >= 20):
 
    ```sh
-   npm install -g @aron98/load-lock
+   npm install -g @aron98/load-lock@1.7.0
    ```
 
 2. Install/enable the plugin (from this repo: `plugins/hermes/`):
@@ -82,6 +82,7 @@ config (renders as a settings form on newer Hermes versions):
 | `pool` | `heavy` | Default pool for permits (e.g. `heavy`, `gpu-heavy`). |
 | `heartbeat` | `true` | Keep untracked permits of live sessions alive automatically. |
 | `inject_policy` | `true` | Inject the budget brief into the session's first turn / after compaction. |
+| `env_passthrough` | *(empty)* | Extra variable names (space/comma separated) passed to `load_lock_run_with_permit` jobs on top of the built-in allowlist. Provider API keys are never passed unless listed here. |
 
 ## Tools
 
@@ -176,6 +177,22 @@ dashboard tab) cover the same jobs.
   `tools.approval_detection`; if it cannot be loaded, every command is
   escalated. The plugin never bypasses approvals or unattended-mode
   switches.
+- **Child environment**: every process the plugin starts (the CLI, the
+  daemon it auto-starts, and the job `load_lock_run_with_permit` runs) gets
+  an environment built from an allowlist: `PATH`, `HOME`, locale, temp and
+  XDG dirs, `LOAD_LOCK_*`, node/npm and proxy settings, and for jobs the
+  usual toolchain locations (`JAVA_HOME`, `CARGO_HOME`, `GOPATH`,
+  `VIRTUAL_ENV`, …). Provider API keys and anything named like a token,
+  secret or password are never passed; add names explicitly with the
+  `env_passthrough` setting if a build needs one.
+- **Terminal backend**: `load_lock_run_with_permit` runs commands on this
+  host, so it refuses when Hermes's terminal backend is not `local`
+  (docker, ssh, modal, …) and tells the agent to run the command with the
+  `terminal` tool between `load_lock_mark_started` and
+  `load_lock_release` instead. The backend is resolved like Hermes does
+  (per-turn terminal scope via `tools.terminal_scope`, then
+  `terminal.backend` in config, then `TERMINAL_ENV`); if it cannot be
+  determined, the tool refuses.
 - **Credentials**: none required, none stored.
 - **No Python dependencies** — the plugin uses only the Hermes-provided
   environment (FastAPI for the dashboard routes).

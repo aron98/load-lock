@@ -156,6 +156,7 @@ def _push_loop() -> None:
                 stderr=subprocess.DEVNULL,
                 text=True,
                 bufsize=1,
+                env=_runtime().child_env(),
             )
             assert proc.stdout is not None
             for line in proc.stdout:

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -82,6 +83,7 @@ DEFAULTS: Dict[str, Any] = {
     "pool": "heavy",
     "heartbeat": True,
     "inject_policy": True,
+    "env_passthrough": "",
 }
 
 _settings_lock = threading.Lock()
@@ -110,6 +112,104 @@ def get_settings() -> Dict[str, Any]:
         except Exception:
             pass
         return merged
+
+
+# ---------------------------------------------------------------------------
+# child environments
+# ---------------------------------------------------------------------------
+#
+# Hermes's own process environment carries every provider API key, which its
+# terminal tool strips before running anything. Children of this plugin (the
+# load-lock CLI, the daemon it may auto-start, and the job a
+# load_lock_run_with_permit call runs) get an environment built from an
+# allowlist instead, so they never see those keys.
+
+# What the load-lock CLI (and the npx fallback) needs: locate node and the
+# user's dirs, keep the locale, honour load-lock's own overrides and proxies.
+_CLI_ENV_KEYS = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TERM",
+    "TMPDIR", "TMP", "TEMP",
+    "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
+    "LOCALAPPDATA", "APPDATA", "USERPROFILE", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+    "NODE_OPTIONS", "NODE_PATH", "NODE_EXTRA_CA_CERTS",
+    "npm_config_cache", "npm_config_registry", "npm_config_userconfig", "npm_config_prefix",
+    "NPM_CONFIG_CACHE", "NPM_CONFIG_REGISTRY", "NPM_CONFIG_USERCONFIG", "NPM_CONFIG_PREFIX",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+})
+_CLI_ENV_PREFIXES = ("LOAD_LOCK_", "LC_")
+
+# A heavy job is a build or a test suite: it also needs to find toolchains.
+# These name install locations and build flags, never credentials.
+_JOB_ENV_KEYS = frozenset({
+    "JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT", "GRADLE_USER_HOME", "MAVEN_OPTS",
+    "GOPATH", "GOROOT", "GOCACHE", "GOMODCACHE", "GOFLAGS",
+    "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "RUSTFLAGS", "CARGO_TARGET_DIR",
+    "PYENV_ROOT", "PYENV_VERSION", "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV",
+    "NVM_DIR", "NVM_BIN", "VOLTA_HOME", "BUN_INSTALL", "PNPM_HOME", "DENO_DIR", "NODE_ENV",
+    "GEM_HOME", "GEM_PATH", "RBENV_ROOT", "DOTNET_ROOT", "SDKROOT", "DEVELOPER_DIR",
+    "CC", "CXX", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "PKG_CONFIG_PATH", "MAKEFLAGS",
+    "CMAKE_GENERATOR", "CI", "COLORTERM", "NO_COLOR", "FORCE_COLOR",
+})
+
+# Belt and braces: an allowlisted name that still looks like a secret is dropped.
+_SECRETISH = re.compile(r"TOKEN|SECRET|PASSW|API_?KEY|ACCESS_?KEY|PRIVATE|CREDENTIAL|AUTH", re.I)
+
+
+def _passthrough_names() -> List[str]:
+    """Extra variable names the user opted in to via the env_passthrough setting."""
+    raw = get_settings().get("env_passthrough") or ""
+    if isinstance(raw, (list, tuple)):
+        raw = " ".join(str(x) for x in raw)
+    return [n for n in re.split(r"[\s,]+", str(raw)) if n]
+
+
+def child_env(job: bool = False) -> Dict[str, str]:
+    """Allowlisted environment for a child process (see the section comment).
+
+    ``job=True`` adds toolchain locations for the command a run_with_permit
+    job runs, plus the names listed in the env_passthrough setting; those are
+    the user's explicit choice and skip the secret-name guard.
+    """
+    allowed = _CLI_ENV_KEYS | _JOB_ENV_KEYS if job else _CLI_ENV_KEYS
+    env = {
+        k: v for k, v in os.environ.items()
+        if (k in allowed or k.startswith(_CLI_ENV_PREFIXES)) and not _SECRETISH.search(k)
+    }
+    if job:
+        for name in _passthrough_names():
+            if name in os.environ:
+                env[name] = os.environ[name]
+    return env
+
+
+# ---------------------------------------------------------------------------
+# terminal backend
+# ---------------------------------------------------------------------------
+
+
+def terminal_backend() -> str:
+    """The terminal backend Hermes uses for this turn, resolved as Hermes does.
+
+    A bound terminal scope (per-turn / per-profile policy) is authoritative and
+    raises when the profile's policy is unavailable; otherwise an explicit
+    ``terminal.backend`` in the active profile's config wins over the bridged
+    ``TERMINAL_ENV``; the default is ``local``. Raises when it cannot tell, so
+    callers fail closed.
+    """
+    try:
+        from tools.terminal_scope import get_terminal_scope, terminal_env
+    except Exception:  # older or relocated module: fall back to config/env
+        get_terminal_scope = None  # type: ignore[assignment]
+    if get_terminal_scope is not None and get_terminal_scope() is not None:
+        return (terminal_env("TERMINAL_ENV", "local") or "local").strip().lower()
+    # The raw file, not load_config(): its defaults would fill in a backend
+    # the user never set and mask TERMINAL_ENV (Hermes's own bridge does the same).
+    from hermes_cli.config import read_raw_config
+
+    terminal = (read_raw_config() or {}).get("terminal")
+    if isinstance(terminal, dict) and terminal.get("backend"):
+        return str(terminal["backend"]).strip().lower()
+    return (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +273,8 @@ def _path_copy() -> Optional[str]:
     # bun shim): ask it directly; slow path only, cached by the caller.
     try:
         proc = subprocess.run(
-            [str(exe), "--version"], capture_output=True, text=True, timeout=10
+            [str(exe), "--version"], capture_output=True, text=True, timeout=10,
+            env=child_env(),
         )
         if proc.returncode == 0:
             return proc.stdout.strip().splitlines()[-1].strip() or None
@@ -300,7 +401,7 @@ def run_cli(
     argv = prefix + list(args)
     if json_output:
         argv.append("--json")
-    merged_env = dict(os.environ)
+    merged_env = child_env()
     if env:
         merged_env.update(env)
     try:

@@ -201,7 +201,7 @@ class JobManager:
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             cwd=cwd or None,
-            env=dict(os.environ),
+            env=runtime.child_env(job=True),
         )
         job = Job(proc, command, permit_token, agent)
         with self._lock:
@@ -555,11 +555,29 @@ def h_mark_started(args: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     return envelope
 
 
+_SANDBOXED_NEXT_ACTION = (
+    "Keep the permit and run the command with the terminal tool instead: load_lock_mark_started(permit_token), "
+    "run it via terminal, then load_lock_release(permit_token, outcome)."
+)
+
+
 def h_run_with_permit(args: Dict[str, Any], **kwargs) -> Dict[str, Any]:
     token = _as_str(args.get("permit_token"))
     command = _as_str(args.get("command"))
     if not token or not command:
         return {"ok": False, "error": "run_with_permit requires 'permit_token' and 'command'"}
+    # Jobs run on this host. Under a docker/ssh/modal/... terminal backend the
+    # user chose a sandbox for commands, so never run around it.
+    try:
+        backend = runtime.terminal_backend()
+    except Exception as exc:
+        return {"ok": False, "error": (
+            f"load_lock_run_with_permit refused: could not determine Hermes's terminal backend ({exc}), "
+            "and it only runs commands on the local host."), "next_action": _SANDBOXED_NEXT_ACTION}
+    if backend != "local":
+        return {"ok": False, "error": (
+            f"load_lock_run_with_permit refused: Hermes's terminal backend is '{backend}', and this tool "
+            "would run the command on the host, outside that sandbox."), "next_action": _SANDBOXED_NEXT_ACTION}
     agent = agent_id(kwargs)
     HEARTBEAT.touch(agent)
     try:

@@ -43,6 +43,7 @@ export const PINNED = [
   { path: "plugins/hermes/dashboard/manifest.json", kind: "json", key: "version" },
   { path: "plugins/hermes/runtime.py", kind: "spec" },
   { path: "plugins/hermes/skills/load-lock/SKILL.md", kind: "spec" },
+  { path: "plugins/hermes/README.md", kind: "spec" },
 ];
 
 const SEMVER = String.raw`\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?`;

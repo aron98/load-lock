@@ -58,6 +58,27 @@ test("hermes plugin: hooks and skill are declared and present", () => {
   assert.match(read("__init__.py"), /register_skill\(/, "skill registration missing");
 });
 
+test("hermes plugin: child processes never inherit Hermes's environment", () => {
+  // Hermes's process env carries provider API keys its terminal tool strips;
+  // every spawn must pass an allowlisted env (runtime.child_env), never a copy.
+  for (const rel of ["tools.py", "runtime.py", "dashboard/plugin_api.py"]) {
+    const src = read(rel);
+    assert.doesNotMatch(src, /dict\(os\.environ\)|os\.environ\.copy\(\)|env=os\.environ\b/, `${rel} copies os.environ into a child`);
+    for (const call of src.matchAll(/subprocess\.(?:run|Popen)\(([\s\S]*?)\n\s*\)/g)) {
+      assert.match(call[1], /\benv=/, `${rel}: subprocess call without an explicit env=`);
+    }
+  }
+  assert.match(read("runtime.py"), /\bdef child_env\(/, "runtime.child_env missing");
+  assert.match(read("plugin.yaml"), /^ {2}env_passthrough:/m, "env_passthrough setting missing from config_schema");
+});
+
+test("hermes plugin: run_with_permit refuses a non-local terminal backend", () => {
+  const tools = read("tools.py");
+  assert.match(read("runtime.py"), /\bdef terminal_backend\(/, "runtime.terminal_backend missing");
+  assert.match(tools, /runtime\.terminal_backend\(\)/, "h_run_with_permit must check the terminal backend");
+  assert.match(tools, /if backend != "local":/, "non-local backends must be refused");
+});
+
 test("hermes plugin: dashboard surface is coherent", () => {
   const dashboard = JSON.parse(read("dashboard/manifest.json"));
   assert.equal(dashboard.name, "load-lock");

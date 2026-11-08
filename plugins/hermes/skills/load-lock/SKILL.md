@@ -31,7 +31,7 @@ Use the first of these that works; they all talk to the same daemon:
 2. **`load-lock` on PATH**: check with `load-lock version`.
 3. **Pinned npx**: `npx -y @aron98/load-lock@1.7.0 <command>` (Node >= 20).
    It downloads that exact npm package once into the npx cache. Below,
-   read `load-lock` as this whole prefix. `npm install -g @aron98/load-lock`
+   read `load-lock` as this whole prefix. `npm install -g @aron98/load-lock@1.7.0`
    makes it permanent.
 
 The first call starts the daemon on its own (shared state in

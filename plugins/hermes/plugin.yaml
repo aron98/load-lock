@@ -70,6 +70,16 @@ config_schema:
       Automatically renew untracked-permit leases for active Hermes
       sessions so a dead agent never strands a permit (recommended).
     default: true
+  env_passthrough:
+    type: str
+    label: Extra job environment variables
+    description: >-
+      Space- or comma-separated variable names to pass to commands that
+      load_lock_run_with_permit runs, on top of the built-in allowlist
+      (PATH, HOME, locale, temp dirs, LOAD_LOCK_*, toolchain locations such
+      as JAVA_HOME or CARGO_HOME). Provider API keys are never passed unless
+      you list them here.
+    default: ""
   inject_policy:
     type: bool
     label: Inject policy brief
