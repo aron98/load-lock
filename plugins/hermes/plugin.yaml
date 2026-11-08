@@ -1,5 +1,5 @@
 name: load-lock
-version: 1.7.0
+version: 1.7.1
 description: >-
   Machine-wide heavy-work budget for parallel coding agents. Coordinates
   builds, test suites and big compiles across every agent on the machine —
