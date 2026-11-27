@@ -4,7 +4,7 @@
 # Covers issue #3's checklist end-to-end against the real Claude Code harness:
 #   Phase 1 (headless -p):
 #     - SessionStart policy brief visible to the model (it must quote it)
-#     - mcp__load-lock__* round-trip: acquire -> queued -> offer
+#     - MCP tool round-trip: acquire -> queued -> offer
 #     - Stop-hook decision-block wakeup with a cwd-matching offer -> claim
 #     - run_with_permit background job that outlives the tool call AND the
 #       claude process; daemon auto-releases on process-group death
@@ -14,13 +14,36 @@
 #       hook is then the only wakeup path and its decision-block/claim
 #       instruction is live-verified in isolation
 #   Phase 2 (headless -p):
-#     - subagent behavior: a Task-tool subagent uses mcp__load-lock__* tools
+#     - subagent behavior: a Task-tool subagent uses the load-lock MCP tools
 #       and reports what context it sees
 #   Phase 3 (interactive pty):
 #     - /compact restore: SessionStart(matcher compact) re-fires the brief
 #       with FRESH machine status (pool goes 0/1 -> 1/1 mid-session)
 #     - async await-offer (asyncRewake): an IDLE session is woken by the
 #       async watcher exiting 2 with stderr; model claims + releases
+#
+# MODE=loose (default): image with a global load-lock and `load-lock install
+# --harness claude-code` (MCP tools mcp__load-lock__*).
+#
+# MODE=plugin (#104): image built with LOAD_LOCK_GLOBAL=0 - no load-lock on
+# PATH, no npx cache. The plugin comes from this repo's marketplace
+# (/opt/load-lock-repo, `claude plugin marketplace add` + `claude plugin
+# install`), tools are mcp__plugin_load-lock-plugin_load-lock__*, and the
+# script's own CLI calls go through the plugin launcher. Extra phases, run
+# against docker/anthropic-stub.mjs (a scripted stand-in for the Anthropic
+# API: real Claude Code, real hooks and MCP servers, no model, no key):
+#   s1: clean machine - launcher npx branch, daemon started by the plugin,
+#       cold and warm SessionStart, MCP round-trip through ToolSearch
+#   s2: ACE skills-dir layout - plugin folder copied to
+#       <project>/.claude/skills/load-lock-plugin/ and to
+#       ~/.claude/skills/load-lock-plugin/: does Claude Code load it and
+#       resolve ${CLAUDE_PLUGIN_ROOT}?
+#   s3: plugin + loose install together (global install from the packed
+#       tarball + `load-lock install --harness claude-code --legacy`): one
+#       policy brief, one wakeup per offer, claim round-trip
+# Phase order in plugin mode: s1, s2, then 1/1b/2/3 (real model), then s3
+# (it puts load-lock on PATH, which would change the launcher branch).
+# Model-free run: PHASES=s1,s2,s3 (docker/run-model-free-checks.sh).
 # Exit 0 = all assertions passed.
 set -eu
 
@@ -29,7 +52,19 @@ export LOAD_LOCK_SOCKET=/tmp/ll-state/daemon.sock
 mkdir -p "$LOAD_LOCK_STATE_DIR"
 cd /workspace
 
-export PHASES="${PHASES:-1,2,3}"
+export MODE="${MODE:-loose}"
+if [ "$MODE" = plugin ]; then
+  export PHASES="${PHASES:-s1,s2,1,2,3,s3}"
+  TOOL_NS="mcp__plugin_load-lock-plugin_load-lock__"
+  PLUGIN_REPO=/opt/load-lock-repo
+  LAUNCHER="$PLUGIN_REPO/plugins/claude-code/scripts/load-lock.mjs"
+  # No global CLI on this image: the script's own calls (holders, events,
+  # status) go through the plugin launcher (PATH > known copy > npx).
+  load-lock() { node "$LAUNCHER" "$@"; }
+else
+  export PHASES="${PHASES:-1,2,3}"
+  TOOL_NS="mcp__load-lock__"
+fi
 has_phase() { [[ ",$PHASES," == *",${1},"* ]]; }
 
 note() { printf '\n===== %s =====\n' "$*"; }
@@ -57,10 +92,7 @@ assert_clean() {
 }
 
 # ------------------------------------------------------------------ phase 0
-note "doctor + daemon + onboarding seeds"
-load-lock doctor
-load-lock service start
-
+note "onboarding seeds"
 # Headless/interactive onboarding seeds: no theme picker, trust the (disposable)
 # /workspace, so the TUI never waits on a dialog the driver cannot answer.
 # NB: $HOME is /home/node — the container runs as the unprivileged "node"
@@ -68,7 +100,9 @@ load-lock service start
 node - <<'EOF'
 const fs = require("fs");
 const p = process.env.HOME + "/.claude.json";
-const j = JSON.parse(fs.readFileSync(p, "utf8"));
+// The plugin-mode image never ran `load-lock install`, so the file may not exist.
+let j = {};
+try { j = JSON.parse(fs.readFileSync(p, "utf8")); } catch { /* fresh HOME */ }
 j.hasCompletedOnboarding = true;
 j.theme = "dark";
 // Accept the BypassPermissions warning up-front so the interactive TUI
@@ -81,6 +115,22 @@ j.projects["/workspace"] = { ...(j.projects["/workspace"] || {}), hasTrustDialog
 fs.writeFileSync(p, JSON.stringify(j, null, 2));
 EOF
 
+CLAUDE_FLAGS=(--dangerously-skip-permissions)
+RESULTS=/workspace/results.txt
+: > "$RESULTS"
+result() { echo "RESULT $*" | tee -a "$RESULTS"; }
+
+if [ "$MODE" = plugin ]; then
+  . /usr/local/bin/verify-claude-plugin-lib.sh
+  plugin_preflight
+  has_phase s1 && phase_s1
+  has_phase s2 && phase_s2
+fi
+
+note "doctor + daemon"
+if [ "$MODE" = loose ]; then load-lock doctor; fi
+load-lock service start
+
 # The model is served through a translation proxy and can take minutes per
 # turn; make offers survive the whole Stop-hook->claim round trip (phase 1
 # burns ~30s of that window on the mandated light-work sleep, phase 3b on
@@ -88,7 +138,6 @@ EOF
 load-lock configure --offer-timeout-ms 300000 \
   --reason "verification: model runs through a LiteLLM translation sidecar; offers must survive multi-minute turns"
 
-CLAUDE_FLAGS=(--dangerously-skip-permissions)
 
 # ------------------------------------------------------------------ phase 1
 if has_phase 1; then
@@ -116,12 +165,12 @@ HOLDER1_REL_PID=$!
 
 set +e
 timeout 1500 claude -p "${CLAUDE_FLAGS[@]}" --output-format stream-json --verbose \
-  "Verify the load-lock integration on this machine. Do exactly this, in order, using ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock: \
+  "Verify the load-lock integration on this machine. Do exactly this, in order, using ONLY the MCP tools named ${TOOL_NS}* for load-lock actions - never the shell CLI for load-lock: \
 (1) State whether your context includes a section starting with '# load-lock: machine-wide heavy-work budget'. Quote its first rule ('1. Heavy vs light: ...') verbatim through the end of its first sentence. \
-(2) Call the MCP tool mcp__load-lock__status and report the pool name, capacity and current usage. \
-(3) Call the MCP tool mcp__load-lock__acquire with reason 'verify claude adapter' and op_key 'verify/build'. Report the exact state value (it should be 'queued' because another process holds the permit). \
+(2) Call the MCP tool ${TOOL_NS}status and report the pool name, capacity and current usage. \
+(3) Call the MCP tool ${TOOL_NS}acquire with reason 'verify claude adapter' and op_key 'verify/build'. Report the exact state value (it should be 'queued' because another process holds the permit). \
 (4) Run the shell command 'sleep 30' exactly once. That is light work while queued - do not sleep again. \
-(5) If a load-lock message tells you capacity is now reserved for you, then: call mcp__load-lock__pending, claim the offer with mcp__load-lock__claim (offer_token), start your heavy work by calling mcp__load-lock__run_with_permit with the permit_token and the command 'sleep 120', then call mcp__load-lock__job_status once to confirm the job is running, and report the job_id. Do NOT call mcp__load-lock__release for it - the permit auto-releases when the job exits. \
+(5) If a load-lock message tells you capacity is now reserved for you, then: call ${TOOL_NS}pending, claim the offer with ${TOOL_NS}claim (offer_token), start your heavy work by calling ${TOOL_NS}run_with_permit with the permit_token and the command 'sleep 120', then call ${TOOL_NS}job_status once to confirm the job is running, and report the job_id. Do NOT call ${TOOL_NS}release for it - the permit auto-releases when the job exits. \
 (6) Finish with a one-paragraph summary of the states you observed so far." \
   2>&1 | tee /workspace/claude-phase1-stream.jsonl
 P1_RC=${PIPESTATUS[0]}
@@ -165,17 +214,20 @@ if has_phase 1; then
 note "Phase 1b: Stop-hook decision-block wakeup (async watcher disabled)"
 
 assert_clean "phase 1b"
-SETTINGS="$HOME/.claude/settings.json"
-cp "$SETTINGS" /tmp/settings-backup.json
-python3 - <<'PY'
-import json, os
-p = os.path.join(os.environ["HOME"], ".claude", "settings.json")
-s = json.load(open(p))
-ss = s.get("hooks", {}).get("SessionStart", [])
-s["hooks"]["SessionStart"] = [e for e in ss if "await-offer" not in json.dumps(e)]
-json.dump(s, open(p, "w"), indent=2)
+# Loose mode: the hook lives in ~/.claude/settings.json. Plugin mode: in the
+# plugin's hooks.json (a directory marketplace is read in place).
+HOOK_FILES=("$HOME/.claude/settings.json")
+[ "$MODE" = plugin ] && HOOK_FILES=("$PLUGIN_REPO/plugins/claude-code/hooks/hooks.json")
+for f in "${HOOK_FILES[@]}"; do cp "$f" "$f.verify-backup"; done
+python3 - "${HOOK_FILES[@]}" <<'PY'
+import json, sys
+for p in sys.argv[1:]:
+    s = json.load(open(p))
+    ss = s.get("hooks", {}).get("SessionStart", [])
+    s["hooks"]["SessionStart"] = [e for e in ss if "await-offer" not in json.dumps(e)]
+    json.dump(s, open(p, "w"), indent=2)
 PY
-restore_settings() { cp /tmp/settings-backup.json "$SETTINGS"; }
+restore_settings() { for f in "${HOOK_FILES[@]}"; do cp "$f.verify-backup" "$f"; done; }
 trap restore_settings EXIT
 
 load-lock acquire --json --op-key holder/stopblock --reason "holder: stop-hook block verify" --label "cli-holder" \
@@ -199,11 +251,11 @@ HOLDER1B_REL_PID=$!
 
 set +e
 timeout 900 claude -p "${CLAUDE_FLAGS[@]}" --output-format stream-json --verbose \
-  "This machine enforces the load-lock policy. Do exactly this, in order, using ONLY the MCP tools named mcp__load-lock__* for load-lock actions - never the shell CLI for load-lock: \
-(1) Call the MCP tool mcp__load-lock__acquire with reason 'stop-hook wakeup verification' and op_key 'verify/stopblock'. It will be queued behind another permit holder. \
+  "This machine enforces the load-lock policy. Do exactly this, in order, using ONLY the MCP tools named ${TOOL_NS}* for load-lock actions - never the shell CLI for load-lock: \
+(1) Call the MCP tool ${TOOL_NS}acquire with reason 'stop-hook wakeup verification' and op_key 'verify/stopblock'. It will be queued behind another permit holder. \
 (2) Run the shell command 'sleep 45' exactly once. Do not sleep again. \
-(3) When the sleep finishes, end your turn immediately, replying with only the single word WAITING. Do not call mcp__load-lock__pending and do not claim anything yet. \
-(4) If a load-lock stop-hook message then tells you capacity is now reserved for you, call mcp__load-lock__pending, claim the offer with mcp__load-lock__claim (offer_token), then call mcp__load-lock__release with the permit_token. Finish your reply by quoting the exact full text of the stop-hook message that woke you, then reply with the single word STOPHOOK-DONE." \
+(3) When the sleep finishes, end your turn immediately, replying with only the single word WAITING. Do not call ${TOOL_NS}pending and do not claim anything yet. \
+(4) If a load-lock stop-hook message then tells you capacity is now reserved for you, call ${TOOL_NS}pending, claim the offer with ${TOOL_NS}claim (offer_token), then call ${TOOL_NS}release with the permit_token. Finish your reply by quoting the exact full text of the stop-hook message that woke you, then reply with the single word STOPHOOK-DONE." \
   2>&1 | tee /workspace/claude-phase1b-stream.jsonl
 P1B_RC=${PIPESTATUS[0]}
 set -e
@@ -221,12 +273,12 @@ fi
 
 # ------------------------------------------------------------------ phase 2
 if has_phase 2; then
-note "Phase 2: subagent behavior (Task-tool subagent using mcp__load-lock__*)"
+note "Phase 2: subagent behavior (Task-tool subagent using ${TOOL_NS}*)"
 
 assert_clean "phase 2"
 set +e
 timeout 1200 claude -p "${CLAUDE_FLAGS[@]}" --output-format stream-json --verbose \
-  "Test subagent behavior of the load-lock integration. Use your Task tool to spawn exactly ONE subagent with this instruction: 'Using ONLY the MCP tools named mcp__load-lock__* for load-lock actions: (a) call mcp__load-lock__status and note the pool name and usage; (b) call mcp__load-lock__acquire with reason \"subagent verification\" and op_key \"verify/subagent\"; (c) call mcp__load-lock__release with the permit_token it returned; (d) report the exact sequence of state values you saw, and whether your own context contains a section starting with \"# load-lock: machine-wide heavy-work budget\" - if yes, quote its first rule.' Then report verbatim what the subagent told you, including whether it saw the load-lock policy section." \
+  "Test subagent behavior of the load-lock integration. Use your Task tool to spawn exactly ONE subagent with this instruction: 'Using ONLY the MCP tools named ${TOOL_NS}* for load-lock actions: (a) call ${TOOL_NS}status and note the pool name and usage; (b) call ${TOOL_NS}acquire with reason \"subagent verification\" and op_key \"verify/subagent\"; (c) call ${TOOL_NS}release with the permit_token it returned; (d) report the exact sequence of state values you saw, and whether your own context contains a section starting with \"# load-lock: machine-wide heavy-work budget\" - if yes, quote its first rule.' Then report verbatim what the subagent told you, including whether it saw the load-lock policy section." \
   2>&1 | tee /workspace/claude-phase2-stream.jsonl
 P2_RC=${PIPESTATUS[0]}
 set -e
@@ -343,7 +395,7 @@ raw \r
 sleep 8
 # Long prompts must be typed (chunked), not `send`-burst: a large single
 # write is treated by the TUI as a paste and is never submitted (seen live).
-type Call the MCP tool mcp__load-lock__acquire with reason "idle wakeup verification" and op_key "verify/async-wake". It will be queued. Reply with only the single word STANDBY and end your turn. Then wait without doing anything. When a wakeup message tells you capacity was reserved for a request from this directory, call mcp__load-lock__pending, then claim the offer with mcp__load-lock__claim (offer_token), then call mcp__load-lock__release with the permit_token, and finish by replying with only the single word DONE.
+type Call the MCP tool @NS@acquire with reason "idle wakeup verification" and op_key "verify/async-wake". It will be queued. Reply with only the single word STANDBY and end your turn. Then wait without doing anything. When a wakeup message tells you capacity was reserved for a request from this directory, call @NS@pending, then claim the offer with @NS@claim (offer_token), then call @NS@release with the permit_token, and finish by replying with only the single word DONE.
 sleep 1
 mark
 # Hedge: isolated Enter retry - no-op if the prompt already submitted.
@@ -354,6 +406,7 @@ expect DONE
 send /exit
 wait-exit
 DRIVER
+sed -i "s/@NS@/$TOOL_NS/g" /tmp/driver-3b.txt
 
 set +e
 PTY3B_RC=0
@@ -368,6 +421,11 @@ load-lock release --permit "$H3B" > /tmp/holder3b-release.json || true
 
 note "phase 3b: pty exit code: $PTY3B_RC"
 [ "$PTY3B_RC" -eq 0 ] || { echo "FAIL: phase 3b pty driver exited $PTY3B_RC (see claude-phase3b.log)"; exit 65; }
+fi
+
+# ------------------------------------------------------------------ phase s3
+if [ "$MODE" = plugin ] && has_phase s3; then
+  phase_s3
 fi
 
 # ------------------------------------------------------------------ assertions

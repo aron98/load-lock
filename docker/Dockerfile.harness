@@ -12,6 +12,15 @@
 #            -t load-lock-verify:codex .
 #   sudo docker build -f docker/Dockerfile.harness --build-arg HARNESS=claude-code \
 #            -t load-lock-verify:claude-code .
+#   docker build -f docker/Dockerfile.harness --build-arg HARNESS=claude-code \
+#            --build-arg LOAD_LOCK_GLOBAL=0 -t load-lock-verify:claude-code-plugin .
+# (sudo only where plain docker cannot reach the daemon; docker/run-*.sh
+# decide that themselves, see docker/docker-cmd.sh.)
+#
+# LOAD_LOCK_GLOBAL=0 (#104, claude-code only) builds a clean-machine image:
+# no global load-lock and no `load-lock install`; the packed tarball stays
+# in /pkg and this repo's plugin marketplace is copied to /opt/load-lock-repo
+# for verify-claude-code.sh's plugin mode (MODE=plugin).
 #
 # The container is self-contained: the load-lock daemon auto-spawns inside it
 # (daemon and harness must share a PID namespace for /proc-based process
@@ -31,6 +40,7 @@ RUN npm ci && npm run build && npm pack
 
 FROM node:24-bookworm-slim AS harness
 ARG HARNESS=codex
+ARG LOAD_LOCK_GLOBAL=1
 ENV HARNESS=${HARNESS}
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git procps python3 \
@@ -41,7 +51,7 @@ COPY --from=builder /src/*.tgz ./
 # Exec mode never injects MCP tools at 0.16x (upstream bug, openai/codex#38689);
 # the interactive TUI path plus docker/codex-api-shim.js handle it (see
 # docker/verify-codex.sh for the full story).
-RUN npm install -g ./*.tgz \
+RUN { [ "$LOAD_LOCK_GLOBAL" = 0 ] || npm install -g ./*.tgz; } \
  && case "$HARNESS" in \
       codex)        npm install -g @openai/codex@0.163.0 ;; \
       # --allow-scripts: npm 11 blocks package postinstall scripts by default;
@@ -70,10 +80,19 @@ RUN mkdir -p /root/.codex \
       claude-code) \
         mkdir -p /home/node/.claude \
         && chown node:node /workspace \
-        && HOME=/home/node load-lock install --harness claude-code \
+        && { [ "$LOAD_LOCK_GLOBAL" = 0 ] || HOME=/home/node load-lock install --harness claude-code; } \
         && chown -R node:node /home/node ;; \
     esac \
- && { load-lock doctor || true; }
+ && { [ "$LOAD_LOCK_GLOBAL" = 0 ] || load-lock doctor || true; }
+
+# Plugin mode (#104): the marketplace root and the plugin folder exactly as
+# committed (the plugin has no build step). Copied for every image; only
+# MODE=plugin uses it.
+COPY .claude-plugin /opt/load-lock-repo/.claude-plugin
+COPY plugins/claude-code /opt/load-lock-repo/plugins/claude-code
+# Owned by node: a directory marketplace is read in place, and phase 1b of
+# the plugin-mode run temporarily strips the await-offer hook from it.
+RUN chown -R node:node /opt/load-lock-repo
 
 # Scenario scripts run inside the container (see docker/run-*-verify.sh).
 # claude-pty.py drives the interactive TUI through a pty for the parts of
@@ -81,9 +100,12 @@ RUN mkdir -p /root/.codex \
 # async await-offer wake).
 COPY docker/verify-codex.sh /usr/local/bin/verify-codex.sh
 COPY docker/verify-claude-code.sh /usr/local/bin/verify-claude-code.sh
+COPY docker/verify-claude-plugin-lib.sh /usr/local/bin/verify-claude-plugin-lib.sh
 COPY docker/codex-pty.py /usr/local/bin/codex-pty.py
 COPY docker/codex-api-shim.js /usr/local/bin/codex-api-shim.js
 COPY docker/claude-pty.py /usr/local/bin/claude-pty.py
+# Scripted stand-in for the Anthropic API (plugin mode's model-free phases).
+COPY docker/anthropic-stub.mjs /usr/local/bin/anthropic-stub.mjs
 RUN chmod +x /usr/local/bin/verify-*.sh /usr/local/bin/codex-pty.py /usr/local/bin/codex-api-shim.js /usr/local/bin/claude-pty.py
 
 WORKDIR /workspace
