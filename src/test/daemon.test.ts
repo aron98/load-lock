@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { connect } from "node:net";
@@ -245,18 +245,19 @@ test("offer expiry pauses and hands capacity to the next waiter; rejoin works", 
   }
 });
 
-test("tracked process: auto-release on death; PID identity checked via /proc start time", async () => {
+test("tracked process: auto-release on death; PID identity checked via start time", async () => {
   const d = await startDaemon();
   try {
     const c = d.client();
     await c.connect();
     const g = (await c.request("acquire", ACQ("A", "op1"))) as any;
     const sleeper = spawn("sleep", ["60"], { stdio: "ignore" });
-    if (process.platform === "linux") {
-      // PID-reuse defense needs /proc; elsewhere liveness is signal 0
-      // (documented limitation), but the auto-release below is cross-platform.
+    if (process.platform === "linux" || process.platform === "darwin") {
+      // PID-reuse defense: /proc on Linux, ps lstart on macOS (#116); on
+      // Windows liveness is signal 0 (documented limitation), but the
+      // auto-release below is cross-platform.
       const st0 = processStartTime(sleeper.pid!);
-      assert.ok(st0, "reads /proc start time on Linux");
+      assert.ok(st0, "reads the start time (/proc on Linux, ps on macOS)");
       // wrong start time => treated as a different (dead) process
       assert.equal(isProcessAlive(sleeper.pid!, "9999"), false);
       assert.equal(isProcessAlive(sleeper.pid!, st0), true);
@@ -307,6 +308,53 @@ test("subprocess survival: parent exits, child keeps the permit until it really 
     assert.equal(st.pools[0].used, 0);
     c.close();
   } finally {
+    await d.stop();
+  }
+});
+
+test("daemon restart: a tracked permit journaled without pidStartTime (older daemon) is still kept and swept", async () => {
+  const d = await startDaemon();
+  const sleeper = spawn("sleep", ["60"], { stdio: "ignore" });
+  try {
+    const c = d.client();
+    await c.connect();
+    const g = (await c.request("acquire", ACQ("A", "op1"))) as any;
+    await c.request("attach_pid", { permitToken: g.entry.permitToken, pid: sleeper.pid });
+    c.close();
+    d.child.kill("SIGTERM");
+    await new Promise<void>((r) => d.child.once("exit", r));
+
+    // Rewrite the journal as a pre-#116 macOS daemon wrote it: no start time.
+    const jpath = join(d.dir, "journal.json");
+    const journal = JSON.parse(readFileSync(jpath, "utf8")) as any[];
+    const held = journal.filter((e) => e.pid === sleeper.pid);
+    assert.equal(held.length, 1, "the tracked permit is journaled");
+    if (process.platform === "linux" || process.platform === "darwin") assert.ok(held[0].pidStartTime, "this daemon records a start time");
+    for (const e of journal) delete e.pidStartTime;
+    writeFileSync(jpath, JSON.stringify(journal));
+
+    const child2 = spawn(process.execPath, [daemonMain, "--state-dir", d.dir, "--socket", d.sock], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, LOAD_LOCK_STATE_DIR: d.dir, LOAD_LOCK_SOCKET: d.sock },
+    });
+    try {
+      await until("restarted daemon listens", async () => await probe(d.sock));
+      const c2 = new LLClient({ socket: d.sock, stateDir: d.dir, spawnDaemon: false });
+      await c2.connect();
+      let st = (await c2.request("status", {})) as any;
+      assert.equal(st.pools[0].holders.length, 1, "live pid without a start time keeps its permit");
+      sleeper.kill("SIGKILL");
+      await until("auto-release once the start-time-less job dies", async () => {
+        st = (await c2.request("status", {})) as any;
+        return st.pools[0].holders.length === 0;
+      });
+      c2.close();
+    } finally {
+      child2.kill("SIGTERM");
+      await new Promise<void>((r) => (child2.exitCode !== null ? r() : child2.once("exit", () => r())));
+    }
+  } finally {
+    sleeper.kill("SIGKILL");
     await d.stop();
   }
 });

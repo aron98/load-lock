@@ -25,7 +25,8 @@ import {
   killProcessGroup,
 } from "../shared/transport.js";
 import { stateDir, socketPath } from "../core/persist.js";
-import { isProcessAlive, jobAlive, aliveBySignalZero, processStartTime } from "../core/daemon.js";
+import { isProcessAlive, jobAlive, aliveBySignalZero, processStartTime, livenessChecker } from "../core/daemon.js";
+import type { PsRunner } from "../shared/identity.js";
 
 const TMP_BASE = process.env.LL_TEST_TMP ?? join(tmpdir(), "opencode");
 mkdirSync(TMP_BASE, { recursive: true });
@@ -192,15 +193,16 @@ test("aliveBySignalZero: own pid alive, pid 1 alive (ours or EPERM), huge pid de
   assert.equal(aliveBySignalZero(4_194_303), false);
 });
 
-// Linux-only: the /proc start-time check and the process-group scan need a real
-// /proc (macOS falls back to signal 0; documented in docs/OPERATIONS.md).
-const NO_PROC = process.platform !== "linux" && "needs /proc (Linux only)";
+// The start-time check and the process-group scan need /proc (Linux) or the
+// ps reader (macOS, issue #116); Windows falls back to signal 0.
+const PLATFORM = process.platform;
+const NO_PROC_OR_PS = PLATFORM !== "linux" && PLATFORM !== "darwin" && "needs /proc (Linux) or ps (macOS)";
 
-test("isProcessAlive: Linux branch still checks /proc start time", { skip: NO_PROC }, () => {
-  const st = processStartTime(process.pid);
-  assert.ok(st !== undefined, "/proc start time must be readable on Linux");
-  assert.equal(isProcessAlive(process.pid, st, "linux"), true);
-  assert.equal(isProcessAlive(process.pid, "9999", "linux"), false); // mismatch = reuse
+test("isProcessAlive: start time defeats pid reuse (Linux /proc, macOS ps)", { skip: NO_PROC_OR_PS }, () => {
+  const st = processStartTime(process.pid, PLATFORM);
+  assert.ok(st !== undefined, "start time must be readable");
+  assert.equal(isProcessAlive(process.pid, st, PLATFORM), true);
+  assert.equal(isProcessAlive(process.pid, "9999", PLATFORM), false); // mismatch = reuse
 });
 
 test("jobAlive: win32 skips the process-group scan", () => {
@@ -212,13 +214,127 @@ test("jobAlive: win32 skips the process-group scan", () => {
   assert.equal(jobAlive(undefined, 12345, undefined, "win32"), null);
 });
 
-test("jobAlive: Linux still scans process groups", { skip: NO_PROC }, () => {
-  assert.equal(jobAlive(process.pid, undefined, undefined, "linux"), true);
-  // pgid 1 exists but a dead pid + live foreign pgid keeps the job "alive"
-  // via the group scan — semantics unchanged on Linux.
-  assert.equal(jobAlive(4_194_303, 1, undefined, "linux"), true);
-  // Both dead => false on Linux (group 999999 has no members).
-  assert.equal(jobAlive(4_194_303, 999_999, undefined, "linux"), false);
+test("jobAlive: scans process groups (Linux /proc, macOS ps)", { skip: NO_PROC_OR_PS }, () => {
+  assert.equal(jobAlive(process.pid, undefined, undefined, PLATFORM), true);
+  // pgid 1 (init/launchd) exists: a dead pid + live pgid keeps the job
+  // "alive" via the group scan.
+  assert.equal(jobAlive(4_194_303, 1, undefined, PLATFORM), true);
+  // Both dead => false (group 999999 has no members).
+  assert.equal(jobAlive(4_194_303, 999_999, undefined, PLATFORM), false);
+});
+
+// ------------------------------------------------- liveness (macOS, fake ps)
+// Issue #116: macOS liveness reads one `ps -A -o pid=,pgid=,lstart=` table
+// per batch. Pids >= 4_000_000 are never in use, so a row in the fake table
+// is the only thing that can make them alive.
+
+const LSTART_A = "Fri Nov 27 17:15:58 2026";
+const LSTART_B = "Fri Nov 27 17:16:30 2026";
+const secs = (lstart: string) => String(Math.floor(Date.parse(lstart) / 1000));
+
+/** Fake ps: answers the table query and the per-pid stat query from rows [pid, pgid, lstart]. */
+function fakePsTable(rows: [number, number, string][], calls?: string[][]): PsRunner {
+  return (args) => {
+    calls?.push(args);
+    if (args.join(" ") === "-A -o pid=,pgid=,lstart=") {
+      // real ps right-aligns the numbers and pads the line
+      return rows.map(([pid, pgid, ls]) => `${String(pid).padStart(7)} ${String(pgid).padStart(7)} ${ls}    `).join("\n") + "\n";
+    }
+    const p = args.indexOf("-p");
+    const row = p >= 0 ? rows.find((r) => r[0] === Number(args[p + 1])) : undefined;
+    if (row && args.includes("ppid=,lstart=,ucomm=")) return `    1 ${row[2]} sleep\n`;
+    return null;
+  };
+}
+const failingPs: PsRunner = () => null;
+
+test("macOS liveness (#116): a different lstart for the same pid means reuse", () => {
+  const ps = fakePsTable([[4_100_001, 4_100_001, LSTART_A]]);
+  const st = processStartTime(4_100_001, "darwin", ps);
+  assert.equal(st, secs(LSTART_A), "attach records lstart as epoch seconds");
+  assert.equal(isProcessAlive(4_100_001, st, "darwin", ps), true);
+  // pid reused by a process started later: dead, even though the pid exists
+  const reused = fakePsTable([[4_100_001, 4_100_001, LSTART_B]]);
+  assert.equal(isProcessAlive(4_100_001, st, "darwin", reused), false);
+  assert.equal(jobAlive(4_100_001, undefined, st, "darwin", reused), false);
+  // gone entirely
+  assert.equal(isProcessAlive(4_100_001, st, "darwin", fakePsTable([[1, 1, LSTART_A]])), false);
+});
+
+test("macOS liveness (#116): known limitation — reuse within the same second is not detected", () => {
+  // lstart has 1 s resolution: a pid that exits and is reused by another
+  // process started in the same second carries the same start time. Like
+  // Linux's clock-tick start time, but coarser (documented in OPERATIONS).
+  const st = processStartTime(4_100_002, "darwin", fakePsTable([[4_100_002, 4_100_002, LSTART_A]]));
+  const reusedSameSecond = fakePsTable([[4_100_002, 4_200_000, LSTART_A]]);
+  assert.equal(isProcessAlive(4_100_002, st, "darwin", reusedSameSecond), true);
+});
+
+test("macOS liveness (#116): group members keep a job alive after its leader exits", () => {
+  const leader = 4_100_003;
+  const st = secs(LSTART_A);
+  // leader gone, a child in its process group still runs
+  const childOnly = fakePsTable([[1, 1, LSTART_A], [4_100_004, leader, LSTART_B]]);
+  assert.equal(jobAlive(leader, leader, st, "darwin", childOnly), true);
+  // pgid-only tracking works too
+  assert.equal(jobAlive(undefined, leader, undefined, "darwin", childOnly), true);
+  // whole group gone => confirmed dead
+  const none = fakePsTable([[1, 1, LSTART_A], [4_100_004, 4_100_004, LSTART_B]]);
+  assert.equal(jobAlive(leader, leader, st, "darwin", none), false);
+  assert.equal(jobAlive(undefined, leader, undefined, "darwin", none), false);
+});
+
+test("macOS liveness (#116): one ps call per batch, however many jobs are checked", () => {
+  const calls: string[][] = [];
+  const ps = fakePsTable([[4_100_005, 4_100_005, LSTART_A], [4_100_006, 4_100_005, LSTART_A]], calls);
+  const check = livenessChecker({ platform: "darwin", ps });
+  assert.equal(calls.length, 0, "the snapshot is lazy");
+  assert.equal(check(4_100_005, 4_100_005, secs(LSTART_A)), true);
+  assert.equal(check(4_190_000, 4_100_005, undefined), true);
+  assert.equal(check(4_190_001, 4_190_001, secs(LSTART_B)), false);
+  assert.equal(check(4_100_006, undefined, secs(LSTART_B)), false);
+  assert.equal(calls.length, 1, "all checks share one ps -A snapshot");
+});
+
+test("macOS liveness (#116): ps failure falls back to kill(pid, 0)", () => {
+  for (const ps of [failingPs, (() => "garbled output\n") as PsRunner]) {
+    // signal 0 only: a live pid is alive whatever start time was recorded
+    // (no reuse defense without ps), a dead one is dead
+    assert.equal(isProcessAlive(process.pid, "9999", "darwin", ps), true);
+    assert.equal(isProcessAlive(4_194_303, "9999", "darwin", ps), false);
+    // no group scan: dead pid => dead; pgid-only => unknown (kept)
+    assert.equal(jobAlive(4_194_303, 4_194_303, undefined, "darwin", ps), false);
+    assert.equal(jobAlive(undefined, 4_194_303, undefined, "darwin", ps), null);
+    assert.equal(processStartTime(process.pid, "darwin", ps), undefined);
+  }
+});
+
+test("macOS liveness (#116): permits journaled without a start time (older daemon) are existence-checked", () => {
+  // Pre-#116 macOS daemons recorded no pidStartTime. Restoring such a permit
+  // must not treat it as reused: a live pid keeps it, a dead one releases.
+  const ps = fakePsTable([[4_100_007, 4_100_007, LSTART_B]]);
+  assert.equal(jobAlive(4_100_007, undefined, undefined, "darwin", ps), true);
+  assert.equal(jobAlive(4_100_008, undefined, undefined, "darwin", ps), false);
+  // a live pid missing from the table (e.g. hidden from ps) falls back to signal 0
+  assert.equal(jobAlive(process.pid, undefined, undefined, "darwin", ps), true);
+});
+
+test("macOS liveness (#116): real processes — reuse check and leader-exited group", { skip: PLATFORM !== "darwin" && "macOS only" }, async () => {
+  const parent = spawn("/bin/sh", ["-c", "sleep 30 & exit 0"], { stdio: "ignore", detached: true });
+  const pgid = parent.pid!;
+  const st = processStartTime(pgid, "darwin");
+  assert.ok(st && /^\d+$/.test(st), "start time recorded via ps");
+  assert.equal(isProcessAlive(pgid, String(Number(st) - 5), "darwin"), false, "different lstart => reuse");
+  await new Promise<void>((r) => (parent.exitCode !== null ? r() : parent.once("exit", () => r())));
+  try {
+    assert.equal(isProcessAlive(pgid, st, "darwin"), false, "leader exited");
+    assert.equal(jobAlive(pgid, pgid, st, "darwin"), true, "orphaned sleep keeps the group alive");
+  } finally {
+    killProcessGroup(pgid, "SIGKILL");
+  }
+  const deadline = Date.now() + 5000;
+  while (jobAlive(pgid, pgid, st, "darwin") !== false && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(jobAlive(pgid, pgid, st, "darwin"), false, "whole group gone => dead");
 });
 
 // Clean up once everything finished.

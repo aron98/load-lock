@@ -28,6 +28,7 @@ import { inspectMachine } from "./sysinfo.js";
 import { AcquireParams, MachineEvent, OwnerEntrySnapshot, ProtocolError, WaitForCompletionResult } from "../shared/protocol.js";
 import { HOOK_ONCE_DEFAULT_TTL_MS, HOOK_ONCE_MAX_TTL_MS, type HookOnceParams, type HookOnceResult } from "../shared/protocol.js";
 import { isWindows, probeTransport } from "../shared/transport.js";
+import { psProcessTable, psReader, runPs, type ProcRow, type PsRunner } from "../shared/identity.js";
 import { packageVersion, packageRoot, compareVersions } from "../shared/version.js";
 import { DaemonInfo, RuntimeCopy, inspectPackageRoot, loadRuntimes, mergeRuntime, saveRuntimes } from "../shared/runtimes.js";
 
@@ -107,7 +108,7 @@ export class Daemon {
       // runs; release permits whose process is confirmed dead. Same permit
       // tokens remain valid, so a late explicit release after restart works.
       if (opts.recover !== false) {
-        this.machine.restore(loadJournal(this.stateDirPath), (e) => jobAlive(e.pid, e.pgid, e.pidStartTime));
+        this.machine.restore(loadJournal(this.stateDirPath), byEntry(livenessChecker()));
       }
     }
     this.sentEventId = this.machine.latestEventId(); // don't replay history to watchers
@@ -421,8 +422,8 @@ export class Daemon {
       }
 
       case "start_job": {
-        // Atomic execution association. pidStartTime read daemon-side from
-        // /proc (pid-reuse-safe on Linux).
+        // Atomic execution association. pidStartTime read daemon-side
+        // (/proc on Linux, ps on macOS) — pid-reuse-safe.
         const snap = m.startJob(String(p.permitToken), Number(p.pid), p.pgid !== undefined ? Number(p.pgid) : undefined, processStartTime(Number(p.pid)));
         return [{ entry: snap }, snap.agentId];
       }
@@ -519,7 +520,7 @@ export class Daemon {
       }
 
       case "admin_list":
-        return [{ holders: m.diagnose((e) => jobAlive(e.pid, e.pgid, e.pidStartTime)), latestEventId: m.latestEventId() }, undefined];
+        return [{ holders: m.diagnose(byEntry(livenessChecker())), latestEventId: m.latestEventId() }, undefined];
 
       case "admin_release": {
         // Force-release recovery: reclaims the permit and frees capacity.
@@ -839,9 +840,11 @@ export class Daemon {
    */
   private sweep(): void {
     const m = this.machine;
+    // One checker per sweep: on macOS all tracked jobs share one ps call.
+    const check = livenessChecker();
     for (const e of m.heldEntries()) {
       if (e.phase === "running_tracked") {
-        const alive = jobAlive(e.pid, e.pgid, e.pidStartTime);
+        const alive = check(e.pid, e.pgid, e.pidStartTime);
         if (alive === false) {
           m.autoRelease(e.requestId, `tracked process ${e.pid}${e.pgid ? ` / pgid ${e.pgid}` : ""} is no longer running`);
         }
@@ -880,56 +883,115 @@ export function aliveBySignalZero(pid: number): boolean {
   }
 }
 
+/** A tracked job's recorded identity, as journaled. */
+export type JobRef = { pid?: number; pgid?: number; pidStartTime?: string };
+/** true = alive, false = confirmed dead, null = unknown (conservative keep). */
+export type JobLiveness = (pid?: number, pgid?: number, pidStartTime?: string) => boolean | null;
+
+export interface LivenessOptions {
+  platform?: NodeJS.Platform;
+  /** `ps` runner (macOS); tests plant a fake process table. */
+  ps?: PsRunner;
+}
+
 /**
- * Linux: /proc/<pid>/stat field 22 (starttime) defeats pid reuse.
- * Windows: no /proc and no start time — signal-0 fallback only; the
- * pid-reuse defense is unavailable there (documented limitation).
- * macOS: /proc is absent, so the signal-0 fallback applies too.
+ * Liveness checker for one batch of checks (one sweep, one restore, one
+ * diagnose). Per platform:
+ *
+ * - Linux: /proc/<pid>/stat start time (field 22) defeats pid reuse; the
+ *   process-group scan walks /proc.
+ * - macOS (issue #116): ONE `ps -A -o pid=,pgid=,lstart=` snapshot, taken
+ *   lazily on the first check and shared by every later check of this
+ *   checker. The pid's lstart (epoch seconds, recorded at attach) defeats
+ *   pid reuse — except a reuse within the same second as the original start
+ *   (1 s resolution). The group scan looks for any snapshot row with the
+ *   job's pgid. When ps fails, both degrade to the kill(pid, 0) fallback:
+ *   no reuse defense, no group scan (unknown).
+ * - Windows: signal 0 only; no start time, no process groups (documented).
+ *
+ * A permit recorded without a start time (attached by an older daemon, or
+ * when the start time was unreadable) is checked for existence only.
  */
-export function isProcessAlive(pid: number, expectedStartTime?: string, platform: NodeJS.Platform = process.platform): boolean | null {
-  if (isWindows(platform)) {
-    // Start time is unobtainable without native APIs; pid reuse is possible
-    // during this window (documented in docs/OPERATIONS.md).
-    return aliveBySignalZero(pid);
-  }
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    if (expectedStartTime !== undefined) {
-      const close = stat.lastIndexOf(")");
-      const fields = stat.slice(close + 2).split(" ");
-      const starttime = fields[19]; // field 22 overall (1-based), minus pid + comm
-      if (starttime !== expectedStartTime) return false; // pid was reused
+export function livenessChecker(opts: LivenessOptions = {}): JobLiveness {
+  const platform = opts.platform ?? process.platform;
+  let snapshot: Map<number, ProcRow> | null | undefined;
+  const table = (): Map<number, ProcRow> | null =>
+    snapshot !== undefined ? snapshot : (snapshot = psProcessTable(opts.ps ?? runPs));
+
+  const processAlive = (pid: number, expectedStartTime?: string): boolean => {
+    if (isWindows(platform)) return aliveBySignalZero(pid);
+    if (platform === "darwin") {
+      const row = table()?.get(pid);
+      // Absent from the snapshot (or ps failed): ask the kernel. A pid that
+      // is absent but signalable was (re)spawned after the snapshot or is
+      // hidden from ps — never the attached process when a start time was
+      // recorded, but without one we cannot tell (fallback semantics).
+      if (!row) return expectedStartTime !== undefined && table() !== null ? false : aliveBySignalZero(pid);
+      return expectedStartTime === undefined || row.startTime === expectedStartTime;
     }
-    return true;
-  } catch {
-    // /proc unavailable (macOS): fall back to signal 0. Pid reuse is possible
-    // here; documented limitation — that is why adapters should prefer
-    // run_with_permit / process-group tracking where available.
-    return aliveBySignalZero(pid);
-  }
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      if (expectedStartTime !== undefined) {
+        const close = stat.lastIndexOf(")");
+        const fields = stat.slice(close + 2).split(" ");
+        const starttime = fields[19]; // field 22 overall (1-based), minus pid + comm
+        if (starttime !== expectedStartTime) return false; // pid was reused
+      }
+      return true;
+    } catch {
+      // /proc unavailable: signal 0, no pid-reuse defense.
+      return aliveBySignalZero(pid);
+    }
+  };
+
+  const groupAlive = (pgid: number): boolean | null => {
+    if (isWindows(platform)) return null;
+    if (platform === "darwin") {
+      const t = table();
+      if (!t) return null;
+      for (const row of t.values()) if (row.pgid === pgid) return true;
+      return false;
+    }
+    return scanProcessGroup(pgid);
+  };
+
+  return (pid, pgid, pidStartTime) => {
+    if (pid !== undefined && processAlive(pid, pidStartTime)) return true;
+    if (pgid !== undefined) {
+      const scan = groupAlive(pgid);
+      if (scan !== null) return scan;
+    }
+    if (pid === undefined) return null;
+    return false;
+  };
+}
+
+/** Adapts a checker to the state machine's `(entry) => liveness` callbacks. */
+function byEntry(check: JobLiveness): (e: JobRef) => boolean | null {
+  return (e) => check(e.pid, e.pgid, e.pidStartTime);
+}
+
+/**
+ * Single-process liveness with an optional recorded start time (see
+ * livenessChecker for the per-platform semantics). One-off: on macOS each
+ * call takes its own ps snapshot — batch with livenessChecker instead.
+ */
+export function isProcessAlive(pid: number, expectedStartTime?: string, platform: NodeJS.Platform = process.platform, ps?: PsRunner): boolean {
+  return livenessChecker({ platform, ps })(pid, undefined, expectedStartTime) === true;
 }
 
 /**
  * Job liveness: a tracked job is alive if its pid is alive (start-time
  * matched) OR any process in its process group is alive — covering
- * subprocesses and background jobs that outlive their parent. Returns
- * true/false on Linux; on platforms without /proc the pgid scan is
- * unavailable and the result may be null (unknown => conservative keep).
- * Windows: no process groups — only the main pid is checked, so a permit
- * is released once the main pid dies even if children survive (documented
- * limitation; adapters should kill the tree via taskkill /T).
+ * subprocesses and background jobs that outlive their parent. null when
+ * the group scan is unavailable and no pid is known (unknown =>
+ * conservative keep). Windows: no process groups — only the main pid is
+ * checked, so a permit is released once the main pid dies even if children
+ * survive (documented limitation; adapters kill the tree via taskkill /T).
+ * One-off; see livenessChecker for batching.
  */
-export function jobAlive(pid?: number, pgid?: number, pidStartTime?: string, platform: NodeJS.Platform = process.platform): boolean | null {
-  if (pid !== undefined) {
-    const alive = isProcessAlive(pid, pidStartTime, platform);
-    if (alive === true) return true;
-  }
-  if (pgid !== undefined && !isWindows(platform)) {
-    const scan = scanProcessGroup(pgid);
-    if (scan !== null) return scan;
-  }
-  if (pid === undefined) return null;
-  return false;
+export function jobAlive(pid?: number, pgid?: number, pidStartTime?: string, platform: NodeJS.Platform = process.platform, ps?: PsRunner): boolean | null {
+  return livenessChecker({ platform, ps })(pid, pgid, pidStartTime);
 }
 
 /** Scan /proc for any live process whose pgrp matches pgid. null = /proc unavailable. */
@@ -955,8 +1017,15 @@ function scanProcessGroup(pgid: number): boolean | null {
   return false;
 }
 
-/** Read the Linux start time of a pid (pid-reuse-safe association). */
-export function processStartTime(pid: number): string | undefined {
+/**
+ * Start time of a pid, recorded when a job attaches (pid-reuse-safe
+ * association): /proc/<pid>/stat field 22 on Linux, `ps` lstart epoch
+ * seconds on macOS (via the identity ProcReader). undefined elsewhere or
+ * when unreadable — the permit is then checked for existence only.
+ */
+export function processStartTime(pid: number, platform: NodeJS.Platform = process.platform, ps?: PsRunner): string | undefined {
+  if (platform === "darwin") return psReader(ps ?? runPs).stat(pid)?.startTime;
+  if (isWindows(platform)) return undefined;
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const close = stat.lastIndexOf(")");
