@@ -226,6 +226,7 @@ test("mcp: wait_for_completion wakes promptly on an adapter-parented job with ex
     const acq = await callJson(c, "acquire", { reason: "build", op_key: "mcp-wfc" });
     assert.equal(acq.state, "granted");
 
+    const tRun = Date.now();
     const job = await callJson(c, "run_with_permit", {
       permit_token: acq.permit_token,
       command: `sh -c 'sleep 1 && echo done'`,
@@ -241,7 +242,11 @@ test("mcp: wait_for_completion wakes promptly on an adapter-parented job with ex
     assert.ok(res.output_tail.includes("done"), "output tail included");
     assert.equal(res.permit_released, true, "permit was freed before the wake");
     assert.ok(elapsed < 8_000, `woke promptly on the child exit event (took ${elapsed}ms)`);
-    assert.ok(res.waited_ms >= 800, `waited_ms reported (got ${res.waited_ms})`);
+    // The 1s job started before this wait did; on a slow runner
+    // run_with_permit itself can take a few hundred ms of that second.
+    const minWait = 1_000 - (t0 - tRun) - 200;
+    assert.ok(res.waited_ms >= minWait, `waited_ms reported (got ${res.waited_ms}, expected >= ${minWait})`);
+    assert.ok(res.waited_ms <= elapsed + 50, `waited_ms within the call (got ${res.waited_ms}, call took ${elapsed}ms)`);
 
     const st = await callJson(c, "status", {});
     assert.equal(st.pools[0].holders.length, 0, "capacity is free the moment we wake");
