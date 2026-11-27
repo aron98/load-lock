@@ -121,7 +121,7 @@ export interface ProcReader {
 /** Runs `ps` with the given args; stdout, or null when ps failed (no such pid). */
 export type PsRunner = (args: string[]) => string | null;
 
-function runPs(args: string[]): string | null {
+export function runPs(args: string[]): string | null {
   // LC_ALL=C pins the lstart format (it is strftime %c, locale-dependent).
   const r = spawnSync("/bin/ps", args, { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 2000 });
   return r.status === 0 && typeof r.stdout === "string" ? r.stdout : null;
@@ -154,15 +154,54 @@ export function psReader(ps: PsRunner): ProcReader {
       if (!out) return null;
       const tok = out.split(/\s+/);
       const ppid = Number(tok[0]);
-      const started = Date.parse(tok.slice(1, 6).join(" "));
+      const startTime = lstartSeconds(tok.slice(1, 6));
       const comm = tok.slice(6).join(" ").replace(/^-/, ""); // login shells show as "-zsh"
-      if (!Number.isInteger(ppid) || !Number.isFinite(started) || !comm) return null;
-      return { pid, ppid, comm, startTime: String(Math.floor(started / 1000)) };
+      if (!Number.isInteger(ppid) || !startTime || !comm) return null;
+      return { pid, ppid, comm, startTime };
     },
     argv(pid) {
       return ps(["-ww", "-o", "args=", "-p", String(pid)])?.trim().split(/\s+/) ?? [];
     },
   };
+}
+
+/**
+ * `lstart` tokens ("Fri Nov 27 17:15:58 2026" under LC_ALL=C) as epoch
+ * seconds, the macOS start-time format. 1 s resolution: a pid reused within
+ * the same second as the original start keeps the same value.
+ */
+function lstartSeconds(tok: string[]): string | null {
+  if (tok.length !== 5) return null;
+  const ms = Date.parse(tok.join(" "));
+  return Number.isFinite(ms) ? String(Math.floor(ms / 1000)) : null;
+}
+
+/** One row of a whole-machine process snapshot. */
+export interface ProcRow {
+  pgid: number;
+  /** Epoch seconds, same format as psReader's ProcInfo.startTime. */
+  startTime: string;
+}
+
+/**
+ * Whole process table in ONE `ps` call (issue #116): pid -> pgid + start
+ * time, for the daemon's batched liveness sweep on macOS. null when ps
+ * failed or printed nothing parseable — callers fall back to kill(pid, 0).
+ * Unparseable lines are skipped.
+ */
+export function psProcessTable(ps: PsRunner = runPs): Map<number, ProcRow> | null {
+  const out = ps(["-A", "-o", "pid=,pgid=,lstart="]);
+  if (out == null) return null;
+  const table = new Map<number, ProcRow>();
+  for (const line of out.split("\n")) {
+    const tok = line.trim().split(/\s+/);
+    const pid = Number(tok[0]);
+    const pgid = Number(tok[1]);
+    const startTime = lstartSeconds(tok.slice(2, 7));
+    if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(pgid) || !startTime) continue;
+    table.set(pid, { pgid, startTime });
+  }
+  return table.size > 0 ? table : null;
 }
 
 export function readProc(pid: number, procRoot = "/proc"): ProcInfo | null {

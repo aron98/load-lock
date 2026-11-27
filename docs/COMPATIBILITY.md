@@ -663,7 +663,7 @@ Labels stay human-readable: session-derived ids get a short holder label
 | Platform | Status | Notes |
 | --- | --- | --- |
 | **Linux** | Implemented + live-verified | Primary target; all daemon/protocol/CLI tests and the 3-worktree demo run here. `/proc`-based liveness with start-time PID-reuse defense. |
-| **macOS** | Implemented, limitations documented | Works; liveness falls back from `/proc` start times to `kill(pid, 0)` (weaker PID-reuse defense), no cgroup limits. See OPERATIONS.md. |
+| **macOS** | Implemented, limitations documented | Works; liveness uses `ps` instead of `/proc` (start-time PID-reuse defense at 1 s resolution, process-group scan; `kill(pid, 0)` fallback if `ps` fails), no cgroup limits. See OPERATIONS.md. |
 | **Windows** | Implemented, unit-tested on Linux — **not Windows-verified** | Named-pipe transport (`\\.\pipe\load-lock`), `%LOCALAPPDATA%` state dir, `kill(pid, 0)` liveness, `taskkill /T` job-tree kills. Covered by `src/test/platform.test.ts` via platform injection; no Windows machine was available for end-to-end verification. See the Windows procedure in OPERATIONS.md. |
 
 ## Verified vs proposed — summary counts
