@@ -20,7 +20,7 @@
  * apply mode, or restart failed after an applied update).
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { homedir } from "node:os";
 
@@ -55,9 +55,30 @@ export interface ClassifyCtx {
 }
 
 /** Path containment with separator awareness ("a" contains "a" and "a/b"). */
-function isUnder(dir: string, root: string): boolean {
+function isUnderLexically(dir: string, root: string): boolean {
   if (dir === root) return true;
   return dir.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
+function realpathOr(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * Containment that survives symlinks on either side (issue #108): the copy's
+ * root comes realpath'd from thisCopy(), while `npm root -g`, the npx/opencode
+ * cache roots and $HOME are reported as configured — on macOS e.g. under
+ * /var -> /private/var, or a symlinked prefix/HOME — so compare every
+ * combination of the raw and resolved paths.
+ */
+function isUnder(dir: string, root: string): boolean {
+  const dirs = [dir, realpathOr(dir)];
+  const roots = [root, realpathOr(root)];
+  return dirs.some((d) => roots.some((r) => isUnderLexically(d, r)));
 }
 
 /**

@@ -12,13 +12,16 @@
  *      processes it spawns (see HARNESS_SESSION_ENV);
  *   3. the stable harness ancestor process: walk up from the caller's
  *      parent past shells and launcher wrappers (npm/npx, env, ...) to the
- *      first real ancestor, identified by pid + /proc start time (pid-reuse
- *      safe). Linux only; elsewhere this step is skipped;
+ *      first real ancestor, identified by pid + start time (pid-reuse
+ *      safe). Linux reads /proc; macOS asks `ps` (issue #108); elsewhere
+ *      this step is skipped;
  *   4. the caller's fallback (the CLI's legacy `cli:$USER@$HOSTNAME`).
  *
- * Pure apart from reading /proc; every input is injectable for tests.
+ * Pure apart from reading /proc or running `ps`; every input is injectable
+ * for tests.
  */
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { basename, join } from "node:path";
 
 export type IdentitySource = "override" | "env" | "harness-env" | "ancestor" | "fallback";
@@ -65,8 +68,10 @@ export interface ResolveOptions {
   env?: NodeJS.ProcessEnv;
   /** First process to inspect (default: the caller's parent). */
   startPid?: number;
-  /** /proc root (tests plant a fake tree). */
+  /** /proc root (tests plant a fake tree). Linux only. */
   procRoot?: string;
+  /** `ps` runner (tests plant a fake process table). macOS only. */
+  ps?: PsRunner;
   platform?: NodeJS.Platform;
 }
 
@@ -83,8 +88,12 @@ export function sessionIdentity(opts: ResolveOptions): SessionIdentity {
   }
 
   const platform = opts.platform ?? process.platform;
-  if (platform === "linux") {
-    const anc = harnessAncestor(opts.startPid ?? process.ppid, opts.procRoot ?? "/proc");
+  const reader =
+    platform === "linux" ? procfsReader(opts.procRoot ?? "/proc")
+    : platform === "darwin" ? psReader(opts.ps ?? runPs)
+    : null;
+  if (reader) {
+    const anc = harnessAncestor(opts.startPid ?? process.ppid, reader);
     if (anc) {
       return { id: `proc:${anc.pid}:${anc.startTime}`, label: `${anc.comm}:${anc.pid}`, source: "ancestor" };
     }
@@ -96,8 +105,64 @@ export interface ProcInfo {
   pid: number;
   ppid: number;
   comm: string;
-  /** /proc/<pid>/stat field 22 (clock ticks since boot). */
+  /**
+   * Process start time: /proc/<pid>/stat field 22 (clock ticks since boot)
+   * on Linux, epoch seconds from `ps -o lstart` on macOS.
+   */
   startTime: string;
+}
+
+/** Reads one process's stat line and argv; null/[] when it is gone. */
+export interface ProcReader {
+  stat(pid: number): ProcInfo | null;
+  argv(pid: number): string[];
+}
+
+/** Runs `ps` with the given args; stdout, or null when ps failed (no such pid). */
+export type PsRunner = (args: string[]) => string | null;
+
+function runPs(args: string[]): string | null {
+  // LC_ALL=C pins the lstart format (it is strftime %c, locale-dependent).
+  const r = spawnSync("/bin/ps", args, { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 2000 });
+  return r.status === 0 && typeof r.stdout === "string" ? r.stdout : null;
+}
+
+function procfsReader(procRoot: string): ProcReader {
+  return {
+    stat: (pid) => readProc(pid, procRoot),
+    argv: (pid) => {
+      try {
+        return readFileSync(join(procRoot, String(pid), "cmdline"), "utf8").split("\0");
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
+/**
+ * macOS has no /proc: `ps -o ppid=,lstart=,ucomm=` gives the parent, the
+ * start time ("Fri Nov 27 17:15:58 2026" under LC_ALL=C, five tokens) and
+ * the accounting name (rest of the line; may contain spaces). argv comes from
+ * `ps -o args=`, which joins it with spaces — good enough for the basename
+ * checks on argv[0..1] the wrapper test needs.
+ */
+export function psReader(ps: PsRunner): ProcReader {
+  return {
+    stat(pid) {
+      const out = ps(["-o", "ppid=,lstart=,ucomm=", "-p", String(pid)])?.trim();
+      if (!out) return null;
+      const tok = out.split(/\s+/);
+      const ppid = Number(tok[0]);
+      const started = Date.parse(tok.slice(1, 6).join(" "));
+      const comm = tok.slice(6).join(" ").replace(/^-/, ""); // login shells show as "-zsh"
+      if (!Number.isInteger(ppid) || !Number.isFinite(started) || !comm) return null;
+      return { pid, ppid, comm, startTime: String(Math.floor(started / 1000)) };
+    },
+    argv(pid) {
+      return ps(["-ww", "-o", "args=", "-p", String(pid)])?.trim().split(/\s+/) ?? [];
+    },
+  };
 }
 
 export function readProc(pid: number, procRoot = "/proc"): ProcInfo | null {
@@ -117,28 +182,24 @@ export function readProc(pid: number, procRoot = "/proc"): ProcInfo | null {
   }
 }
 
-function isWrapper(p: ProcInfo, procRoot: string): boolean {
+function isWrapper(p: ProcInfo, reader: ProcReader): boolean {
   if (SHELLS.has(p.comm)) return true;
-  let argv: string[] = [];
-  try {
-    argv = readFileSync(join(procRoot, String(p.pid), "cmdline"), "utf8").split("\0");
-  } catch {
-    return false;
-  }
-  return argv.slice(0, 2).some((a) => a && WRAPPER_SCRIPTS.has(basename(a)));
+  return reader.argv(p.pid).slice(0, 2).some((a) => a && WRAPPER_SCRIPTS.has(basename(a)));
 }
 
 /**
  * First ancestor (starting at `startPid`, inclusive) that is not a shell or
- * launcher wrapper. null when the walk reaches init (pid <= 1) or /proc is
- * unreadable — an orphaned caller has no harness to share an identity with.
+ * launcher wrapper. null when the walk reaches init/launchd (pid <= 1) or
+ * the process table is unreadable — an orphaned caller has no harness to
+ * share an identity with. `source` is a /proc root or a ProcReader.
  */
-export function harnessAncestor(startPid: number, procRoot = "/proc"): ProcInfo | null {
+export function harnessAncestor(startPid: number, source: string | ProcReader = "/proc"): ProcInfo | null {
+  const reader = typeof source === "string" ? procfsReader(source) : source;
   let pid = startPid;
   for (let depth = 0; depth < 32 && pid > 1; depth++) {
-    const p = readProc(pid, procRoot);
+    const p = reader.stat(pid);
     if (!p) return null;
-    if (!isWrapper(p, procRoot)) return p;
+    if (!isWrapper(p, reader)) return p;
     pid = p.ppid;
   }
   return null;

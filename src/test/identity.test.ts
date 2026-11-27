@@ -10,7 +10,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { sessionIdentity, harnessAncestor, readProc } from "../shared/identity.js";
+import { execFileSync } from "node:child_process";
+import { sessionIdentity, harnessAncestor, readProc, psReader, type PsRunner } from "../shared/identity.js";
 import { startDaemon, runCli, type DaemonHandle } from "./testutil.js";
 
 const TMP_BASE = process.env.LL_TEST_TMP ?? join(tmpdir(), "opencode");
@@ -81,12 +82,60 @@ test("identity: a reused pid with a new start time is a different session", () =
   }
 });
 
-test("identity: falls back when the walk reaches init, /proc is missing, or not on Linux", () => {
+test("identity: falls back when the walk reaches init, /proc is missing, or on another platform", () => {
   assert.equal(harnessAncestor(400, tree), null);
   assert.deepEqual(resolve(400), { id: "cli:u@h", label: "cli:u@h", source: "fallback" });
   assert.equal(resolve(99999).source, "fallback");
-  const mac = sessionIdentity({ fallback: "cli:u@h", env: {}, startPid: 110, procRoot: tree, platform: "darwin" });
-  assert.equal(mac.source, "fallback");
+  const win = sessionIdentity({ fallback: "cli:u@h", env: {}, startPid: 110, procRoot: tree, platform: "win32" });
+  assert.equal(win.source, "fallback");
+});
+
+/**
+ * Fake macOS `ps` (issue #108): answers `-o ppid=,lstart=,ucomm= -p <pid>`
+ * and `-ww -o args= -p <pid>` from a table, null (ps exit 1) for unknown pids.
+ * Rows: [pid, ppid, lstart, ucomm, args].
+ */
+function fakePs(rows: [number, number, string, string, string][]): PsRunner {
+  const byPid = new Map(rows.map((r) => [r[0], r]));
+  return (args) => {
+    const r = byPid.get(Number(args[args.length - 1]));
+    if (!r) return null;
+    // real ps pads columns and ends lines with spaces
+    return args.includes("args=") ? r[4] + "\n" : `  ${r[1]} ${r[2]}     ${r[3].padEnd(16)}\n`;
+  };
+}
+
+const macTable = fakePs([
+  [100, 1, "Fri Nov 27 10:00:00 2026", "codex", "/opt/homebrew/bin/codex"],
+  [110, 100, "Fri Nov 27 10:00:05 2026", "zsh", "/bin/zsh -c load-lock acquire"],
+  [111, 100, "Fri Nov 27 10:00:06 2026", "-zsh", "-zsh"], // login shell
+  // npx between the harness and the CLI: node running npx-cli.js
+  [120, 110, "Fri Nov 27 10:00:07 2026", "node", "node /opt/homebrew/lib/node_modules/npm/bin/npx-cli.js -y @aron98/load-lock"],
+  [200, 1, "Fri Nov 27 11:00:00 2026", "Cursor Helper (Plugin)", "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/x"],
+  [210, 200, "Fri Nov 27 11:00:01 2026", "bash", "bash"],
+  [400, 1, "Fri Nov 27 12:00:00 2026", "bash", "bash"],
+]);
+const macResolve = (startPid: number, env: NodeJS.ProcessEnv = {}) =>
+  sessionIdentity({ fallback: "cli:u@h", env, startPid, ps: macTable, platform: "darwin" });
+
+test("identity (macOS, #108): the ancestor walk uses ps — same session → same id, others distinct", () => {
+  const harnessStart = String(Date.parse("Fri Nov 27 10:00:00 2026") / 1000);
+  const a = macResolve(110);
+  assert.deepEqual(a, { id: `proc:100:${harnessStart}`, label: "codex:100", source: "ancestor" });
+  assert.equal(macResolve(111).id, a.id, "login shell (-zsh) is skipped too");
+  assert.equal(macResolve(120).id, a.id, "npx launcher is skipped");
+  const cursor = macResolve(210);
+  assert.equal(cursor.label, "Cursor Helper (Plugin):200", "ucomm with spaces and parens parses");
+  assert.notEqual(cursor.id, a.id);
+  assert.equal(psReader(macTable).stat(120)?.comm, "node");
+});
+
+test("identity (macOS, #108): falls back at launchd, for unknown pids, and loses to session env", () => {
+  assert.equal(macResolve(400).source, "fallback");
+  assert.equal(macResolve(99999).source, "fallback");
+  assert.equal(macResolve(110, { CLAUDE_CODE_SESSION_ID: "s1" }).id, "claude-code:s1");
+  const garbled: PsRunner = () => "not a ps line\n";
+  assert.equal(sessionIdentity({ fallback: "f", env: {}, startPid: 110, ps: garbled, platform: "darwin" }).source, "fallback");
 });
 
 test("identity: harness session env vars beat the ancestor walk", () => {
@@ -155,11 +204,18 @@ test("cli: same session shares one identity; different sessions get distinct ids
 });
 
 test("cli: without session env, calls from one parent process share an ancestor identity", async () => {
-  if (process.platform !== "linux") return;
+  if (process.platform !== "linux" && process.platform !== "darwin") return;
   const r1 = await acquireJson({}, "op/ancestor");
   const r2 = await acquireJson({}, "op/ancestor");
   // The CLI's parent is this test process (node, not a wrapper).
-  const start = readFileSync(`/proc/${process.pid}/stat`, "utf8").split(") ")[1].split(" ")[19];
+  const start =
+    process.platform === "linux"
+      ? readFileSync(`/proc/${process.pid}/stat`, "utf8").split(") ")[1].split(" ")[19]
+      : String(
+          Date.parse(
+            execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim(),
+          ) / 1000,
+        );
   assert.equal(r1.entry.agentId, `proc:${process.pid}:${start}`);
   assert.equal(r2.entry.requestId, r1.entry.requestId);
 });

@@ -609,14 +609,15 @@ of the MCP server (issue #50) comes from the shared resolver in
    tool; verified on opencode 2.1.1). The bare id is exactly the native
    plugin's agent id, so CLI calls from an OpenCode shell share the plugin's
    identity;
-3. the stable harness ancestor process (Linux): walk up from the CLI's parent
-   past shells and launcher wrappers (`sh`/`bash`/`zsh`/…, `env`, `timeout`,
-   `npm`/`npx`, nested `load-lock`) to the first other ancestor, identified as
-   `proc:<pid>:<start time>` (pid-reuse safe via `/proc/<pid>/stat`), labelled
-   `<comm>:<pid>`. This covers harnesses without a verified env var (Codex,
+3. the stable harness ancestor process (Linux and macOS): walk up from the
+   CLI's parent past shells and launcher wrappers (`sh`/`bash`/`zsh`/…, `env`,
+   `timeout`, `npm`/`npx`, nested `load-lock`) to the first other ancestor,
+   identified as `proc:<pid>:<start time>` (pid-reuse safe: the start time is
+   `/proc/<pid>/stat` field 22 on Linux, epoch seconds from `ps -o lstart` on
+   macOS), labelled `<comm>:<pid>`. This covers harnesses without a verified env var (Codex,
    Cursor, Gemini CLI, …), since one session = one long-lived harness process;
-4. otherwise (no harness ancestor, or no `/proc` — macOS/Windows without a
-   session env var) the legacy default: `cli:$USER@$HOSTNAME` for the CLI, a
+4. otherwise (no harness ancestor, or another platform such as Windows
+   without a session env var) the legacy default: `cli:$USER@$HOSTNAME` for the CLI, a
    random per-process `agt_…` id for the MCP server.
 
 So two MCP registrations in one session (plugin-bundled + standalone) share

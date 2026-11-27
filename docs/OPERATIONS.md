@@ -1374,7 +1374,9 @@ in the WSL2 caveats above).
 
 - macOS: no cgroup limits; process-liveness checks fall back from
   `/proc/<pid>/stat` start times to `kill(pid, 0)` (weaker PID-reuse
-  defense — document and prefer `run_with_permit`). Everything else works.
+  defense — document and prefer `run_with_permit`). The session-identity
+  ancestor walk asks `ps` instead of reading `/proc` (issue #108).
+  Everything else works; CI runs the full suite on `macos-latest`.
 
 ### Windows — procedure (NOT verified here)
 
