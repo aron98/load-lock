@@ -140,9 +140,16 @@ plugin, resolved through the directory's `package.json` `exports`
 (`./server`, then `.`) with no install step; anything else is parsed as an
 npm spec, installed with its embedded arborist into
 `<cache>/opencode/npm/<name>@<spec>/<timestamp>/`, and treated as immutable
-when the spec is an exact version (no update check, no refresh). Note that
-on macOS this OpenCode caches under `~/.cache/opencode`, not
-`~/Library/Caches/opencode`.
+when the spec is an exact version (no update check, no refresh).
+
+Where `<cache>` is (issue #115): `$XDG_CACHE_HOME`, else `~/.cache`, **on
+every platform**, macOS and Windows included (never `~/Library/Caches` or
+`%LocalAppData%`). OpenCode 2.3.2's bundled `Global` module and 1.x's
+`xdg-basedir` both resolve it that way. Older OpenCode versions used other
+layouts under the same `<cache>/opencode`: 1.19 used
+`packages/<spec>/node_modules/@aron98/load-lock`, and 1.0 used
+`node_modules/@aron98/load-lock`. `doctor` lists copies in all three
+layouts as `opencode-cache`, and `update` refuses to run from any of them.
 
 Which copy is authoritative for what:
 

@@ -481,6 +481,54 @@ test("doctor: reports installed copies, versions, daemon skew, and copy drift", 
   }
 });
 
+test("doctor: lists opencode cache copies under ~/.cache on every platform, macOS included (issue #115)", async () => {
+  const d = await startDaemon();
+  const home = mkdtempSync(join(TMP_BASE, "ll-ochome-"));
+  try {
+    // OpenCode caches under XDG_CACHE_HOME, else ~/.cache, on every platform
+    // (never ~/Library/Caches). One copy per layout it has used:
+    const oc = join(home, ".cache", "opencode");
+    const planted = {
+      // 2.x: npm/<name>@<spec>/<ts>/node_modules/<name>
+      "2.0.1": join(oc, "npm", "@aron98", "load-lock@2.0.1", "1700000000000", "node_modules", "@aron98", "load-lock"),
+      // 1.19: packages/<spec>/node_modules/<name>
+      "1.19.0": join(oc, "packages", "@aron98_load-lock@1.19.0", "node_modules", "@aron98", "load-lock"),
+      // 1.0: node_modules/<name>
+      "1.0.0": join(oc, "node_modules", "@aron98", "load-lock"),
+    };
+    for (const [version, dir] of Object.entries(planted)) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@aron98/load-lock", version }));
+    }
+    // A decoy where the old code looked on macOS is not opencode's cache.
+    const decoy = join(home, "Library", "Caches", "opencode", "npm", "@aron98", "load-lock@0.0.9", "1", "node_modules", "@aron98", "load-lock");
+    mkdirSync(decoy, { recursive: true });
+    writeFileSync(join(decoy, "package.json"), JSON.stringify({ name: "@aron98/load-lock", version: "0.0.9" }));
+
+    const env = { ...d.env, HOME: home } as Record<string, string>;
+    // Resolve the cache from the temp HOME, never the real one.
+    delete env.XDG_CACHE_HOME;
+
+    const r = await runCliEnv(env, ["doctor", "--json"]);
+    assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+    const report = JSON.parse(r.stdout);
+    const copies = report.copies as Array<{ source: string; path: string; version: string | null }>;
+    const cached = copies.filter((c) => c.source === "opencode-cache");
+    assert.deepEqual(
+      cached.map((c) => `${c.version}@${c.path}`).sort(),
+      Object.entries(planted).map(([v, p]) => `${v}@${p}`).sort(),
+      `exactly the planted ~/.cache copies: ${JSON.stringify(copies)}`,
+    );
+    assert.ok(
+      report.warnings.some((w: string) => w.includes("multiple load-lock versions") && w.includes("opencode-cache=2.0.1")),
+      `drift warning names the cache copy: ${JSON.stringify(report.warnings)}`,
+    );
+  } finally {
+    await d.stop();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("doctor: lists a planted npx-cache copy (issue #57)", async () => {
   const d = await startDaemon();
   const home = mkdtempSync(join(TMP_BASE, "ll-npxhome-"));

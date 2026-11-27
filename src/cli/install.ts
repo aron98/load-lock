@@ -66,7 +66,7 @@ import os from "node:os";
 import path from "node:path";
 import { POLICY_BRIEF } from "../policy/text.js";
 import { resolveStateDir } from "../shared/transport.js";
-import { npxCacheRoot, opencodeCacheRoot } from "../shared/pkginfo.js";
+import { npxCacheRoot, opencodeCacheDir } from "../shared/pkginfo.js";
 import { activePlugin, inventoryHarness, isInstallerOpenCodeEntry, removeClaudeLoose, skillDirOwner, type Integration } from "./setup.js";
 
 export interface InstallOptions {
@@ -235,12 +235,7 @@ function within(dir: string, root: string): boolean {
  * entry to such a copy would break when the cache is cleaned.
  */
 export function inPrunableCache(root: string, platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): boolean {
-  const npx = npxCacheRoot(platform, env);
-  const oc = opencodeCacheRoot(platform, env);
-  // OpenCode 2.x on macOS was seen caching under ~/.cache/opencode, not
-  // ~/Library/Caches/opencode: check both.
-  const home = env.HOME ?? HOME;
-  const caches = [npx, oc ? path.join(oc, "opencode") : null, path.join(home, ".cache", "opencode")].filter((c): c is string => !!c);
+  const caches = [npxCacheRoot(platform, env), opencodeCacheDir(platform, env)].filter((c): c is string => !!c);
   let real = root;
   try {
     real = fs.realpathSync(root);

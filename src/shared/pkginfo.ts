@@ -50,12 +50,32 @@ export function enclosingPackage(startDir: string, maxDepth = 12): PkgRootInfo |
   return null;
 }
 
-/** Cache root the way opencode resolves it (its npm cache lives under it). */
+/**
+ * Cache root the way opencode resolves it: `XDG_CACHE_HOME`, else
+ * `<home>/.cache`, on every platform (issue #115). OpenCode 1.x uses
+ * `xdg-basedir`'s `xdgCache`, and 2.x (2.3.2's bundled `Global` module)
+ * inlines the same rule. Neither uses macOS's `~/Library/Caches` or Windows'
+ * `%LocalAppData%`.
+ */
 export function opencodeCacheRoot(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | null {
   if (env.XDG_CACHE_HOME) return env.XDG_CACHE_HOME;
-  if (platform === "win32") return env.LOCALAPPDATA ?? null;
-  if (platform === "darwin") return join(env.HOME ?? homedir(), "Library", "Caches");
-  return join(env.HOME ?? homedir(), ".cache");
+  // opencode takes os.homedir(): HOME on POSIX, USERPROFILE on Windows.
+  const home = (platform === "win32" ? env.USERPROFILE : env.HOME) ?? homedir();
+  return home ? join(home, ".cache") : null;
+}
+
+/**
+ * opencode's own cache directory, `<cache root>/opencode`, which holds every
+ * plugin copy it installs:
+ *  - 2.x: `npm/<name>@<spec>/<timestamp>/node_modules/<name>`
+ *  - 1.19: `packages/<spec>/node_modules/<name>`
+ *  - 1.0: `node_modules/<name>`
+ * The installed-copy scan, `update`'s self-classification and the
+ * prunable-cache checks of `install` / `setup` all share this one helper.
+ */
+export function opencodeCacheDir(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | null {
+  const root = opencodeCacheRoot(platform, env);
+  return root ? join(root, "opencode") : null;
 }
 
 /**

@@ -15,9 +15,9 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "n
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isWindows } from "../shared/transport.js";
-import { enclosingPackage, npxCacheRoot, opencodeCacheRoot, PKG_NAME } from "../shared/pkginfo.js";
+import { enclosingPackage, npxCacheRoot, opencodeCacheDir, PKG_NAME } from "../shared/pkginfo.js";
 
-export { enclosingPackage, npxCacheRoot, opencodeCacheRoot } from "../shared/pkginfo.js";
+export { enclosingPackage, npxCacheRoot, opencodeCacheDir, opencodeCacheRoot } from "../shared/pkginfo.js";
 
 export interface InstalledCopy {
   /** Where this copy was found. */
@@ -43,7 +43,7 @@ export function thisCopy(): InstalledCopy | null {
  *  - "path": any `load-lock` binary found on PATH (deduped by real path,
  *    so a symlink to the running copy is recognized and not double-listed
  *    — a copy is only listed under "path" when it differs from "cli").
- *  - "opencode-cache": copies under opencode's private npm cache.
+ *  - "opencode-cache": copies under opencode's private plugin cache.
  *  - "npx-cache": copies under npx's cache (`<npm cache>/_npx/<hash>/...`).
  */
 export function findInstalledCopies(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): InstalledCopy[] {
@@ -96,17 +96,45 @@ export function findInstalledCopies(platform: NodeJS.Platform = process.platform
     /* PATH scan is best-effort */
   }
 
-  // --- opencode npm-cache scan ----------------------------------------------
-  // Layout (verified live): <cacheRoot>/opencode/npm/@aron98/load-lock@latest/<ts>/
+  // --- opencode cache scan --------------------------------------------------
+  // The cache dir is <XDG_CACHE_HOME or ~/.cache>/opencode on every platform
+  // (issue #115; see opencodeCacheDir).
+  // 2.x layout (verified live): <dir>/npm/@aron98/load-lock@latest/<ts>/
   // where "@aron98" and "load-lock@latest" are two nested directories (a
   // normal npm scoped layout); URL-escaped single-directory variants like
   // "@aron98%2Fload-lock@latest" also occur. Under each <ts>: either the
   // real package at node_modules/@aron98/load-lock, or a top-level
   // package.json (npm-install root).
+  // 1.x layouts (from its source): <dir>/packages/<spec>/node_modules/... (1.19)
+  // and <dir>/node_modules/... (1.0).
+  const addCacheCopy = (cand: string): boolean => {
+    try {
+      const pkgPath = join(cand, "package.json");
+      if (!existsSync(pkgPath)) return false;
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+      if (pkg?.name !== PKG_NAME) return false;
+      add({ source: "opencode-cache", path: cand, version: typeof pkg.version === "string" ? pkg.version : null });
+      return true;
+    } catch {
+      return false;
+    }
+  };
   try {
-    const cacheRoot = opencodeCacheRoot(platform, env);
-    if (cacheRoot) {
-      const npmDir = join(cacheRoot, "opencode", "npm");
+    const cacheDir = opencodeCacheDir(platform, env);
+    if (cacheDir) {
+      addCacheCopy(join(cacheDir, "node_modules", "@aron98", "load-lock"));
+      const pkgsDir = join(cacheDir, "packages");
+      if (existsSync(pkgsDir)) {
+        for (const spec of readdirSync(pkgsDir)) addCacheCopy(join(pkgsDir, spec, "node_modules", "@aron98", "load-lock"));
+      }
+    }
+  } catch {
+    /* cache scan is best-effort */
+  }
+  try {
+    const cacheDir = opencodeCacheDir(platform, env);
+    if (cacheDir) {
+      const npmDir = join(cacheDir, "npm");
       if (existsSync(npmDir)) {
         const scanTimestampDirs = (pkgBase: string): void => {
           let tsDirs: string[] = [];
@@ -118,22 +146,7 @@ export function findInstalledCopies(platform: NodeJS.Platform = process.platform
           for (const ts of tsDirs) {
             const nested = join(pkgBase, ts, "node_modules", "@aron98", "load-lock");
             const topLevel = join(pkgBase, ts);
-            for (const cand of [nested, topLevel]) {
-              try {
-                const pkgPath = join(cand, "package.json");
-                if (!existsSync(pkgPath)) continue;
-                const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-                if (pkg?.name !== PKG_NAME) continue;
-                add({
-                  source: "opencode-cache",
-                  path: cand,
-                  version: typeof pkg.version === "string" ? pkg.version : null,
-                });
-                break;
-              } catch {
-                /* skip unreadable timestamp dir */
-              }
-            }
+            if (!addCacheCopy(nested)) addCacheCopy(topLevel);
           }
         };
         let scopeDirs: string[] = [];

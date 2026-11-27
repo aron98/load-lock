@@ -48,7 +48,7 @@ export interface ClassifyCtx {
   bunGlobalRoot?: string;
   /** `npm root -g` result; null when npm could not answer. */
   npmGlobalRoot: string | null;
-  /** opencode cache root (XDG_CACHE_HOME | platform default); null when unknown. */
+  /** opencode cache root (XDG_CACHE_HOME, else ~/.cache: opencodeCacheRoot); null when unknown. */
   cacheRoot: string | null;
   /** npx cache root (<npm cache>/_npx); null/absent when unknown. */
   npxRoot?: string | null;
@@ -85,7 +85,7 @@ function isUnder(dir: string, root: string): boolean {
  * Classify where this copy of load-lock lives, BEFORE touching anything:
  *  - bun global (<home>/.bun/install/global/node_modules/...) → update via bun
  *  - npm global (under `npm root -g`) → update via npm
- *  - opencode cache copy (<cache>/opencode/npm/...) → refuse: opencode
+ *  - opencode cache copy (<cache>/opencode/..., any 1.x/2.x layout) → refuse: opencode
  *    manages this copy and refreshes it on its own schedule
  *  - npx cache copy (<npm cache>/_npx/...) → refuse: whatever launches it
  *    via `npx @aron98/load-lock@<pin>` (skill / ACE / MCP entry) owns the pin
@@ -101,8 +101,8 @@ export function classifySelf(pkgRoot: string, ctx: ClassifyCtx): SelfLocation {
   if (ctx.npmGlobalRoot && isUnder(pkgRoot, ctx.npmGlobalRoot)) {
     return { kind: "npm-global", path: pkgRoot, detail: `npm global install under ${ctx.npmGlobalRoot}` };
   }
-  if (ctx.cacheRoot && isUnder(pkgRoot, join(ctx.cacheRoot, "opencode", "npm"))) {
-    return { kind: "opencode-cache", path: pkgRoot, detail: `opencode-managed cache copy under ${ctx.cacheRoot}` };
+  if (ctx.cacheRoot && isUnder(pkgRoot, join(ctx.cacheRoot, "opencode"))) {
+    return { kind: "opencode-cache", path: pkgRoot, detail: `opencode-managed cache copy under ${join(ctx.cacheRoot, "opencode")}` };
   }
   if (ctx.npxRoot && isUnder(pkgRoot, ctx.npxRoot)) {
     return { kind: "npx-cache", path: pkgRoot, detail: `npx cache copy under ${ctx.npxRoot}` };
