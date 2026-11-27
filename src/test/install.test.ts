@@ -10,10 +10,13 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { stableNodePath } from "../cli/install.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const cliMain = join(HERE, "..", "cli", "main.js");
 const mcpMain = resolve(HERE, "..", "mcp", "main.js");
+/** The node binary the installer writes (a stable symlink when there is one). */
+const NODE = stableNodePath();
 const MARKER_BEGIN = "<!-- load-lock:begin -->";
 const MARKER_END = "<!-- load-lock:end -->";
 
@@ -71,7 +74,7 @@ test("gemini-cli: install/uninstall round-trip on a populated HOME", async () =>
   const s = JSON.parse(readFileSync(settingsFile, "utf8"));
   assert.equal(s.theme, "auto", "unrelated user settings must be preserved");
   assert.deepEqual(s.mcpServers.fetch, { command: "uvx", args: ["mcp-server-fetch"] }, "unrelated MCP server must be preserved");
-  assert.deepEqual(s.mcpServers["load-lock"], { command: process.execPath, args: [mcpMain] }, "load-lock stdio server with absolute paths");
+  assert.deepEqual(s.mcpServers["load-lock"], { command: NODE, args: [mcpMain] }, "load-lock stdio server with absolute paths");
 
   const md = readFileSync(geminiMd, "utf8");
   assert.ok(md.includes("# My rules"), "existing GEMINI.md content must be preserved");
@@ -84,7 +87,7 @@ test("gemini-cli: install/uninstall round-trip on a populated HOME", async () =>
   assert.equal(r.code, 0, `re-install failed: ${r.stderr}`);
   assert.equal(count(readFileSync(geminiMd, "utf8"), MARKER_BEGIN), 1, "re-install must not duplicate the section");
   assert.deepEqual(JSON.parse(readFileSync(settingsFile, "utf8")).mcpServers["load-lock"], {
-    command: process.execPath,
+    command: NODE,
     args: [mcpMain],
   });
 
@@ -114,7 +117,7 @@ test("gemini-cli: install on a bare HOME creates both files; uninstall cleans th
   let r = await runCli(home, ["install", "--harness", "gemini-cli"]);
   assert.equal(r.code, 0, `install failed: ${r.stderr}`);
   const s = JSON.parse(readFileSync(settingsFile, "utf8"));
-  assert.deepEqual(s.mcpServers["load-lock"], { command: process.execPath, args: [mcpMain] });
+  assert.deepEqual(s.mcpServers["load-lock"], { command: NODE, args: [mcpMain] });
   const md = readFileSync(geminiMd, "utf8");
   assert.ok(md.includes(MARKER_BEGIN) && md.includes(MARKER_END));
 
@@ -167,7 +170,7 @@ test("copilot-cli: install/uninstall round-trip on a populated HOME", async () =
 
   const s = JSON.parse(readFileSync(cfgFile, "utf8"));
   assert.deepEqual(s.mcpServers.fetch, { type: "local", command: "uvx", args: ["mcp-server-fetch"] }, "unrelated MCP server must be preserved");
-  assert.deepEqual(s.mcpServers["load-lock"], { type: "local", command: process.execPath, args: [mcpMain], env: {}, tools: ["*"] }, "load-lock stdio (type: local) server with absolute paths");
+  assert.deepEqual(s.mcpServers["load-lock"], { type: "local", command: NODE, args: [mcpMain], env: {}, tools: ["*"] }, "load-lock stdio (type: local) server with absolute paths");
 
   const md = readFileSync(instructions, "utf8");
   assert.ok(md.includes("# My instructions"), "existing instructions must be preserved");
@@ -243,7 +246,7 @@ test("cline: round-trip on the default settings path, other rules preserved", as
 
   const s = JSON.parse(readFileSync(cfgFile, "utf8"));
   assert.deepEqual(s.mcpServers.fetch.command, "uvx", "unrelated MCP server preserved");
-  assert.deepEqual(s.mcpServers["load-lock"], { command: process.execPath, args: [mcpMain], env: {}, disabled: false, autoApprove: [] }, "load-lock stdio entry, Cline shape");
+  assert.deepEqual(s.mcpServers["load-lock"], { command: NODE, args: [mcpMain], env: {}, disabled: false, autoApprove: [] }, "load-lock stdio entry, Cline shape");
   const rule = readFileSync(ruleFile, "utf8");
   assert.ok(rule.includes("load-lock"), "rule file teaches load-lock");
   assert.ok(existsSync(join(home, ".cline", "rules", "user-rule.md")), "user rule untouched");
@@ -302,7 +305,7 @@ test("roo-code: project .roo/mcp.json round-trip; honest note when no global fil
   assert.match(r.stdout, /no global Roo\/Zoo/, "must honestly note it did not find a global mcp_settings.json");
 
   const s = JSON.parse(readFileSync(projMcp, "utf8"));
-  assert.deepEqual(s.mcpServers["load-lock"], { command: process.execPath, args: [mcpMain], disabled: false }, "project-level stdio entry");
+  assert.deepEqual(s.mcpServers["load-lock"], { command: NODE, args: [mcpMain], disabled: false }, "project-level stdio entry");
   assert.ok(existsSync(join(home, ".roo", "rules", "load-lock.md")), "global rule file installed");
 
   // -- idempotent re-install
@@ -383,7 +386,7 @@ test("goose: install/uninstall round-trip restores config.yaml and hints exactly
   assert.match(cfg, /extensions:\s*# load-lock-created/, "our tagged extensions key");
   assert.match(cfg, /^\s{2}load-lock:\s*$/m, "load-lock child present");
   assert.match(cfg, /^\s{4}type: stdio\s*$/m, "stdio extension type");
-  assert.match(cfg, new RegExp(`^\\s{4}cmd: ${JSON.stringify(process.execPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "m"), "absolute node path");
+  assert.match(cfg, new RegExp(`^\\s{4}cmd: ${JSON.stringify(NODE).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "m"), "absolute node path");
   assert.match(cfg, /# load-lock:begin \(managed by `load-lock install`\)/, "managed-block begin marker");
   assert.ok(readFileSync(hints, "utf8").includes("# My hints"), "user hints preserved");
   assert.equal(count(readFileSync(hints, "utf8"), MARKER_BEGIN), 1, "one marked hints section");
@@ -525,7 +528,7 @@ test("claude-code: install/uninstall round-trip on a populated HOME; re-install 
 
   const cj = JSON.parse(readFileSync(claudeJson, "utf8"));
   assert.deepEqual(cj.mcpServers.fetch, { type: "stdio", command: "uvx", args: ["mcp-server-fetch"] }, "user MCP server preserved");
-  assert.deepEqual(cj.mcpServers["load-lock"], { type: "stdio", command: process.execPath, args: [mcpMain] }, "our MCP server shape");
+  assert.deepEqual(cj.mcpServers["load-lock"], { type: "stdio", command: NODE, args: [mcpMain] }, "our MCP server shape");
 
   const md = readFileSync(claudeMd, "utf8");
   assert.ok(md.includes("# My rules"), "existing CLAUDE.md content preserved");
@@ -892,7 +895,7 @@ test("cursor: project install/uninstall round-trip preserves user config", async
 
   const m = JSON.parse(readFileSync(mcpFile, "utf8"));
   assert.deepEqual(m.mcpServers.fetch, { command: "uvx", args: ["mcp-server-fetch"] }, "unrelated MCP server preserved");
-  assert.deepEqual(m.mcpServers["load-lock"], { command: process.execPath, args: [mcpMain] }, "load-lock stdio entry with absolute paths");
+  assert.deepEqual(m.mcpServers["load-lock"], { command: NODE, args: [mcpMain] }, "load-lock stdio entry with absolute paths");
 
   const h = JSON.parse(readFileSync(hooksFile, "utf8"));
   assert.equal(h.version, 1, "hooks v1 version preserved");
@@ -914,7 +917,7 @@ test("cursor: project install/uninstall round-trip preserves user config", async
   assert.equal(r.code, 0, `re-install failed: ${r.stderr}`);
   assert.equal(JSON.parse(readFileSync(hooksFile, "utf8")).hooks.stop.length, 2, "re-install must not duplicate our hook");
   assert.deepEqual(JSON.parse(readFileSync(mcpFile, "utf8")).mcpServers["load-lock"], {
-    command: process.execPath,
+    command: NODE,
     args: [mcpMain],
   });
 
@@ -1185,4 +1188,27 @@ test("omac: install refuses to touch a broken or misshapen profile", async () =>
   assert.equal(readFileSync(profileFile, "utf8"), misshapen, "file untouched by uninstall");
 
   rmSync(home, { recursive: true, force: true });
+});
+
+test("stableNodePath: prefers a PATH symlink to the same binary over a versioned path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ll-node-"));
+  try {
+    const versioned = join(dir, "Cellar", "node", "26.7.0", "bin", "node");
+    mkdirSync(dirname(versioned), { recursive: true });
+    writeFileSync(versioned, "");
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    symlinkSync(versioned, join(bin, "node"));
+    const other = join(dir, "other");
+    mkdirSync(other);
+    writeFileSync(join(dir, "elsewhere"), "");
+    symlinkSync(join(dir, "elsewhere"), join(other, "node"));
+
+    assert.equal(stableNodePath(versioned, [other, bin].join(":")), join(bin, "node"), "the symlink that resolves to execPath");
+    assert.equal(stableNodePath(versioned, other), versioned, "a symlink to another binary is not used");
+    assert.equal(stableNodePath(versioned, "relative/bin"), versioned, "relative PATH entries are ignored");
+    assert.equal(stableNodePath(join(dir, "missing"), bin), join(dir, "missing"), "unresolvable execPath is kept");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

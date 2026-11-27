@@ -88,6 +88,35 @@ export function pkgRoot(binDir?: string): string {
   return path.resolve(d, ".."); // dist -> package root
 }
 
+/**
+ * The node binary written into hooks and MCP entries. `process.execPath` is
+ * the resolved binary, which under Homebrew is a versioned Cellar path
+ * (`/opt/homebrew/Cellar/node/26.7.0/bin/node`) that `brew upgrade node`
+ * deletes, breaking every installed hook. Prefer a symlink on PATH (or in a
+ * well-known bin dir) that resolves to the same binary today and follows
+ * upgrades; otherwise keep execPath (nvm's versioned dirs, Windows).
+ */
+export function stableNodePath(execPath = process.execPath, envPath = process.env.PATH ?? ""): string {
+  if (process.platform === "win32") return execPath;
+  let target: string;
+  try {
+    target = fs.realpathSync(execPath);
+  } catch {
+    return execPath;
+  }
+  const dirs = [...envPath.split(path.delimiter), "/opt/homebrew/bin", "/usr/local/bin"];
+  for (const dir of dirs) {
+    if (!path.isAbsolute(dir)) continue;
+    const candidate = path.join(dir, "node");
+    try {
+      if (fs.lstatSync(candidate).isSymbolicLink() && fs.realpathSync(candidate) === target) return candidate;
+    } catch {
+      /* not there */
+    }
+  }
+  return execPath;
+}
+
 function pkgPaths(binDir?: string) {
   const root = pkgRoot(binDir);
   return {
@@ -96,7 +125,7 @@ function pkgPaths(binDir?: string) {
     mcp: path.join(root, "dist", "mcp", "main.js"),
     docs: path.join(root, "docs"),
     skill: path.join(root, "skills", "load-lock", "SKILL.md"),
-    node: process.execPath,
+    node: stableNodePath(),
   };
 }
 
