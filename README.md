@@ -131,7 +131,8 @@ same data, themed. See docs/OPERATIONS.md → "Dashboard".
 Agents running inside a sandbox (bubblewrap/omac, Docker, macOS seatbelt,
 WSL2) share the host's budget instead of getting their own: bridge the
 daemon's Unix socket into the sandbox, set `LOAD_LOCK_NO_SPAWN=1` so the
-client never spawns a useless sandbox-local daemon, and optionally tag
+client never spawns a useless sandbox-local daemon (automatic inside omac),
+and optionally tag
 holds with `LOAD_LOCK_LABEL_PREFIX` (e.g. `bwrap:issue-42 build`).
 Ready-to-run per-sandbox recipes — live-verified for bubblewrap and omac,
 contract-inspected for the rest, plus the cross-PID-namespace lease
