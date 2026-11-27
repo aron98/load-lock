@@ -164,8 +164,9 @@ It ends with the runtime copies: those on disk (as in `doctor`), the copy
 the daemon runs (`daemon.json`), and the copies the daemon has seen.
 
 An ACE-installed Claude plugin (unzipped into `.claude/skills/<name>/`) is
-listed but not counted as an active plugin: whether Claude Code loads it
-there is not verified yet (#63).
+listed but not counted as an active plugin. Claude Code 2.1.332 does load
+it from there (#104, see [Installing via ACE](#installing-via-ace)), but
+`setup` has not been changed to count it yet.
 
 #### Converging: `load-lock setup --yes`
 
@@ -260,10 +261,35 @@ the skill's directory. ACE updates what it installed (it writes an
 `.ace.json` stamp next to each bundle); `load-lock setup` reports those
 entries as `ace` and never rewrites them.
 
-Not yet verified (#63, #66): whether Claude Code loads a plugin from a
-skills directory (and resolves `${CLAUDE_PLUGIN_ROOT}` there), and the ACE
-install end to end on a clean machine. Until then `load-lock setup` lists an
-ACE-installed Claude plugin but does not count it as an active plugin.
+What has been checked (#104, 2026-11-27, Docker on macOS, details in
+[COMPATIBILITY.md](COMPATIBILITY.md#ace-end-to-end-66-104)):
+
+- **Claude Code loads the plugin from a skills directory.** With
+  `plugins/claude-code/` copied to `<project>/.claude/skills/load-lock-plugin/`
+  or `~/.claude/skills/load-lock-plugin/`, Claude Code 2.1.332 loads it as
+  `load-lock-plugin@skills-dir`, runs its hooks with `${CLAUDE_PLUGIN_ROOT}`
+  resolved to that folder, and serves its MCP tools. Checked with a stub
+  model (real Claude Code, hooks and MCP server; no real model).
+- **Clean machine, first use.** In a fresh `node:24` container with no
+  load-lock, the MCP artifact's `npx -y @aron98/load-lock@<pin> mcp`, the
+  skill's pinned `npx` command and the plugin's launcher each started a
+  daemon on first use.
+- **First session on a clean machine.** The plugin's hooks run `npx`
+  `--offline`, so until something has fetched the runtime (the plugin's own
+  MCP server does, on its first start) SessionStart prints a one-line
+  install hint instead of the policy, and the idle watcher stays off for
+  that session. The cold `npx` fetch took 25–30 s in these runs, close to
+  Claude Code's 30 s MCP connect timeout; on a slower network the first
+  session may not get the tools either. Later sessions are normal. A global
+  `npm i -g @aron98/load-lock` avoids this.
+
+Not checked: an ACE repo sync of this repo (needs an ACE instance; #98
+records one real import of v1.6.0, the re-import after its fix is not
+recorded), ACE's `install_artifact` flow itself (the checks above copy the
+folders the way it documents), the OpenCode artifact, and the plugin
+installed from a skills directory with a real model.
+`load-lock setup` still lists an ACE-installed Claude plugin without
+counting it as an active plugin.
 
 ## The daemon
 

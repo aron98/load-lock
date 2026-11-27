@@ -42,7 +42,8 @@ services:
       start_period: 30s
 
   claude:
-    image: load-lock-verify:claude-code
+    # load-lock-verify:claude-code-plugin for MODE=plugin (no global load-lock).
+    image: ${CLAUDE_IMAGE:-load-lock-verify:claude-code}
     depends_on:
       litellm:
         condition: service_healthy
@@ -68,4 +69,6 @@ services:
       CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
       # Which scenario phases to run (see verify-claude-code.sh).
       PHASES: ${PHASES:-1,2,3}
+      # loose (global load-lock + `load-lock install`) or plugin (#104).
+      MODE: ${MODE:-loose}
     command: ["/bin/bash", "/usr/local/bin/verify-claude-code.sh"]

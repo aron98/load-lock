@@ -249,8 +249,8 @@ mechanisms, and labels exactly which apply per harness:
      calls `ctx.session.synthetic(...)`, delivering the offer (with token)
      to an idle session at its next execution boundary — it never
      interrupts an in-flight shell command.
-   - Claude Code (live-verified in Docker with the loose install; the
-     plugin's hooks are not yet live-verified, #63): a `Stop` hook checks for cwd-matching
+   - Claude Code (live-verified in Docker with the loose install, and for
+     the plugin in a host session, #63): a `Stop` hook checks for cwd-matching
      offers and continues the session with a claim instruction; an async
      `await-offer` watcher with `asyncRewake: true` wakes idle sessions.
    - Codex CLI (live-verified in Docker): `Stop` hook with `decision: "block"`
