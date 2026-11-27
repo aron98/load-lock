@@ -382,7 +382,8 @@ test("mcp: two server processes from one harness session share an identity (issu
     assert.equal(filler.state, "granted");
     const a = await callJson(c1, "acquire", { reason: "session build", op_key: "shared-op" });
     assert.equal(a.state, "queued");
-    if (process.platform === "linux") assert.match(a.entry.agentId, /^proc:\d+:\d+$/);
+    // Linux (/proc) and macOS (ps, #108) both resolve the shared harness ancestor
+    if (process.platform === "linux" || process.platform === "darwin") assert.match(a.entry.agentId, /^proc:\d+:\d+$/);
 
     // acquire through one server shows up in pending through the other
     const viaOther = await callJson(c2, "pending", {});
