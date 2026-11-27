@@ -885,12 +885,22 @@ client-only and started no daemon. Run the daemon on the host machine
 (e.g. load-lock service start) and bridge its socket into this sandbox,
 then point LOAD_LOCK_SOCKET at the bridged path — see the "Sandboxes"
 section of docs/OPERATIONS.md for per-sandbox recipes (bubblewrap/omac,
-Docker, seatbelt, WSL2). To allow spawning a daemon here instead, unset
-LOAD_LOCK_NO_SPAWN. (code: unavailable)
+Docker, seatbelt, WSL2). To allow spawning a daemon here instead, set
+LOAD_LOCK_NO_SPAWN=0. (code: unavailable)
 ```
 
-The CLI exits with code 70 for this failure (unavailable transport). Use
-this mode inside every sandbox: it turns "mysteriously isolated budget"
+The CLI exits with code 70 for this failure (unavailable transport).
+
+**Inside omac it is automatic** (issue #109, load-lock >= 1.7.3): omac's
+sandbox profile can only *allow* environment variables, not *set* them, so
+the client detects omac itself. When `OMAC_FACADE_TOKEN` or `OMAC_SOCKET`
+is non-empty, client-only mode is on even without `LOAD_LOCK_NO_SPAWN`, and
+the error says why (`auto-spawn is disabled (running inside an omac
+sandbox: OMAC_FACADE_TOKEN is set)`). `LOAD_LOCK_NO_SPAWN=0` is the explicit
+override and re-enables spawning in both cases. See the omac section below
+for why these two variables mark the sandbox but not a sidecar.
+
+Use this mode inside every sandbox: it turns "mysteriously isolated budget"
 into a loud, documented failure, and it is what the tests in
 `src/test/sandbox.test.ts` enforce (no state dir is ever created, and the
 error names the docs).
@@ -1162,12 +1172,102 @@ The two gotchas that shaped the installer:
    (zod); the dashboard shows the bare label with no error anywhere.
    `load-lock service restart` after upgrading.
 
-What was NOT verified: omac's macOS seatbelt path (same profile schema,
-per omac's docs, but the verification machine is Linux) and omac's agent
-orchestration commands (`omac start`/`continue`/…) driving a real agent —
-the round-trip was verified with the documented `omac sandbox run`
-primitive those commands build on. The installer's contract tests cover
-the merge/uninstall edge cases (`src/test/install.test.ts`).
+What the 0.11.0 run did NOT verify: omac's macOS seatbelt path and
+`omac start` driving the sandbox — both are covered by the 0.14.0 run
+below. The installer's contract tests cover the merge/uninstall edge cases
+(`src/test/install.test.ts`).
+
+#### Client-only by default inside omac (issue #109)
+
+omac profiles cannot set variables, so `LOAD_LOCK_NO_SPAWN=1` used to work
+only when exported in the shell that launched omac (where it also affected
+host-side clients). If the host daemon was down when a sandboxed agent
+first connected, the client spawned a sandbox-local daemon into the shared
+state dir. The client now treats omac's sandbox markers like
+`LOAD_LOCK_NO_SPAWN=1`. The markers were chosen from omac's source
+(v0.14.0, tag `b1f7294`):
+
+- **Set for the sandboxed process.** `omac start` puts `OMAC_SOCKET` and
+  `OMAC_FACADE_TOKEN` into the inner command's env
+  (`internal/cli/start.go:902` and `:947`); `omac serve` does the same
+  for `opencode serve` (`internal/cli/serve.go:1852`, `:1859`).
+  `OMAC_*` is in the always-on env allowlist
+  (`internal/sandboxprofile/env.go:89`), so a profile cannot strip them.
+- **Not set for a sidecar.** Sidecars run on the host and must keep
+  auto-spawning. The supervisor builds a sidecar's env from scratch
+  (`internal/supervisor/supervisor.go:279`, `cmd.Env = s.buildEnv(...)`;
+  `buildEnv` at `:340-389`): the host passthrough list `PATH HOME USER
+  LANG LC_ALL LC_CTYPE TMPDIR` (`internal/config/launcher.go:375`), the
+  skill's own `env_passthrough`/config/secrets, and `SIDECAR_PORT`,
+  `SIDECAR_SKILL`, `OMAC_WORKDIR`, `OMAC_HARNESS_SKILLS_DIR`. Neither
+  marker is among them, and omac never `setenv`s them into its own
+  process, so a skill's `env_passthrough` cannot pick them up either.
+- **Not set by a bare `omac sandbox run`.** That low-level primitive
+  injects no `OMAC_*` variables (it only reads `OMAC_BASE`); agent
+  sessions go through `omac start`/`omac serve`. Under a bare
+  `omac sandbox run`, set `LOAD_LOCK_NO_SPAWN=1` (or export a marker) as
+  before.
+
+`LOAD_LOCK_NO_SPAWN=0` overrides the detection. Only the presence of
+a marker is checked; its value (a secret token) is never read or logged.
+
+#### macOS seatbelt — live-verified with omac 0.14.0
+
+Verified 2026-11-27 on macOS 26.2 (arm64), Homebrew omac 0.14.0
+(`/opt/homebrew/bin/omac`), driving the CLI from this repo's build
+(`node dist/cli/main.js`, v1.7.2 + this change). Throwaway `HOME` and
+`XDG_CONFIG_HOME`, isolated state dir `/tmp/ll109.Auqf/state` (short
+`/tmp` path: macOS caps AF_UNIX paths at 104 bytes), host daemon started
+directly with `node dist/core/daemon-main.js --state-dir … --socket …`.
+
+```sh
+T=/tmp/ll109.Auqf
+export HOME=$T/home XDG_CONFIG_HOME=$T/home/.config \
+       LOAD_LOCK_STATE_DIR=$T/state LOAD_LOCK_SOCKET=$T/state/daemon.sock
+node dist/cli/main.js install --harness omac
+# -> created …/omac/sandbox-profiles/default.json with
+#    filesystem.allow_unix_dir [$T/state], environment.allow_vars [LOAD_LOCK_*];
+#    filesystem.read skipped (repo checkout)
+omac sandbox run -- true      # exit 0: omac's strict parser accepts it
+```
+
+Observed:
+
+1. **Host daemon stopped, `omac sandbox run`** (marker exported by hand,
+   because a bare `omac sandbox run` sets none; it arrives through the
+   `OMAC_*` base allowlist):
+   `OMAC_FACADE_TOKEN=live-109 omac sandbox run --workdir-access read --
+   node dist/cli/main.js status` → exit **70**, `load-lock daemon is not
+   reachable at /tmp/ll109.Auqf/state/daemon.sock and auto-spawn is
+   disabled (running inside an omac sandbox: OMAC_FACADE_TOKEN is set):
+   …`. The state dir stayed empty and no `daemon-main.js` process
+   existed afterwards.
+2. **Host daemon running, `omac sandbox run`**: `acquire` from inside the
+   sandbox → `granted`, label `omac:issue-109` (`LOAD_LOCK_LABEL_PREFIX`
+   passed through `LOAD_LOCK_*`). Host `status` showed `held:
+   omac:issue-109 …`. `release --permit prm_…` from inside the sandbox
+   → `releasedNow: true`, host back to `0/1`. **The seatbelt sandbox
+   reaches the host daemon's socket through the `allow_unix_dir` grant;
+   no extra seatbelt rule was needed.** `/tmp` → `/private/tmp` symlink
+   resolution needed no special handling.
+3. **Real `omac start`, host daemon stopped**: from a scratch workdir,
+   with the throwaway profile also granting `filesystem.read` on the
+   repo checkout (it was outside the workdir):
+   `omac start claude-code --no-audit --ephemeral-cache --inner /bin/sh --
+   -c '…'`. Inside, `OMAC_FACADE_TOKEN` and `OMAC_SOCKET` were both set
+   with no manual export. `load-lock status` → exit **70** with the same
+   omac client-only error, and no daemon was spawned.
+4. **Real `omac start`, host daemon running**: acquire → host `status`
+   shows `held: omac:issue-109 …` → release `releasedNow: true`, all from
+   the inner shell; the host daemon pid in `daemon.json` was unchanged.
+5. **Override, real `omac start`, host daemon stopped,
+   `LOAD_LOCK_NO_SPAWN=0`**: the client spawned a daemon from inside the
+   seatbelt sandbox into the shared state dir. It **kept running after
+   the omac session exited** and had to be killed by hand. This is the
+   split-budget hazard the default now prevents.
+
+Not verified live: a sidecar's environment (omac's code says the markers
+are absent there; see the source citations above). No sidecar was run.
 
 ### Docker — contract-inspected
 
@@ -1240,11 +1340,12 @@ path-literal strict, or re-generate the profile. Expected outcome
 (`LOAD_LOCK_SOCKET`, `LOAD_LOCK_NO_SPAWN=1`,
 `LOAD_LOCK_LABEL_PREFIX=…`) passed through to the agent, a seatbelt-sandboxed
 client talks to the host daemon exactly as in the verified bubblewrap
-case. omac's macOS sandboxing uses seatbelt under the hood with the same
-`environment.allow_vars` env-stripping as on Linux, so the omac installer
-(`load-lock install --harness omac`, live-verified on Linux against omac
-0.11.0 — see above) applies unchanged; only the socket path and the
-seatbelt file rules differ.
+case. That expectation applies to a hand-written profile. omac's seatbelt
+path **is** live-verified: with omac 0.14.0 on macOS, `load-lock install
+--harness omac` (its `filesystem.allow_unix_dir` grant) was enough for a
+sandboxed acquire/release round-trip against the host daemon, and the
+automatic client-only mode refused to spawn when the daemon was stopped.
+See "macOS seatbelt — live-verified with omac 0.14.0" above.
 
 ### WSL2 — honest state
 
