@@ -29,6 +29,8 @@
 FROM node:24-bookworm-slim AS builder
 WORKDIR /src
 COPY package.json package-lock.json tsconfig.json ./
+# scripts/shrinkwrap.mjs runs as npm's prepack hook (npm-shrinkwrap.json, #103)
+COPY scripts ./scripts
 COPY src ./src
 # skills/ ships in the package ("files") and load-lock install copies
 # skills/load-lock/SKILL.md into the harness — without this COPY the packed

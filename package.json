@@ -83,12 +83,15 @@
     "docs",
     "skills",
     "demo",
-    "README.md"
+    "README.md",
+    "npm-shrinkwrap.json"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "tsc -p tsconfig.json && node --test dist/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "node scripts/shrinkwrap.mjs",
+    "postpack": "node scripts/shrinkwrap.mjs --clean",
     "check-pins": "node scripts/check-pins.mjs"
   },
   "engines": {
