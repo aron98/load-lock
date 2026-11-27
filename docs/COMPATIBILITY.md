@@ -44,7 +44,7 @@ Status labels mean exactly this:
 | **Cline** | Yes (`cline_mcp_settings.json`, merge-only installer) | `~/.cline/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **Roo Code** | Yes (project `.roo/mcp.json` + existing global `mcp_settings.json`, merge-only installer) | `~/.roo/rules/load-lock.md` (dedicated rule file) | Rules always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
 | **Goose** | Yes (`~/.config/goose/config.yaml` `extensions` block, merge-only installer) | `.goosehints` (global, marked section) | Hints always loaded | No hooks — `wait_for_turn` bounded sleep is the primary idle mechanism | No | Via MCP `run_with_permit` only | **Implemented (fallback tier, config-tested)** |
-| **omac** (agent sandbox; verified with 0.11.0) | N/A — omac is a sandbox runtime, not a harness: the agent inside it uses whichever harness adapter applies (OpenCode, Claude Code, …) | via the inner harness | via the inner harness | via the inner harness | via the inner harness | Full for the sandbox grants: `load-lock uninstall --harness omac` removes exactly the entries install added (match-own-entries, empty sections pruned) | **Sandbox-profile grants installed + live-verified** (`install --harness omac`: `filesystem.allow_unix_dir` += state dir, `filesystem.read` += package tree when needed, `environment.allow_vars` += `LOAD_LOCK_*`) |
+| **omac** (agent sandbox; verified with 0.11.0 on Linux, 0.14.0 on macOS) | N/A — omac is a sandbox runtime, not a harness: the agent inside it uses whichever harness adapter applies (OpenCode, Claude Code, …) | via the inner harness | via the inner harness | via the inner harness | via the inner harness | Full for the sandbox grants: `load-lock uninstall --harness omac` removes exactly the entries install added (match-own-entries, empty sections pruned) | **Sandbox-profile grants installed + live-verified** (`install --harness omac`: `filesystem.allow_unix_dir` += state dir, `filesystem.read` += package tree when needed, `environment.allow_vars` += `LOAD_LOCK_*`) |
 | **Aider** | **No MCP support** | CONVENTIONS.md / `.aider.conf.yml` | Read each run | N/A | N/A | CLI-only: same-shell `load-lock acquire ... && cmd; load-lock release ...` (manual) | Proposed (manual CLI tier) |
 
 ## Rung per harness
@@ -554,6 +554,32 @@ Install/uninstall round-trips are contract-tested in
 idempotent re-install byte-identical, missing-profile creation, global
 read grant, refusal on broken profiles).
 
+**Client-only by default (issue #109).** Inside omac the client never
+auto-spawns a daemon. It detects omac's sandbox-only markers
+`OMAC_FACADE_TOKEN` / `OMAC_SOCKET`, which are set for `omac start`/`omac
+serve`'s sandboxed process and absent from a host-side sidecar's env.
+`LOAD_LOCK_NO_SPAWN=1` is no longer a manual step, and
+`LOAD_LOCK_NO_SPAWN=0` overrides the detection. See OPERATIONS.md →
+"Client-only by default inside omac" for the omac source citations.
+
+**macOS seatbelt — live-verified against omac 0.14.0** (2026-11-27,
+macOS 26.2 arm64, Homebrew omac). With the installer's grants and a
+throwaway HOME/state dir:
+
+- **Host daemon stopped:** `omac sandbox run` (marker exported by hand;
+  a bare `sandbox run` sets none) and the real `omac start … --inner
+  /bin/sh` (markers set by omac) both gave exit 70 with the omac
+  client-only error. No daemon was spawned and the state dir stayed
+  empty.
+- **Host daemon running:** acquire → host shows
+  `held: omac:issue-109` → release `releasedNow: true`, all from inside
+  the seatbelt sandbox through the granted socket, under both
+  `sandbox run` and `start`.
+- **`LOAD_LOCK_NO_SPAWN=0` override:** a daemon was spawned from inside
+  the sandbox, and it outlived the omac session.
+
+A sidecar's env was verified from omac's source only, not live.
+
 ### Tier 4 — Aider (manual CLI)
 
 No MCP/hooks; nothing to install. Agents (or humans) use the CLI directly in
@@ -601,14 +627,15 @@ of the MCP server (issue #50) comes from the shared resolver in
    tool; verified on opencode 2.1.1). The bare id is exactly the native
    plugin's agent id, so CLI calls from an OpenCode shell share the plugin's
    identity;
-3. the stable harness ancestor process (Linux): walk up from the CLI's parent
-   past shells and launcher wrappers (`sh`/`bash`/`zsh`/…, `env`, `timeout`,
-   `npm`/`npx`, nested `load-lock`) to the first other ancestor, identified as
-   `proc:<pid>:<start time>` (pid-reuse safe via `/proc/<pid>/stat`), labelled
-   `<comm>:<pid>`. This covers harnesses without a verified env var (Codex,
+3. the stable harness ancestor process (Linux and macOS): walk up from the
+   CLI's parent past shells and launcher wrappers (`sh`/`bash`/`zsh`/…, `env`,
+   `timeout`, `npm`/`npx`, nested `load-lock`) to the first other ancestor,
+   identified as `proc:<pid>:<start time>` (pid-reuse safe: the start time is
+   `/proc/<pid>/stat` field 22 on Linux, epoch seconds from `ps -o lstart` on
+   macOS), labelled `<comm>:<pid>`. This covers harnesses without a verified env var (Codex,
    Cursor, Gemini CLI, …), since one session = one long-lived harness process;
-4. otherwise (no harness ancestor, or no `/proc` — macOS/Windows without a
-   session env var) the legacy default: `cli:$USER@$HOSTNAME` for the CLI, a
+4. otherwise (no harness ancestor, or another platform such as Windows
+   without a session env var) the legacy default: `cli:$USER@$HOSTNAME` for the CLI, a
    random per-process `agt_…` id for the MCP server.
 
 So two MCP registrations in one session (plugin-bundled + standalone) share
@@ -657,7 +684,10 @@ Labels stay human-readable: session-derived ids get a short holder label
   grants installer: profile accepted by omac's strict parser, sandboxed
   client → host daemon round-trip, `omac:`-prefixed labels,
   `LOAD_LOCK_NO_SPAWN=1` error contract, global-install read grant proven
-  necessary and sufficient — see the omac section above and OPERATIONS.md).
+  necessary and sufficient) and omac 0.14.0 on macOS (seatbelt: sandboxed
+  round-trip through the granted socket, automatic client-only mode under
+  `omac sandbox run` and `omac start`) — see the omac section above and
+  OPERATIONS.md.
 - Contract-tested: Cursor (hooks-v1 stop-hook adapter + installer, tested
   against the officially documented hooks JSON contract; no Cursor install
   on the verification machine — see the Cursor section under Tier 2).

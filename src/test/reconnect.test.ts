@@ -30,7 +30,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type * as P from "../shared/protocol.js";
@@ -260,7 +260,9 @@ test("resync: pre-handshake daemon (no version) never gets an 'onto' note", asyn
 
 /** Fixture PATH dir containing a fake `load-lock` install of `version`. */
 function pathFixture(version: string | null): string {
-  const dir = mkdtempSync(join(TMP_BASE, "ll-pathfix-"));
+  // realpath'd: pathInstall resolves the bin through symlinks, and on macOS
+  // tmpdir() lives under /var -> /private/var (issue #108)
+  const dir = realpathSync(mkdtempSync(join(TMP_BASE, "ll-pathfix-")));
   if (version === null) return dir; // empty dir: no bin, no package
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@aron98/load-lock", version }));
   const bin = join(dir, "load-lock");

@@ -252,12 +252,17 @@ test("tracked process: auto-release on death; PID identity checked via /proc sta
     await c.connect();
     const g = (await c.request("acquire", ACQ("A", "op1"))) as any;
     const sleeper = spawn("sleep", ["60"], { stdio: "ignore" });
-    const st0 = processStartTime(sleeper.pid!);
-    assert.ok(st0, "reads /proc start time on Linux");
-
-    // PID-reuse defense: wrong start time => treated as a different (dead) process
-    assert.equal(isProcessAlive(sleeper.pid!, "9999"), false);
-    assert.equal(isProcessAlive(sleeper.pid!, st0), true);
+    if (process.platform === "linux") {
+      // PID-reuse defense needs /proc; elsewhere liveness is signal 0
+      // (documented limitation), but the auto-release below is cross-platform.
+      const st0 = processStartTime(sleeper.pid!);
+      assert.ok(st0, "reads /proc start time on Linux");
+      // wrong start time => treated as a different (dead) process
+      assert.equal(isProcessAlive(sleeper.pid!, "9999"), false);
+      assert.equal(isProcessAlive(sleeper.pid!, st0), true);
+    } else {
+      assert.equal(isProcessAlive(sleeper.pid!), true);
+    }
 
     const att = (await c.request("attach_pid", { permitToken: g.entry.permitToken, pid: sleeper.pid })) as any;
     assert.equal(att.entry.phase, "running_tracked");

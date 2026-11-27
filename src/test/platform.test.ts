@@ -192,7 +192,11 @@ test("aliveBySignalZero: own pid alive, pid 1 alive (ours or EPERM), huge pid de
   assert.equal(aliveBySignalZero(4_194_303), false);
 });
 
-test("isProcessAlive: Linux branch still checks /proc start time", () => {
+// Linux-only: the /proc start-time check and the process-group scan need a real
+// /proc (macOS falls back to signal 0; documented in docs/OPERATIONS.md).
+const NO_PROC = process.platform !== "linux" && "needs /proc (Linux only)";
+
+test("isProcessAlive: Linux branch still checks /proc start time", { skip: NO_PROC }, () => {
   const st = processStartTime(process.pid);
   assert.ok(st !== undefined, "/proc start time must be readable on Linux");
   assert.equal(isProcessAlive(process.pid, st, "linux"), true);
@@ -208,7 +212,7 @@ test("jobAlive: win32 skips the process-group scan", () => {
   assert.equal(jobAlive(undefined, 12345, undefined, "win32"), null);
 });
 
-test("jobAlive: Linux still scans process groups", () => {
+test("jobAlive: Linux still scans process groups", { skip: NO_PROC }, () => {
   assert.equal(jobAlive(process.pid, undefined, undefined, "linux"), true);
   // pgid 1 exists but a dead pid + live foreign pgid keeps the job "alive"
   // via the group scan — semantics unchanged on Linux.

@@ -22,6 +22,21 @@ jobs:
       - name: Test (daemon, MCP, hooks, run helpers)
         run: node --test dist/test/*.test.js
 
+  # macOS (issue #108): /var -> /private/var tmpdirs, ~/Library paths and the
+  # ps-based identity walk only show up here. Node 24 only, to keep CI fast.
+  test-macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run build
+      - name: Test (full suite)
+        run: node --test dist/test/*.test.js
+
   pins:
     runs-on: ubuntu-latest
     steps:

@@ -1256,9 +1256,10 @@ function uninstallCursor(opts: UninstallOptions): string[] {
 
 // --------------------------------------------------------------------- omac
 
-// omac (verified against 0.11.0) sandboxes agents with bubblewrap +
-// Landlock on Linux and strips the harness environment, allowing through
-// only what the user-global sandbox profile lists. Known profile fields
+// omac (verified against 0.11.0 on Linux, 0.14.0 on macOS) sandboxes agents
+// with bubblewrap + Landlock on Linux / seatbelt on macOS and strips the
+// harness environment, allowing through only what the user-global sandbox
+// profile lists. Known profile fields
 // (strict parsing — unknown fields are hard errors): top-level `workdir`,
 // `network`, `filesystem`, `environment`; `workdir.access`,
 // `network.allow_domain`/`deny_domain`/`allow_tcp_connect`,
@@ -1438,8 +1439,13 @@ function installOmac(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): stri
     actions.push(`skipped filesystem.read: load-lock lives in a repo checkout (${P.root}) — the omac workdir grant already covers it`);
   }
   actions.push(
-    "set the values in your harness env (the grants only allow the names through): " +
-      "LOAD_LOCK_NO_SPAWN=1 (client-only; the daemon must run on the host, e.g. load-lock service start), " +
+    "client-only is automatic inside omac (load-lock >= 1.7.3): clients that see omac's sandbox markers " +
+      "(OMAC_FACADE_TOKEN / OMAC_SOCKET) never spawn a daemon, so the daemon must run on the host " +
+      "(e.g. load-lock service start); sidecars run on the host without those markers and keep auto-spawning. " +
+      "LOAD_LOCK_NO_SPAWN=1 is no longer needed (LOAD_LOCK_NO_SPAWN=0 explicitly re-enables spawning)",
+  );
+  actions.push(
+    "optional, set in the shell that launches omac (the grants only allow the names through): " +
       "LOAD_LOCK_LABEL_PREFIX=omac (dashboard shows holders as omac:<label>); " +
       "LOAD_LOCK_SOCKET only if the default <state dir>/daemon.sock is not what the sandbox sees",
   );
@@ -1448,8 +1454,9 @@ function installOmac(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): stri
       "silently strips the unknown labelPrefix field — upgrade and restart the daemon (load-lock service restart)",
   );
   actions.push(
-    "verified live against omac 0.11.0 (bubblewrap + Landlock): sandboxed client -> host daemon " +
-      "round-trip, prefixed labels, LOAD_LOCK_NO_SPAWN error contract",
+    "verified live against omac 0.11.0 (Linux, bubblewrap + Landlock): sandboxed client -> host daemon " +
+      "round-trip, prefixed labels, LOAD_LOCK_NO_SPAWN error contract; and against omac 0.14.0 " +
+      "(macOS, seatbelt): round-trip through the granted socket, automatic client-only error with the host daemon stopped",
   );
   return actions;
 }

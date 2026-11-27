@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync, cpSync, symlinkSync, lstatSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync, cpSync, symlinkSync, lstatSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -328,7 +328,11 @@ test("roo-code: merges into an existing global mcp_settings.json (never creates 
   const proj = join(home, "proj");
   mkdirSync(proj, { recursive: true });
   const xdg = join(home, ".config");
-  const globalMcp = join(xdg, "Code", "User", "globalStorage", "RooCodeInc.roo-code", "settings", "mcp_settings.json");
+  // Seed the path VS Code really uses on this platform (the installer only
+  // merges into files it finds there): ~/Library/Application Support on
+  // macOS, $XDG_CONFIG_HOME elsewhere.
+  const appData = process.platform === "darwin" ? join(home, "Library", "Application Support") : xdg;
+  const globalMcp = join(appData, "Code", "User", "globalStorage", "RooCodeInc.roo-code", "settings", "mcp_settings.json");
   mkdirSync(dirname(globalMcp), { recursive: true });
   writeFileSync(globalMcp, JSON.stringify({ mcpServers: { fetch: { command: "uvx", args: ["mcp-server-fetch"] } } }, null, 2) + "\n");
 
@@ -1023,6 +1027,10 @@ test("omac: install/uninstall round-trip on a populated profile; re-install is b
   // honesty: live-verified claim, the env prefix entry, and the state-dir grant
   assert.match(r.stdout, /live-verified.*omac 0\.11\.0|verified live against omac 0\.11\.0/i, "installer output must state the verification status");
   assert.match(r.stdout, /LOAD_LOCK_\*/, "installer output must mention the LOAD_LOCK_* allow_vars entry");
+  // issue #109: client-only is automatic inside omac; NO_SPAWN=1 is no longer a manual step
+  assert.match(r.stdout, /client-only is automatic inside omac/, "installer output must say client-only is automatic");
+  assert.match(r.stdout, /LOAD_LOCK_NO_SPAWN=0/, "installer output must name the explicit override");
+  assert.doesNotMatch(r.stdout, /harness env[^\n]*LOAD_LOCK_NO_SPAWN=1/, "NO_SPAWN=1 must not be a required step any more");
   assert.match(r.stdout, /allow_unix_dir \+=/, "installer output must mention the state-dir grant");
   assert.match(r.stdout, /skipped filesystem\.read.*repo checkout/, "installer output must honestly note the skipped read grant (CLI runs from a repo checkout)");
 
@@ -1124,7 +1132,8 @@ test("omac: a global-style install (package outside any repo) adds the package-t
   assert.equal(r.code, 0, `install failed: ${r.stderr}`);
   assert.match(r.stdout, /filesystem\.read \+=/, "installer output must mention the package-tree read grant");
   const p = JSON.parse(readFileSync(profileFile, "utf8"));
-  const pkgReal = resolve(pkgMock);
+  // the installer realpaths the package root (macOS: tmpdir() is under the /var -> /private/var symlink)
+  const pkgReal = realpathSync(pkgMock);
   assert.deepEqual(p.filesystem.read, [pkgReal], "read grant is the realpath of the package root");
   assert.ok(p.filesystem.allow_unix_dir.includes(stateDir), "state dir granted too");
 

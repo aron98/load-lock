@@ -103,7 +103,7 @@ process group* finishes, never merely when a shell returns a task id.
 (issues #49/#50): an explicit `agent_id` / `--agent` / `LOAD_LOCK_AGENT`
 wins, else a harness session id (OpenCode `sessionID`, Claude Code
 `CLAUDE_CODE_SESSION_ID`, hook `session_id`), else the stable harness
-ancestor process on Linux, so every wiring of one session (CLI, MCP
+ancestor process on Linux and macOS, so every wiring of one session (CLI, MCP
 server, hooks) acts as one agent (details in
 [COMPATIBILITY.md](COMPATIBILITY.md#session-identity-per-harness)); every entry also records an agent label,
 cwd, op key (for idempotent duplicate suppression), and reason. Idempotency:
