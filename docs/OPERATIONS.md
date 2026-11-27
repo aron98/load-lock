@@ -1412,10 +1412,28 @@ in the WSL2 caveats above).
 
 ## macOS / Windows notes
 
-- macOS: no cgroup limits; process-liveness checks fall back from
-  `/proc/<pid>/stat` start times to `kill(pid, 0)` (weaker PID-reuse
-  defense — document and prefer `run_with_permit`). The session-identity
-  ancestor walk asks `ps` instead of reading `/proc` (issue #108).
+- macOS: no cgroup limits. There is no `/proc`, so process liveness asks
+  `ps` (issue #116), as the session-identity ancestor walk does (issue
+  #108):
+  - **PID-reuse defense:** when a job attaches (`start_job` /
+    `attach_pid`), the daemon records the pid's `lstart` (epoch seconds,
+    read with `LC_ALL=C`). Later, a different `lstart` for that pid means
+    the pid was reused, and the permit is released. `lstart` has 1 s
+    resolution, so a pid reused within the same second as the original
+    start is not detected (the same limitation class as Linux clock ticks,
+    but coarser).
+  - **Process-group scan:** a tracked job whose leader exited counts as
+    alive while any process in its process group still runs, as on Linux.
+  - **Cost:** one `ps -A -o pid=,pgid=,lstart=` per sweep (and per restart
+    reconciliation or `diagnose`), shared by all tracked permits — not one
+    per pid. About 15 ms on a machine with ~700 processes.
+  - **Fallback:** when `ps` fails or prints nothing usable, liveness falls
+    back to `kill(pid, 0)`: no reuse defense and no group scan (a
+    pgid-only job is then kept as "unknown").
+  - Permits journaled without a start time (attached by a daemon before
+    #116) are checked for existence only and keep working after an
+    upgrade.
+
   Everything else works; CI runs the full suite on `macos-latest`.
 
 ### Windows — procedure (NOT verified here)
@@ -1470,10 +1488,10 @@ Caveats to watch for (unverified expectations):
 
 - **No PID-reuse defense.** Windows has no `/proc`-style start time, so
   `isProcessAlive` can only use `kill(pid, 0)` semantics. A recycled PID
-  could be mistaken for the original job — the same limitation as macOS,
-  documented here rather than solved.
-- **No process-group scan.** The `/proc`-based process-group scan does not
-  exist on Windows. Tracked permits release when the main PID dies even if
+  could be mistaken for the original job — documented here rather than
+  solved (macOS has a `ps`-based defense since #116).
+- **No process-group scan.** The process-group scan (`/proc` on Linux,
+  `ps` on macOS) does not exist on Windows. Tracked permits release when the main PID dies even if
   child processes survive; job stop/kill uses `taskkill /PID <pid> /T`
   (`/F` for SIGKILL) to take down the tree.
 - **Pipe name is machine-wide.** Unlike POSIX, where each user gets their
