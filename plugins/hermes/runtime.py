@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 PACKAGE_NAME = "@aron98/load-lock"
-PACKAGE_SPEC = "@aron98/load-lock@1.7.2"
+PACKAGE_SPEC = "@aron98/load-lock@1.7.3"
 # Minimum CLI version the adapter needs (decline/heartbeat landed in 1.7.0).
 # Derived from PACKAGE_SPEC so check-pins keeps a single source of truth.
 PIN = PACKAGE_SPEC.rsplit("@", 1)[1]
