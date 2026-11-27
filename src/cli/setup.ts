@@ -69,6 +69,8 @@ export interface Integration {
   stale?: boolean;
   /** Plugins only: the harness's enabled flag. */
   enabled?: boolean;
+  /** OpenCode plugins only: the load-lock version the entry pins or points at, when known. */
+  version?: string | null;
 }
 
 /**
@@ -364,6 +366,32 @@ function scanClaudeCode(c: Ctx): Integration[] {
   return out;
 }
 
+// OpenCode `plugins` entries `load-lock install --harness opencode` writes
+// (#110): the installing copy's absolute package root (`--pin path`), the
+// exact published version (`--pin version`) or the bare name (`--pin none`).
+// OpenCode 2.x treats an absolute entry as a local plugin (loaded from that
+// directory via its package.json `exports`, nothing downloaded) and anything
+// else as an npm spec it installs into <cache>/opencode/npm/<spec>/.
+
+/** `@aron98/load-lock@<exact version>`; group 1 is the version. */
+export const OPENCODE_EXACT_PIN = /^@aron98\/load-lock@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
+
+/**
+ * Is `p` an absolute path to a load-lock package root? A missing directory
+ * counts when its path ends in `@aron98/load-lock` (a removed global
+ * install), so a stale entry is still recognised and can be removed.
+ */
+export function isLoadLockDir(p: string): boolean {
+  if (!path.isAbsolute(p)) return false;
+  if (fs.existsSync(p)) return readJson(path.join(p, "package.json"))?.name === PKG_NAME;
+  return p.split(/[\\/]+/).slice(-2).join("/") === PKG_NAME;
+}
+
+/** Is this `plugins` entry one `load-lock install --harness opencode` writes (any `--pin`)? */
+export function isInstallerOpenCodeEntry(p: unknown): boolean {
+  return typeof p === "string" && (p === PKG_NAME || OPENCODE_EXACT_PIN.test(p) || isLoadLockDir(p));
+}
+
 function scanOpenCode(c: Ctx): Integration[] {
   const out: Integration[] = [];
   const files: [string, Integration["scope"]][] = [
@@ -374,16 +402,22 @@ function scanOpenCode(c: Ctx): Integration[] {
   for (const [file, scope] of files) {
     const cfg = readJson(file);
     if (!isObject(cfg)) continue;
-    // the installer writes `plugins`; OpenCode's documented key is `plugin`
+    // the installer writes `plugins` (OpenCode 2.x); `plugin` is the 1.x key
     for (const key of ["plugin", "plugins"]) {
       if (!Array.isArray(cfg[key])) continue;
+      const mine = key === "plugins" && scope === "user";
       for (const p of cfg[key]) {
         if (typeof p !== "string") continue;
-        if (p === PKG_NAME || p.startsWith(PKG_NAME + "@")) {
-          const owner: Owner = p === PKG_NAME && key === "plugins" && scope === "user" ? "installer" : "other";
-          out.push({ kind: "plugin", scope, file, detail: `${key}: "${p}"`, owner });
-        } else if (p === stub) {
+        if (p === stub) {
           out.push({ kind: "plugin", scope, file, detail: `${key}: legacy stub ${p}`, owner: "installer", stale: !fs.existsSync(p) });
+        } else if (p === PKG_NAME || p.startsWith(PKG_NAME + "@")) {
+          const pinned = OPENCODE_EXACT_PIN.exec(p)?.[1];
+          const owner: Owner = mine && (p === PKG_NAME || !!pinned) ? "installer" : "other";
+          out.push({ kind: "plugin", scope, file, detail: `${key}: "${p}"`, owner, ...(pinned ? { version: pinned } : {}) });
+        } else if (isLoadLockDir(p)) {
+          const stale = !fs.existsSync(p);
+          const version = stale ? null : (readJson(path.join(p, "package.json"))?.version ?? null);
+          out.push({ kind: "plugin", scope, file, detail: `${key}: local copy ${p}`, owner: mine ? "installer" : "other", copy: p, stale, version });
         }
       }
     }
@@ -779,7 +813,9 @@ function installerOwned(list: Integration[], kind: IntegrationKind): Integration
 function needsRefresh(h: HarnessInventory): boolean {
   const L = h.integrations;
   // any working OpenCode plugin entry will do (e.g. a pinned one the user chose)
-  if (h.harness === "opencode") return !L.some(activePlugin) || L.some((i) => i.detail.includes("legacy"));
+  if (h.harness === "opencode") {
+    return !L.some(activePlugin) || L.some((i) => i.detail.includes("legacy") || (i.owner === "installer" && i.stale));
+  }
   if (EXPECTED[h.harness].some((k) => installerOwned(L, k).length === 0)) return true;
   if (L.some((i) => i.owner === "installer" && i.stale)) return true;
   const hooks = installerOwned(L, "hooks");
@@ -840,7 +876,8 @@ export function planConverge(inv: Inventory, opts: PlanOptions): Plan {
   const hints: string[] = [];
   for (const h of inv.harnesses) {
     const L = h.integrations;
-    if (h.rung === "none") continue;
+    // a stale installer entry (e.g. an OpenCode path to a removed copy) still needs converging
+    if (h.rung === "none" && !L.some((i) => i.owner === "installer" && i.stale)) continue;
 
     // Claude Code with its plugin active: the plugin replaces the loose wiring.
     if (h.harness === "claude-code" && h.rung === "plugin") {

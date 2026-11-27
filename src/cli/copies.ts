@@ -1,9 +1,10 @@
 /**
  * Installed-copy detection (issue #34): on a given machine several copies
  * of load-lock commonly coexist — the globally-installed CLI on PATH, and
- * the private copy opencode maintains under its npm cache (because
- * `install --harness opencode` registers the bare package name, opencode
- * installs and refreshes its own copy on its own schedule), and copies npx
+ * the private copy opencode maintains under its npm cache (when its
+ * `plugins` entry is a package spec — `install --harness opencode --pin
+ * version|none`, or one written by hand — opencode installs its own copy;
+ * the bare name is refreshed on opencode's schedule), and copies npx
  * installs under its cache when skill / ACE / pinned MCP entries launch
  * `npx -y @aron98/load-lock@<pin>` (issue #57).
  *

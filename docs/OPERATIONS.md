@@ -19,7 +19,7 @@ identity per session, and duplicate hooks are dropped by the daemon (see
 | --- | --- | --- | --- |
 | 0 | **Skill only** (`skills/load-lock/SKILL.md`) | the load-lock MCP tools if listed, else `load-lock` on PATH, else `npx -y @aron98/load-lock@<version>` (pinned in the skill) | the full permit lifecycle through the CLI (`run`, `wait`, `acquire` / `claim` / `release`, `cancel`); the first call starts the daemon. No idle wakeup, no policy injection, nothing after compaction |
 | 1 | **MCP server** (`npx -y @aron98/load-lock@<version> mcp`) | the pinned npx copy | the tools; your offers in every load-lock tool result; `wait_for_turn` / `wait_for_completion` bounded sleeps; the policy in the MCP `instructions` where the harness shows them; the `agent_guide` tool |
-| 2 | **Harness plugin**: Claude Code `load-lock-plugin`, OpenCode npm plugin `@aron98/load-lock` | Claude Code: the plugin launcher (PATH CLI if new enough, else a known copy, else pinned npx); OpenCode: its own plugin cache copy | everything the harness supports: tools, policy at session start that survives compaction, offer wakeups at turn ends and while idle |
+| 2 | **Harness plugin**: Claude Code `load-lock-plugin`, OpenCode npm plugin `@aron98/load-lock` | Claude Code: the plugin launcher (PATH CLI if new enough, else a known copy, else pinned npx); OpenCode: the copy `load-lock install --harness opencode` ran from (its path), or OpenCode's cache copy for a package-name entry | everything the harness supports: tools, policy at session start that survives compaction, offer wakeups at turn ends and while idle |
 | — | **`npm i -g` + `load-lock install --harness <h>`** | the global CLI | the same wiring as loose config files. The only route for harnesses without a plugin, and the escape hatch where plugins aren't allowed |
 
 Each rung points at the next one once: the skill, the MCP `instructions`
@@ -43,9 +43,11 @@ How to install each rung:
   `load-lock install --harness generic` prints a snippet that runs that
   copy instead of npx.
 - **Plugin (2).** Claude Code: see [Claude Code plugin](#claude-code-plugin).
-  OpenCode: add `@aron98/load-lock` to the `plugins` array of
-  `~/.config/opencode/opencode.json` (OpenCode downloads and updates it),
-  or let `load-lock install --harness opencode` register it.
+  OpenCode: let `load-lock install --harness opencode` register it (the
+  installing copy by path, see below), or add `@aron98/load-lock@<version>`
+  (an exact pin; OpenCode downloads it once) or the bare
+  `@aron98/load-lock` (OpenCode downloads latest and refreshes it) to the
+  `plugins` array of `~/.config/opencode/opencode.json` yourself.
 - **Loose wiring.** The installers below.
 
 ### `npm i -g` + `load-lock install`
@@ -82,10 +84,48 @@ survive `brew upgrade node`; only without one (nvm's versioned dirs,
 Windows) does it write the running binary's own path. After switching
 to a node that path no longer exists for, re-run `load-lock install`.
 
-- **opencode** — registers the published package `@aron98/load-lock` in
-  the `plugins` array of `~/.config/opencode/opencode.json` (OpenCode
-  installs and updates it itself) and removes the legacy plugin stub
+- **opencode** — adds one entry to the `plugins` array of
+  `~/.config/opencode/opencode.json`, tied to the copy that runs `install`
+  (#110), and removes the legacy plugin stub
   `~/.config/opencode/plugins/load-lock/` if an older install left one.
+  `--pin` picks the entry:
+  - `--pin path` (the default): the installing copy's absolute package
+    root, e.g. `/usr/local/lib/node_modules/@aron98/load-lock`. OpenCode
+    2.x treats an absolute `plugins` entry as a *local* plugin and loads
+    it in place through the package's `exports`, so nothing is downloaded
+    and the plugin always matches the CLI. After
+    `npm i -g @aron98/load-lock@latest` or `load-lock update` (which
+    replace that directory) restart OpenCode to load the new code. Inside
+    an omac sandbox this needs only the read grant
+    `install --harness omac` adds for a global install, no registry access.
+  - `--pin version`: `@aron98/load-lock@<this copy's version>`. OpenCode
+    downloads it once into `<cache>/opencode/npm/@aron98/load-lock@<v>/`
+    (with the shipped `npm-shrinkwrap.json` honoured, see
+    [Releasing](#releasing-maintainers)) and never refreshes an exact version
+    (`opencode plugin check` reports it current). The default when the
+    installing copy sits in the npx or OpenCode cache, which may be pruned.
+  - `--pin none`: the bare `@aron98/load-lock`, the pre-1.7.3 behaviour:
+    OpenCode installs latest and refreshes it on its own schedule, so the
+    plugin can drift from the CLI (#34, #38).
+
+  Why the path is the default for `npm i -g` users: they already upgrade
+  the CLI with `npm i -g` / `load-lock update`, and the path entry makes
+  the OpenCode plugin follow that same upgrade (as the Claude Code and
+  Codex wiring does: those run the installing copy by absolute path) rather
+  than a second copy OpenCode updates on its own. Who wants OpenCode to
+  track latest by itself picks `--pin none`. Re-running `install` replaces
+  any entry in a shape it writes (path to a load-lock package, exact pin,
+  bare name, legacy stub), so switching `--pin` never duplicates the
+  plugin; ranges and tags you wrote (`@aron98/load-lock@^1`) are left alone,
+  and `setup` reports the duplicate. `uninstall` removes every shape
+  `install` writes, including a path to a copy that no longer exists.
+  `doctor` lists the entries (`opencodePlugins`) and warns when one points
+  at a missing copy or loads a version other than the CLI's; `setup`
+  counts them as the installer's and converges a stale path entry.
+  Verified live on OpenCode 2.3.2 (throwaway HOME): a path entry shows up
+  in `opencode plugin list` as `load-lock local <path>`, an exact pin as
+  `load-lock 1.7.2 @aron98/load-lock@1.7.2`. OpenCode 1.x used the
+  `plugin` key and was not checked.
 - **claude-code** — adds `mcpServers.load-lock` to `~/.claude.json`; hooks
   (`SessionStart`, `Stop`, async `await-offer`) to `~/.claude/settings.json`;
   a marked section to `~/.claude/CLAUDE.md`; copies the skill to
