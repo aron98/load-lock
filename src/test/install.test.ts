@@ -1027,6 +1027,10 @@ test("omac: install/uninstall round-trip on a populated profile; re-install is b
   // honesty: live-verified claim, the env prefix entry, and the state-dir grant
   assert.match(r.stdout, /live-verified.*omac 0\.11\.0|verified live against omac 0\.11\.0/i, "installer output must state the verification status");
   assert.match(r.stdout, /LOAD_LOCK_\*/, "installer output must mention the LOAD_LOCK_* allow_vars entry");
+  // issue #109: client-only is automatic inside omac; NO_SPAWN=1 is no longer a manual step
+  assert.match(r.stdout, /client-only is automatic inside omac/, "installer output must say client-only is automatic");
+  assert.match(r.stdout, /LOAD_LOCK_NO_SPAWN=0/, "installer output must name the explicit override");
+  assert.doesNotMatch(r.stdout, /harness env[^\n]*LOAD_LOCK_NO_SPAWN=1/, "NO_SPAWN=1 must not be a required step any more");
   assert.match(r.stdout, /allow_unix_dir \+=/, "installer output must mention the state-dir grant");
   assert.match(r.stdout, /skipped filesystem\.read.*repo checkout/, "installer output must honestly note the skipped read grant (CLI runs from a repo checkout)");
 

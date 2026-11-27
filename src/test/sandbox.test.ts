@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { LLClient, ensureDaemon } from "../shared/client.js";
+import { LLClient, ensureDaemon, noSpawnReason, noSpawnRequested } from "../shared/client.js";
 import { ProtocolError } from "../shared/protocol.js";
 import { startDaemon, delay, probe, cliMainPath } from "./testutil.js";
 
@@ -122,6 +122,106 @@ test("CLI under LOAD_LOCK_NO_SPAWN fails loudly with a docs pointer", async () =
     assert.equal(res.code, 70, "unavailable -> exit 70");
     assert.ok(res.stderr.includes("docs/OPERATIONS.md"), "stderr points at the docs");
     assert.ok(res.stderr.includes("Sandboxes"), "stderr points at the Sandboxes section");
+    assert.equal(existsSync(dir), false, "CLI spawned no daemon");
+  } finally {
+    cleanup();
+  }
+});
+
+// ---- issue #109: client-only by default inside an omac sandbox ----------
+
+/** Run `fn` with `vars` set in process.env, restoring the previous values. */
+async function withEnv<T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, vars);
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+test("omac sandbox marker detection: sandbox env vs sidecar env", () => {
+  // Sandboxed inner process of `omac start`/`omac serve` (omac v0.14.0).
+  for (const marker of ["OMAC_FACADE_TOKEN", "OMAC_SOCKET"]) {
+    const env = { [marker]: "x" };
+    assert.equal(noSpawnRequested(env), true, `${marker} alone means client-only`);
+    assert.match(noSpawnReason(env)!, new RegExp(`omac sandbox: ${marker} is set`));
+    assert.equal(noSpawnRequested({ ...env, LOAD_LOCK_NO_SPAWN: "0" }), false, "LOAD_LOCK_NO_SPAWN=0 overrides");
+    assert.equal(noSpawnRequested({ ...env, LOAD_LOCK_NO_SPAWN: "" }), true, "empty NO_SPAWN does not override");
+  }
+  // The exact OMAC_*/SIDECAR_* vars omac's supervisor gives a host-side
+  // sidecar (internal/supervisor/supervisor.go buildEnv): must still spawn.
+  const sidecar = { SIDECAR_PORT: "4100", SIDECAR_SKILL: "x", OMAC_WORKDIR: "/w", OMAC_HARNESS_SKILLS_DIR: "/w/.claude/skills" };
+  assert.equal(noSpawnRequested(sidecar), false, "sidecar env keeps auto-spawn");
+  assert.equal(noSpawnRequested({ OMAC_FACADE_TOKEN: "" }), false, "empty marker is not a marker");
+  assert.equal(noSpawnReason({ LOAD_LOCK_NO_SPAWN: "1", OMAC_SOCKET: "/s" }), "LOAD_LOCK_NO_SPAWN is set");
+});
+
+test("omac marker, no daemon: connect fails client-only and spawns nothing", async () => {
+  const { dir, sock, cleanup } = freshDir("ll-omac-");
+  try {
+    await withEnv({ OMAC_FACADE_TOKEN: "test-token", LOAD_LOCK_NO_SPAWN: "" }, async () => {
+      const c = new LLClient({ socket: sock, stateDir: dir });
+      await assert.rejects(
+        () => c.connect(),
+        (e: unknown) => {
+          assert.ok(e instanceof ProtocolError);
+          assert.equal(e.code, "unavailable");
+          assert.ok(e.message.includes("omac sandbox: OMAC_FACADE_TOKEN is set"), "error names the omac marker");
+          assert.ok(e.message.includes("LOAD_LOCK_NO_SPAWN=0"), "error names the override");
+          assert.ok(e.message.includes("docs/OPERATIONS.md"), "error points at the docs");
+          return true;
+        },
+      );
+      await assert.rejects(() => ensureDaemon(dir, sock), (e: unknown) => e instanceof ProtocolError);
+    });
+    assert.equal(existsSync(dir), false, "no state dir created");
+    await delay(1_000);
+    assert.equal(existsSync(dir), false, "still no state dir after a wait");
+    assert.equal(await probe(sock), false, "no daemon listening");
+  } finally {
+    cleanup();
+  }
+});
+
+test("omac marker + LOAD_LOCK_NO_SPAWN=0: override spawns the daemon", async () => {
+  const { dir, sock, cleanup } = freshDir("ll-omac0-");
+  try {
+    await withEnv({ OMAC_SOCKET: "/tmp/omac-x/bridge.sock", LOAD_LOCK_NO_SPAWN: "0" }, async () => {
+      const c = new LLClient({ socket: sock, stateDir: dir });
+      await c.connect();
+      const hello = (await c.request("hello", {})) as any;
+      assert.ok(hello.pid, "daemon spawned and reachable");
+      c.close();
+    });
+    await killSpawnedDaemon(dir);
+  } finally {
+    cleanup();
+  }
+});
+
+test("CLI with the omac marker exits 70 and spawns no daemon", async () => {
+  const { dir, sock, cleanup } = freshDir("ll-omaccli-");
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    OMAC_FACADE_TOKEN: "test-token",
+    LOAD_LOCK_STATE_DIR: dir,
+    LOAD_LOCK_SOCKET: sock,
+  };
+  delete env.LOAD_LOCK_NO_SPAWN;
+  const res = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
+    const child = spawn(process.execPath, [cliMainPath, "status"], { env });
+    let stderr = "";
+    child.stderr.on("data", (b) => (stderr += b));
+    child.once("exit", (code) => resolve({ code, stderr }));
+  });
+  try {
+    assert.equal(res.code, 70, "unavailable -> exit 70");
+    assert.ok(res.stderr.includes("omac sandbox"), "stderr names the omac sandbox");
     assert.equal(existsSync(dir), false, "CLI spawned no daemon");
   } finally {
     cleanup();

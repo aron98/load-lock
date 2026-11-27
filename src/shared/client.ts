@@ -19,6 +19,10 @@
  * env var is set (any non-empty value except "0"), no daemon is ever
  * auto-spawned here or in ensureDaemon(); an unreachable endpoint fails
  * loudly with a pointer to the Sandboxes section of docs/OPERATIONS.md.
+ * Inside an omac sandbox this is the default even without the env var
+ * (issue #109): omac profiles can only allow variables, not set them, so
+ * the client detects omac's sandbox-only markers itself (see
+ * omacSandboxMarker). LOAD_LOCK_NO_SPAWN=0 is the explicit override.
  */
 import { connect, Socket } from "node:net";
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
@@ -215,14 +219,49 @@ export class LLClient {
 // ------------------------------------------------------------------- spawning
 
 /**
- * Client-only mode: LOAD_LOCK_NO_SPAWN set to any non-empty value except
- * "0" forbids auto-spawning a daemon. Set this inside OS-level sandboxes
- * (bubblewrap/omac, Docker, ...) so a sandbox-local daemon is never
- * silently spawned and an unreachable host socket fails loudly instead.
+ * Environment variables omac (oh-my-agentic-coder) sets ONLY for the
+ * sandboxed inner process of `omac start` / `omac serve`, never for a
+ * skill sidecar (sidecars run on the host and must keep auto-spawning).
+ * Verified against omac v0.14.0 source:
+ *  - set for the sandbox child: internal/cli/start.go:902 (OMAC_SOCKET),
+ *    :947 (OMAC_FACADE_TOKEN); internal/cli/serve.go:1852, :1859;
+ *  - sidecar env is built from scratch, not inherited
+ *    (internal/supervisor/supervisor.go:279 `cmd.Env = s.buildEnv(...)`,
+ *    :340-389): host passthrough of PATH/HOME/USER/LANG/LC_ALL/LC_CTYPE/
+ *    TMPDIR plus the skill's own passthrough/config/secrets and
+ *    SIDECAR_PORT, SIDECAR_SKILL, OMAC_WORKDIR, OMAC_HARNESS_SKILLS_DIR —
+ *    neither marker.
+ * A bare `omac sandbox run` sets neither marker (it is the low-level
+ * primitive; agent sessions go through start/serve).
  */
-export function noSpawnRequested(env: NodeJS.ProcessEnv = process.env): boolean {
+export const OMAC_SANDBOX_MARKERS = ["OMAC_FACADE_TOKEN", "OMAC_SOCKET"] as const;
+
+/** The omac sandbox marker present in `env`, if any. */
+export function omacSandboxMarker(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return OMAC_SANDBOX_MARKERS.find((k) => !!env[k]);
+}
+
+/**
+ * Why auto-spawn is disabled, or undefined when spawning is allowed.
+ * LOAD_LOCK_NO_SPAWN set to any non-empty value except "0" forbids
+ * auto-spawning a daemon; set it inside OS-level sandboxes (bubblewrap,
+ * Docker, ...) so a sandbox-local daemon is never silently spawned and an
+ * unreachable host socket fails loudly instead. Inside an omac sandbox
+ * (omacSandboxMarker) client-only mode is the default; LOAD_LOCK_NO_SPAWN=0
+ * explicitly overrides both.
+ */
+export function noSpawnReason(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const v = env.LOAD_LOCK_NO_SPAWN;
-  return v !== undefined && v !== "" && v !== "0";
+  if (v === "0") return undefined;
+  if (v !== undefined && v !== "") return "LOAD_LOCK_NO_SPAWN is set";
+  const marker = omacSandboxMarker(env);
+  if (marker) return `running inside an omac sandbox: ${marker} is set`;
+  return undefined;
+}
+
+/** Client-only mode: true when auto-spawning a daemon is forbidden. */
+export function noSpawnRequested(env: NodeJS.ProcessEnv = process.env): boolean {
+  return noSpawnReason(env) !== undefined;
 }
 
 /**
@@ -237,12 +276,12 @@ export function envLabelPrefix(env: NodeJS.ProcessEnv = process.env): string | u
 
 function noSpawnError(sockPath: string): string {
   return (
-    `load-lock daemon is not reachable at ${sockPath} and auto-spawn is disabled (LOAD_LOCK_NO_SPAWN is set): ` +
+    `load-lock daemon is not reachable at ${sockPath} and auto-spawn is disabled (${noSpawnReason() ?? "LOAD_LOCK_NO_SPAWN is set"}): ` +
     `this client is client-only and started no daemon. Run the daemon on the host machine ` +
     `(e.g. load-lock service start) and bridge its socket into this sandbox, ` +
     `then point LOAD_LOCK_SOCKET at the bridged path — see the "Sandboxes" section of ` +
     `docs/OPERATIONS.md for per-sandbox recipes (bubblewrap/omac, Docker, seatbelt, WSL2). ` +
-    `To allow spawning a daemon here instead, unset LOAD_LOCK_NO_SPAWN.`
+    `To allow spawning a daemon here instead, set LOAD_LOCK_NO_SPAWN=0.`
   );
 }
 
