@@ -61,7 +61,7 @@ as `plugin`, `loose`, `MCP only`, `skill only` or `not installed`.
 | --- | --- | --- | --- | --- |
 | **OpenCode** | generic stdio registration works; the plugin's native `load_lock_*` tools are better | npm plugin `@aron98/load-lock` (also listed on ACE via `ace/opencode/`) — live-verified | `install --harness opencode` registers that same npm plugin | **plugin** |
 | **Hermes Agent** | generic stdio registration works | `plugins/hermes` native plugin (catalog entry: repo `aron98/load-lock`, subdir `plugins/hermes`) — enable with `hermes plugins enable load-lock` | none (the plugin is the artifact; no loose installer shipped) | **plugin** |
-| **Claude Code** | ACE `ace/mcp` or a manual stdio registration | `load-lock-plugin` from this repo's marketplace — contract-tested, passes `claude plugin validate --strict`; live-verified with a real model in a host session ([#63 record](#plugin-live-verification-63)); clean machine (npx branch), plugin + loose together and ACE's skills-dir layout checked in Docker with a stub model, not with a real model ([#104 record](#plugin-checks-in-docker-104)) | `install --harness claude-code`: MCP + hooks + `CLAUDE.md` section + skill — live-verified in Docker | **plugin** (loose gives the same capability) |
+| **Claude Code** | ACE `ace/mcp` or a manual stdio registration | `load-lock-plugin` from this repo's marketplace — contract-tested, passes `claude plugin validate --strict`; live-verified with a real model in a host session ([#63 record](#plugin-live-verification-63)) and on a clean machine in Docker without a global load-lock ([#104 record](#plugin-checks-in-docker-104)); plugin + loose together and ACE's skills-dir layout checked in Docker with a stub model only | `install --harness claude-code`: MCP + hooks + `CLAUDE.md` section + skill — live-verified in Docker | **plugin** (loose gives the same capability) |
 | **Codex CLI** | `[mcp_servers]` entry in `~/.codex/config.toml` | none shipped | `install --harness codex`: MCP + hooks + `AGENTS.md` section — live-verified in Docker | **loose** |
 | **Cursor** | project `.cursor/mcp.json` | none shipped | `install --harness cursor --project <dir>`: MCP + stop hook + rule — contract-tested | **loose** |
 | **Gemini CLI, Copilot CLI, Cline, Roo Code, Goose** | the harness's MCP config | none shipped | `install --harness <h>`: MCP + instructions/rule file, no hooks — config-tested | **loose** (rung 1 plus a policy file; no idle wakeup) |
@@ -231,7 +231,7 @@ live-verified** for the checks marked observed:
 | Daemon started by the plugin | Observed (fresh state dir; the daemon came up during session start with `CLAUDE_PLUGIN_ROOT` in its environment and `daemon.json` naming the PATH copy). Which plugin component spawned it first (hook or MCP server) was not determined. |
 | Session-derived identity | Observed for the plugin MCP server (requests carried agent `claude-code:<session id>` matching the session's transcript). That hooks read the same `session_id` from stdin was not separately inspected. |
 | Loose install + plugin together | Not observed with a real model; checked with a stub model in Docker, see [#104](#plugin-checks-in-docker-104) |
-| Launcher npx / known-copy branches inside a live session | Not observed with a real model (only the PATH branch ran); checked with a stub model in Docker, see [#104](#plugin-checks-in-docker-104) |
+| Launcher npx / known-copy branches inside a live session | Not observed in this run (only the PATH branch ran); the npx and known-copy branches were checked with a stub model, and the real-model phases ran without load-lock on PATH, in Docker, see [#104](#plugin-checks-in-docker-104) |
 
 The TUI labels the asyncRewake wake as "Stop hook blocking error from
 command SessionStart:startup"; the message text is the watcher's.
@@ -244,7 +244,8 @@ Claude Code 2.1.332, Node 24.22.3, npm 11.19.1, plugin pin
 published package from npm; only s3's loose install is packed from this
 tree (also 1.7.1). Run with `docker/run-model-free-checks.sh`.
 
-These runs use **no real model**. `docker/anthropic-stub.mjs` stands in
+Phases s1–s3 use **no real model** (the real-model phases follow below).
+`docker/anthropic-stub.mjs` stands in
 for the Anthropic API and answers with a fixed sequence of tool calls;
 Claude Code, the plugin's hooks, its MCP server and the daemon are real.
 The checks read what Claude Code sent to the API: the system prompt
@@ -268,18 +269,35 @@ directory marketplace in place).
 | s3 plugin + loose together (global install from the packed tarball, `load-lock install --harness claude-code --legacy`; `doctor` reports `claudeCodeMode: both`, `claude mcp list` shows both servers) | Both SessionStart hooks ran, **one** policy brief reached the model (daemon-side dedupe, #54). Launcher: PATH branch. The scripted session queued behind a CLI holder, the holder released, and the async `await-offer` watcher woke the session once; `pending` → `claim` → `release` went through (events queued → offered → claimed → released). The Stop hooks of both wirings ran with nothing left to deliver. |
 | s3 Stop continuation with both wirings | From an earlier run the same day whose scripted claim failed (a stub bug: it did not read `offerToken` from `pending`, since fixed), so the offer was still open when the turn ended: the Stop hooks of both wirings ran and **one** blocked (the loose hook), so the claim instruction arrived once. Claude Code shows a blocking Stop hook's text twice in the next request (a "Stop hook feedback" reminder and a "Stop hook blocking error" entry); that is one delivery. Not repeated in the passing run. |
 
-Not covered by these runs: the real-model phases of plugin mode (below),
-`/compact` and the idle `asyncRewake` wake in an interactive session
-(covered with a real model by #63, PATH branch only), and the skills-dir
-plugin with a real model.
+**Real-model plugin phases** (`MODE=plugin docker/run-claude-verify.sh`,
+2026-11-27, same image and versions as above, one run with s1/s2 before
+and s3 after; `CLAUDE-VERIFY PASSED`). The model was GLM-5.3 (`zai-org`)
+behind an OpenAI-compatible gateway, reached through the LiteLLM sidecar
+(`ghcr.io/berriai/litellm:main-latest`, digest `f73a8b65b252`); Claude
+Code saw it under the alias `claude-sonnet-4-5`. So this shows the plugin
+working with a real model, not with a Claude model. No load-lock on
+`PATH`; the runtime was the npx cache copy that s1 fetched and whose
+daemon s1 started (the launcher branch was not logged in these phases).
+Plugin installed from this repo's marketplace (not the skills-dir layout).
 
-**Real-model plugin phases: implemented, not observed.**
-`MODE=plugin docker/run-claude-verify.sh` runs phases 1/1b/2/3 (policy
-quote, MCP round-trip with Stop wakeup and `run_with_permit`, Stop-hook
-decision block, subagent, `/compact` restore, idle `asyncRewake` wake)
-with the plugin's tool names on the no-global image, between s1/s2 and s3.
-They need `LLM_GATEWAY_API_KEY`, `LLM_GATEWAY_BASE_URL` and
-`LLM_GATEWAY_MODEL` in `docker/.env` and have not been run.
+| Phase | Result |
+| --- | --- |
+| 1 headless round-trip | Observed: plugin MCP server `connected` at init; the model quoted the policy's first rule; via `ToolSearch` it called `status`, `acquire` (queued behind a CLI holder), `pending`, `claim`, `run_with_permit` (`sleep 120`) and `job_status`. Events queued → offered → claimed → started (process-tracked) → terminal; the job outlived the `claude` process and was auto-released. The wake came from the async `await-offer` watcher, which won the race against the Stop hook (as in the loose runs). |
+| 1b Stop-hook decision block (watcher stripped from the plugin's `hooks.json`) | Observed: the Stop hook's claim instruction woke the session; the model quoted it, then ran `pending` → `claim` → `release`. No watcher text in the transcript. |
+| 2 subagent | Observed: a `Task` subagent used the plugin's tools (`status`, `acquire` granted, `release`) and reported the policy section in its own context, quoting its first rule. |
+| 3a `/compact` restore (interactive pty) | Observed: after `/compact` the model quoted `load-lock now: pool "heavy": 1/1 in use`, the fresh brief re-injected after compaction (the startup brief said 0/1). |
+| 3b idle `asyncRewake` wake (interactive pty) | Observed: the idle session was woken and ran `pending` → `claim` → `release` (events queued → offered → claimed → terminal). As in the loose runs, the TUI did not render the watcher's wake text. |
+
+Not covered: plugin + loose together and the skills-dir layout with a
+real model (stub model only, above), and the first session on a clean
+machine with a real model (s1 used the stub; the real-model phases ran
+after the npx cache was warm).
+
+To rerun: create `docker/.env` with `LLM_GATEWAY_API_KEY`,
+`LLM_GATEWAY_BASE_URL` and `LLM_GATEWAY_MODEL` (LiteLLM's
+`provider/model` form, e.g. `openai/<model>`), then
+`MODE=plugin docker/run-claude-verify.sh` (or `PHASES=1,2,3` for the
+real-model phases only). Artifacts: `verify-artifacts-claude-plugin/`.
 
 #### ACE end to end (#66, #104)
 
@@ -585,9 +603,9 @@ Labels stay human-readable: session-derived ids get a short holder label
 - Live-verified: OpenCode (full adapter, including wakeup); Claude Code
   (loose install, full adapter in Docker: policy injection, compact
   restore, Stop-hook and asyncRewake wakeup paths, subagents,
-  background-job cleanup; plugin in a host session, #63; plugin on a clean
-  machine, plugin + loose and the ACE skills-dir layout with a stub model
-  in Docker, #104); Hermes
+  background-job cleanup; plugin in a host session, #63, and in Docker
+  without a global load-lock, #104; plugin + loose and the ACE skills-dir
+  layout with a stub model in Docker, #104); Hermes
   Agent 0.23.0 (native plugin: `hermes plugins validate` + `doctor` clean,
   live acquire→run→release flow, dashboard tab over HTTP, and the desktop
   half's pane/chip/palette source-level verification — agent tool surface

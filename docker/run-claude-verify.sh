@@ -56,6 +56,8 @@ set -e
 
 # Always try to rescue the in-container artifacts (events.json, pty logs,
 # transcripts) for post-mortem, especially on failure.
+# docker cp nests into an existing directory, so start from an empty one.
+rm -rf "../$ARTIFACTS"
 "${DOCKER_CMD[@]}" compose -f compose-claude-verify.yml cp claude:/workspace \
   "../$ARTIFACTS" >/dev/null 2>&1 \
   || echo "(note: could not copy artifacts from the claude container)"
