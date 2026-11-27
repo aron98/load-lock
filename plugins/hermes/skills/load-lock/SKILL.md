@@ -8,7 +8,7 @@ description: >-
   release the permit when done. Use when several agents on one machine risk
   overloading it by starting heavy work in the same minute. On Hermes, the
   load-lock plugin provides the load_lock_* tools; the CLI fallback is
-  `npx -y @aron98/load-lock@1.7.1` (downloads the pinned npm package), and
+  `npx -y @aron98/load-lock@1.7.2` (downloads the pinned npm package), and
   load-lock keeps its shared state in ~/.local/state/load-lock (a small
   per-user daemon started on first use).
 ---
@@ -29,9 +29,9 @@ Use the first of these that works; they all talk to the same daemon:
    by the load-lock plugin. The rest of this skill names them with the
    `load_lock_` prefix.
 2. **`load-lock` on PATH**: check with `load-lock version`.
-3. **Pinned npx**: `npx -y @aron98/load-lock@1.7.1 <command>` (Node >= 20).
+3. **Pinned npx**: `npx -y @aron98/load-lock@1.7.2 <command>` (Node >= 20).
    It downloads that exact npm package once into the npx cache. Below,
-   read `load-lock` as this whole prefix. `npm install -g @aron98/load-lock@1.7.1`
+   read `load-lock` as this whole prefix. `npm install -g @aron98/load-lock@1.7.2`
    makes it permanent.
 
 The first call starts the daemon on its own (shared state in

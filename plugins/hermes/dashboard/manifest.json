@@ -3,7 +3,7 @@
   "label": "Load Lock",
   "description": "Live view of the machine-wide heavy-work budget: pool capacity, permit holders, pending offers and queue — one glance across every coding agent sharing this machine.",
   "icon": "Cpu",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "tab": {
     "path": "/load-lock",
     "position": "end"
