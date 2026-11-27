@@ -11,6 +11,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { inPrunableCache, openCodeEntry, stableNodePath } from "../cli/install.js";
+import { opencodeCacheDir, opencodeCacheRoot } from "../shared/pkginfo.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const cliMain = join(HERE, "..", "cli", "main.js");
@@ -1339,11 +1340,26 @@ test("opencode: a bad --pin is refused without writing anything", async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
+test("opencodeCacheRoot: XDG_CACHE_HOME, else ~/.cache, on every platform (issue #115)", () => {
+  // OpenCode 1.x (xdg-basedir) and 2.x (bundled Global) both resolve it so.
+  assert.equal(opencodeCacheRoot("darwin", { HOME: "/Users/u" }), "/Users/u/.cache");
+  assert.equal(opencodeCacheRoot("linux", { HOME: "/home/u" }), "/home/u/.cache");
+  assert.equal(opencodeCacheRoot("win32", { USERPROFILE: "/c/u", LOCALAPPDATA: "/c/u/AppData/Local" }), join("/c/u", ".cache"));
+  assert.equal(opencodeCacheRoot("darwin", { HOME: "/Users/u", XDG_CACHE_HOME: "/x" }), "/x");
+  assert.equal(opencodeCacheRoot("darwin", { HOME: "/Users/u", XDG_CACHE_HOME: "" }), "/Users/u/.cache");
+  assert.equal(opencodeCacheDir("darwin", { HOME: "/Users/u" }), "/Users/u/.cache/opencode");
+});
+
 test("opencode: a copy in the npx or opencode cache defaults to its version, not its path", () => {
   const env = { HOME: "/h", npm_config_cache: "/h/.npm", XDG_CACHE_HOME: "/h/xdg" };
   assert.equal(inPrunableCache("/h/.npm/_npx/abc/node_modules/@aron98/load-lock", "linux", env), true);
   assert.equal(inPrunableCache("/h/xdg/opencode/npm/@aron98/load-lock@latest/1/node_modules/@aron98/load-lock", "linux", env), true);
-  assert.equal(inPrunableCache("/h/.cache/opencode/npm/@aron98/load-lock@latest/1/node_modules/@aron98/load-lock", "darwin", env), true);
+  // Without XDG_CACHE_HOME, opencode's cache is ~/.cache/opencode on every platform (issue #115).
+  const noXdg = { HOME: "/h", npm_config_cache: "/h/.npm" };
+  for (const platform of ["linux", "darwin"] as const) {
+    assert.equal(inPrunableCache("/h/.cache/opencode/npm/@aron98/load-lock@latest/1/node_modules/@aron98/load-lock", platform, noXdg), true);
+    assert.equal(inPrunableCache("/h/Library/Caches/opencode/npm/@aron98/load-lock@latest/1/node_modules/@aron98/load-lock", platform, noXdg), false);
+  }
   assert.equal(inPrunableCache("/usr/local/lib/node_modules/@aron98/load-lock", "linux", env), false);
   assert.equal(inPrunableCache("/h/.npm-global/lib/node_modules/@aron98/load-lock", "linux", env), false);
   assert.equal(openCodeEntry("path", REPO_ROOT), REPO_ROOT);

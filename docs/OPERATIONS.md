@@ -100,6 +100,7 @@ to a node that path no longer exists for, re-run `load-lock install`.
     `install --harness omac` adds for a global install, no registry access.
   - `--pin version`: `@aron98/load-lock@<this copy's version>`. OpenCode
     downloads it once into `<cache>/opencode/npm/@aron98/load-lock@<v>/`
+    (`<cache>` is `$XDG_CACHE_HOME`, else `~/.cache`, on macOS too)
     (with the shipped `npm-shrinkwrap.json` honoured, see
     [Releasing](#releasing-maintainers)) and never refreshes an exact version
     (`opencode plugin check` reports it current). The default when the
@@ -477,7 +478,7 @@ detected package manager — or refuses honestly rather than guessing:
 | ------------------------------------- | ------------------------------------------------------------------ |
 | bun global (`~/.bun/install/global/…`)  | `bun i -g @aron98/load-lock@latest`                                |
 | npm global (under `npm root -g`)        | `npm i -g @aron98/load-lock@latest`                                |
-| opencode's npm-cache copy               | refuses — opencode manages this copy and refreshes it on its own schedule |
+| opencode's cache copy (`$XDG_CACHE_HOME` or `~/.cache`, then `/opencode/…`, on every platform) | refuses — opencode manages this copy and refreshes it on its own schedule |
 | npx cache copy (`~/.npm/_npx/<hash>/…`, since #57) | refuses — it is whatever version the launching `npx -y @aron98/load-lock@<pin>` pins; bump that pin (MCP/skill config or ACE artifact) |
 | a git checkout (nearest `.git`)         | refuses — update it via your git workflow (`git pull` etc.)        |
 | anything else                           | refuses — "cannot tell how this copy was installed"                 |

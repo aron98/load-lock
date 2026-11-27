@@ -16,7 +16,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findInstalledCopies, npxCacheRoot, opencodeCacheRoot, thisCopy, type InstalledCopy } from "./copies.js";
+import { findInstalledCopies, npxCacheRoot, opencodeCacheDir, thisCopy, type InstalledCopy } from "./copies.js";
 import { loadRuntimes, readDaemonInfo, type RuntimeCopy } from "../shared/runtimes.js";
 import { resolveStateDir } from "../shared/transport.js";
 import { PKG_NAME } from "../shared/pkginfo.js";
@@ -860,7 +860,7 @@ function foreignSteps(h: HarnessInventory, keepForeignMcp: boolean, why: string)
 /** The running copy, and whether it sits in the npx / opencode cache. */
 export function selfCopy(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): PlanOptions {
   const self = thisCopy()?.path ?? null;
-  const caches = [npxCacheRoot(platform, env), opencodeCacheRoot(platform, env)].filter((c): c is string => !!c);
+  const caches = [npxCacheRoot(platform, env), opencodeCacheDir(platform, env)].filter((c): c is string => !!c);
   let real = self;
   try {
     real = self ? fs.realpathSync(self) : null;

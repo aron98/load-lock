@@ -179,6 +179,11 @@ test("classifySelf: bun global / npm global / opencode cache / repo / unknown", 
       ctx,
     );
     assert.equal(cache.kind, "opencode-cache");
+    // OpenCode 1.x layouts under the same cache dir (issue #115)
+    for (const rel of [["packages", "@aron98_load-lock@1.0.0"], []]) {
+      const v1 = classifySelf(join(base, "cache", "opencode", ...rel, "node_modules", "@aron98", "load-lock"), ctx);
+      assert.equal(v1.kind, "opencode-cache", rel.join("/"));
+    }
 
     // repo checkout: a .git above the package root (planted, like the real walk)
     mkdirSync(join(base, "repo", "pkg"), { recursive: true });
@@ -497,6 +502,43 @@ test("update: run from a planted npx-cache copy refuses with a clear message (is
     const apply = await runCliEnv(env, ["update"], plantedCli);
     assert.equal(apply.code, 70, "refusal in apply mode is a failure exit");
     assert.ok(apply.stderr.includes("update refused") && apply.stderr.includes("npx cache"), apply.stderr);
+    assert.ok(!existsSync(mark), "no package manager ran");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("update: run from a planted opencode-cache copy under ~/.cache refuses (issue #115)", async () => {
+  const base = mkdtempSync(join(TMP_BASE, "upd-oc-"));
+  try {
+    const home = join(base, "home");
+    // OpenCode 2.x layout under ~/.cache, where it caches on macOS too.
+    const plantedCli = plantCopy(
+      join(home, ".cache", "opencode", "npm", "@aron98", "load-lock@1.0.0", "1700000000000", "node_modules", "@aron98", "load-lock"),
+      packageVersion(),
+    );
+    makeStubNpm(join(base, "bin"));
+    const mark = join(base, "marker");
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      HOME: home,
+      PATH: join(base, "bin") + ":" + (process.env.PATH ?? ""),
+      STUB_VERSION: "9.9.9",
+      STUB_ROOT: join(base, "no-such-npm-root"),
+      STUB_MARK: mark,
+    };
+    // Resolve the cache from the temp HOME, never the real one.
+    delete env.XDG_CACHE_HOME;
+
+    const check = await runCliEnv(env, ["update", "--check", "--json"], plantedCli);
+    assert.equal(check.code, 1, `an update exists; this copy cannot self-apply it; stderr: ${check.stderr}`);
+    const report = JSON.parse(check.stdout);
+    assert.equal(report.state, "refused");
+    assert.equal(report.location.kind, "opencode-cache", JSON.stringify(report.location));
+
+    const apply = await runCliEnv(env, ["update"], plantedCli);
+    assert.equal(apply.code, 70, "refusal in apply mode is a failure exit");
+    assert.ok(apply.stderr.includes("update refused") && apply.stderr.includes("opencode"), apply.stderr);
     assert.ok(!existsSync(mark), "no package manager ran");
   } finally {
     rmSync(base, { recursive: true, force: true });
