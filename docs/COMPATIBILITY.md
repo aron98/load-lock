@@ -59,7 +59,7 @@ as `plugin`, `loose`, `MCP only`, `skill only` or `not installed`.
 
 | Harness | MCP server (1) | Plugin (2) | Loose `install` | Highest rung |
 | --- | --- | --- | --- | --- |
-| **OpenCode** | generic stdio registration works; the plugin's native `load_lock_*` tools are better | npm plugin `@aron98/load-lock` (also listed on ACE via `ace/opencode/`) — live-verified | `install --harness opencode` registers that same npm plugin | **plugin** |
+| **OpenCode** | generic stdio registration works; the plugin's native `load_lock_*` tools are better | npm plugin `@aron98/load-lock` (also listed on ACE via `ace/opencode/`) — live-verified | `install --harness opencode` registers that plugin from the installing copy's path (`--pin version` / `none` for a package entry; #110) | **plugin** |
 | **Hermes Agent** | generic stdio registration works | `plugins/hermes` native plugin (catalog entry: repo `aron98/load-lock`, subdir `plugins/hermes`) — enable with `hermes plugins enable load-lock` | none (the plugin is the artifact; no loose installer shipped) | **plugin** |
 | **Claude Code** | ACE `ace/mcp` or a manual stdio registration | `load-lock-plugin` from this repo's marketplace — contract-tested, passes `claude plugin validate --strict`; live-verified with a real model in a host session ([#63 record](#plugin-live-verification-63)) and on a clean machine in Docker without a global load-lock ([#104 record](#plugin-checks-in-docker-104)); plugin + loose together and ACE's skills-dir layout checked in Docker with a stub model only | `install --harness claude-code`: MCP + hooks + `CLAUDE.md` section + skill — live-verified in Docker | **plugin** (loose gives the same capability) |
 | **Codex CLI** | `[mcp_servers]` entry in `~/.codex/config.toml` | none shipped | `install --harness codex`: MCP + hooks + `AGENTS.md` section — live-verified in Docker | **loose** |
@@ -121,18 +121,36 @@ clean-machine check (#104) does not cover OpenCode. See
 
 #### Multiple copies of load-lock (opencode)
 
-`install --harness opencode` registers the **bare package name** in
-`~/.config/opencode/opencode.json`, so opencode maintains its own private
-copy of load-lock under
-`~/.cache/opencode/npm/@aron98/load-lock@latest/<timestamp>/node_modules/@aron98/load-lock/`,
-refreshed on opencode's schedule. That copy is *separate* from a globally
-installed CLI on PATH, and the two can drift (this was observed on a real
-machine with cache copies at 0.1.2, 1.0.0, 1.1.0 and 1.2.1 — issue #34).
+Since #110 `install --harness opencode` registers the **installing copy's
+path** by default, so OpenCode loads the plugin from the same copy the CLI
+runs from and keeps no cache copy of its own. An OpenCode `plugins` entry
+that is a package spec (`--pin version`, `--pin none`, or one you wrote)
+makes opencode maintain a private copy under
+`~/.cache/opencode/npm/<spec>/<timestamp>/node_modules/@aron98/load-lock/`
+(e.g. `@aron98/load-lock@latest` for the bare name, `@aron98/load-lock@1.7.2`
+for an exact pin). With the bare name opencode refreshes that copy on its
+own schedule, so it is *separate* from a globally installed CLI on PATH and
+the two can drift (this was observed on a real machine with cache copies at
+0.1.2, 1.0.0, 1.1.0 and 1.2.1 — issue #34). An exact pin is never
+refreshed: it stays on that version until `install` is re-run.
+
+How OpenCode 2.3.2 reads a `plugins` entry (read from its bundled source,
+then checked live with a throwaway HOME): an absolute path is a local
+plugin, resolved through the directory's `package.json` `exports`
+(`./server`, then `.`) with no install step; anything else is parsed as an
+npm spec, installed with its embedded arborist into
+`<cache>/opencode/npm/<name>@<spec>/<timestamp>/`, and treated as immutable
+when the spec is an exact version (no update check, no refresh). Note that
+on macOS this OpenCode caches under `~/.cache/opencode`, not
+`~/Library/Caches/opencode`.
 
 Which copy is authoritative for what:
 
-- **opencode plugin behavior** — the cache copy. Updated by opencode itself
-  (it refreshes the cache entry); you cannot reliably update it by hand.
+- **opencode plugin behavior** — the copy the `plugins` entry names: with
+  the default path entry, the installing copy (update it like the CLI and
+  restart opencode); with a package entry, the cache copy, updated by
+  opencode itself for the bare name and never for an exact pin; you cannot
+  reliably update a cache copy by hand.
 - **CLI commands** (`load-lock status`, `service`, `doctor`, …) — the copy on
   PATH (typically a global install via npm/bun). Update it with your usual
   global install command, or `load-lock update` (since #38), which detects

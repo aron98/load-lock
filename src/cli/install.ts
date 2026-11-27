@@ -6,10 +6,13 @@
  * package) so uninstall removes exactly what install added.
  *
  * Harnesses:
- *  - opencode     : registers the published npm package in the `plugins`
- *                   array of ~/.config/opencode/opencode.json (opencode
- *                   resolves/installs/updates the package itself; legacy
- *                   local-stub installs are migrated away automatically).
+ *  - opencode     : registers load-lock in the `plugins` array of
+ *                   ~/.config/opencode/opencode.json, tied to the copy that
+ *                   runs install (#110): by default its absolute package
+ *                   root (OpenCode loads it in place, nothing downloaded),
+ *                   or the exact version when that copy sits in a cache
+ *                   (npx / opencode); `--pin version|none` overrides.
+ *                   Legacy local-stub installs are migrated away.
  *  - claude-code  : user-scope MCP server in ~/.claude.json, SessionStart /
  *                   Stop hooks + background await-offer watcher in
  *                   ~/.claude/settings.json, CLAUDE.md section, skill.
@@ -63,7 +66,8 @@ import os from "node:os";
 import path from "node:path";
 import { POLICY_BRIEF } from "../policy/text.js";
 import { resolveStateDir } from "../shared/transport.js";
-import { activePlugin, inventoryHarness, removeClaudeLoose, skillDirOwner, type Integration } from "./setup.js";
+import { npxCacheRoot, opencodeCacheRoot } from "../shared/pkginfo.js";
+import { activePlugin, inventoryHarness, isInstallerOpenCodeEntry, removeClaudeLoose, skillDirOwner, type Integration } from "./setup.js";
 
 export interface InstallOptions {
   harness: string;
@@ -73,6 +77,8 @@ export interface InstallOptions {
   binDir?: string; // dist/cli — lets us locate package root
   /** claude-code: install the loose wiring even when the plugin is enabled (#62). */
   legacy?: boolean;
+  /** opencode: `path` | `version` | `none` (#110); default `path`, or `version` from a cache copy. */
+  pin?: string;
 }
 
 export interface UninstallOptions {
@@ -216,9 +222,69 @@ function isOurHook(e: unknown, cliPath: string, harness: string): boolean {
 
 // ------------------------------------------------------------------ opencode
 
+export type OpenCodePin = "path" | "version" | "none";
+
+/** Is `dir` inside `root` (or `root` itself)? */
+function within(dir: string, root: string): boolean {
+  const rel = path.relative(root, dir);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/**
+ * Is this copy in a cache that npx or opencode may prune or replace? A path
+ * entry to such a copy would break when the cache is cleaned.
+ */
+export function inPrunableCache(root: string, platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): boolean {
+  const npx = npxCacheRoot(platform, env);
+  const oc = opencodeCacheRoot(platform, env);
+  // OpenCode 2.x on macOS was seen caching under ~/.cache/opencode, not
+  // ~/Library/Caches/opencode: check both.
+  const home = env.HOME ?? HOME;
+  const caches = [npx, oc ? path.join(oc, "opencode") : null, path.join(home, ".cache", "opencode")].filter((c): c is string => !!c);
+  let real = root;
+  try {
+    real = fs.realpathSync(root);
+  } catch {
+    /* keep the given path */
+  }
+  return caches.some((c) => within(root, c) || within(real, c));
+}
+
+/**
+ * The `plugins` entry for this copy (#110):
+ *  - `path`    : the absolute package root. OpenCode loads it in place, so
+ *                the plugin is always the copy the CLI runs; `npm i -g` /
+ *                `load-lock update` replace that directory and the plugin
+ *                follows on the next OpenCode start. Nothing is downloaded
+ *                (works with no registry access, e.g. in an omac sandbox).
+ *  - `version` : `@aron98/load-lock@<this version>`. OpenCode downloads it
+ *                once into <cache>/opencode/npm/@aron98/load-lock@<v>/ and,
+ *                the spec being exact, never refreshes it.
+ *  - `none`    : the bare name: OpenCode installs latest and refreshes it
+ *                on its own schedule (the pre-#110 behaviour).
+ */
+export function openCodeEntry(pin: OpenCodePin, root: string): string {
+  if (pin === "path") return root;
+  if (pin === "none") return PKG_NAME;
+  const version = readJson(path.join(root, "package.json"))?.version;
+  if (typeof version !== "string" || !version) throw new Error(`install: cannot read this copy's version from ${root}/package.json (needed for --pin version)`);
+  return `${PKG_NAME}@${version}`;
+}
+
 function installOpenCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): string[] {
   const actions: string[] = [];
   const pluginDir = path.join(HOME, ".config", "opencode", "plugins", "load-lock");
+
+  let pin: OpenCodePin;
+  if (opts.pin === undefined || opts.pin === "") {
+    pin = inPrunableCache(P.root) ? "version" : "path";
+    if (pin === "version") actions.push(`this copy lives in an npx/opencode cache (${P.root}); pinning its version instead of its path`);
+  } else if (opts.pin === "path" || opts.pin === "version" || opts.pin === "none") {
+    pin = opts.pin;
+  } else {
+    throw new Error(`install: --pin must be path, version or none (got "${opts.pin}")`);
+  }
+  const entry = openCodeEntry(pin, P.root);
 
   // Migrate away from the legacy stub dir (pre-publish installs used a
   // local stub with a file: symlink dep, which bun does not resolve).
@@ -227,17 +293,17 @@ function installOpenCode(opts: InstallOptions, P: ReturnType<typeof pkgPaths>): 
     actions.push(`removed legacy plugin stub ${pluginDir}`);
   }
 
-  // Register the published npm package; opencode resolves, installs and
-  // updates it itself (shows up in /plugins with the real version).
+  // Replace any entry in a shape we write (bare name, exact pin, a load-lock
+  // package path, the legacy stub) with this copy's entry.
   const cfgFile = path.join(HOME, ".config", "opencode", "opencode.json");
   const cfg = readJson(cfgFile) ?? {};
   if (!Array.isArray(cfg.plugins)) cfg.plugins = [];
-  const before = cfg.plugins.length;
-  cfg.plugins = cfg.plugins.filter((p: unknown) => p !== pluginDir && p !== PKG_NAME);
-  cfg.plugins.push(PKG_NAME);
+  const replaced = cfg.plugins.filter((p: unknown) => (p === pluginDir || isInstallerOpenCodeEntry(p)) && p !== entry);
+  cfg.plugins = cfg.plugins.filter((p: unknown) => p !== pluginDir && !isInstallerOpenCodeEntry(p));
+  cfg.plugins.push(entry);
   writeJson(cfgFile, cfg);
-  actions.push(`plugins entry "${PKG_NAME}" in ${cfgFile}`);
-  if (before !== cfg.plugins.length) actions.push("(replaced legacy plugins entry)");
+  actions.push(`plugins entry "${entry}" in ${cfgFile} (--pin ${pin})`);
+  if (replaced.length) actions.push(`(replaced ${replaced.map((p: unknown) => JSON.stringify(p)).join(", ")})`);
 
   actions.push("restart or reload your opencode service to load the plugin");
   return actions;
@@ -254,7 +320,7 @@ function uninstallOpenCode(): string[] {
   const cfg = readJson(cfgFile);
   if (cfg && Array.isArray(cfg.plugins)) {
     const before = cfg.plugins.length;
-    cfg.plugins = cfg.plugins.filter((p: unknown) => p !== pluginDir && p !== PKG_NAME);
+    cfg.plugins = cfg.plugins.filter((p: unknown) => p !== pluginDir && !isInstallerOpenCodeEntry(p));
     if (cfg.plugins.length !== before) {
       writeJson(cfgFile, cfg);
       actions.push(`removed plugins entry from ${cfgFile}`);

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { stableNodePath } from "../cli/install.js";
+import { inPrunableCache, openCodeEntry, stableNodePath } from "../cli/install.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const cliMain = join(HERE, "..", "cli", "main.js");
@@ -1211,4 +1211,133 @@ test("stableNodePath: prefers a PATH symlink to the same binary over a versioned
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ------------------------------------------------------------- opencode (#110)
+
+const REPO_ROOT = resolve(HERE, "..", "..");
+const PKG_VERSION: string = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")).version;
+
+async function doctorOpenCode(home: string): Promise<{ plugins: any[]; warnings: string[] }> {
+  const state = join(home, "st");
+  const r = await runCli(home, ["doctor", "--json"], {
+    LOAD_LOCK_STATE_DIR: state,
+    LOAD_LOCK_SOCKET: join(state, "d.sock"),
+    LOAD_LOCK_NO_SPAWN: "1",
+  });
+  assert.equal(r.code, 0, `doctor failed: ${r.stderr}`);
+  const rep = JSON.parse(r.stdout);
+  return { plugins: rep.opencodePlugins, warnings: rep.warnings };
+}
+
+test("opencode: default install registers this copy's path; --pin version/none switch in place; uninstall restores the config", async () => {
+  const home = tempHome();
+  const ocDir = join(home, ".config", "opencode");
+  mkdirSync(ocDir, { recursive: true });
+  const cfgFile = join(ocDir, "opencode.json");
+  const original = {
+    $schema: "https://opencode.ai/config.json",
+    plugin: ["@aron98/load-lock@1.5.0"], // the 1.x key: not ours to touch
+    plugins: ["some-other-plugin@latest", ["/opt/my-theme", { a: 1 }], "/opt/not-load-lock"],
+    model: "x/y",
+  };
+  writeFileSync(cfgFile, JSON.stringify(original, null, 2) + "\n");
+  const ours = (c: any) => c.plugins.filter((p: unknown) => p === REPO_ROOT || (typeof p === "string" && p.startsWith("@aron98/load-lock")));
+
+  // -- default: the installing copy's absolute package root
+  let r = await runCli(home, ["install", "--harness", "opencode"]);
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+  assert.match(r.stdout, /--pin path/);
+  let c = JSON.parse(readFileSync(cfgFile, "utf8"));
+  assert.deepEqual(ours(c), [REPO_ROOT]);
+  assert.deepEqual(c.plugins.slice(0, 3), original.plugins, "foreign entries preserved in order");
+  assert.deepEqual(c.plugin, original.plugin, "the `plugin` key is left alone");
+  assert.equal(c.model, "x/y");
+  let d = await doctorOpenCode(home);
+  assert.deepEqual(
+    d.plugins.filter((p) => p.owner === "installer").map((p) => [p.entry, p.version, p.stale]),
+    [[`plugins: local copy ${REPO_ROOT}`, PKG_VERSION, false]],
+  );
+  assert.ok(!d.warnings.some((w) => /^OpenCode: plugins/.test(w)), d.warnings.join("\n"));
+
+  // re-install never duplicates
+  r = await runCli(home, ["install", "--harness", "opencode"]);
+  assert.equal(r.code, 0);
+  assert.deepEqual(ours(JSON.parse(readFileSync(cfgFile, "utf8"))), [REPO_ROOT]);
+
+  // -- --pin version replaces the path entry
+  r = await runCli(home, ["install", "--harness", "opencode", "--pin", "version"]);
+  assert.equal(r.code, 0, `pin version failed: ${r.stderr}`);
+  assert.match(r.stdout, new RegExp(`replaced ${JSON.stringify(JSON.stringify(REPO_ROOT)).slice(1, -1)}`));
+  c = JSON.parse(readFileSync(cfgFile, "utf8"));
+  assert.deepEqual(ours(c), [`@aron98/load-lock@${PKG_VERSION}`]);
+  d = await doctorOpenCode(home);
+  assert.ok(d.plugins.some((p) => p.owner === "installer" && p.version === PKG_VERSION));
+
+  // -- --pin none: the bare name (OpenCode follows latest)
+  r = await runCli(home, ["install", "--harness", "opencode", "--pin", "none"]);
+  assert.equal(r.code, 0, `pin none failed: ${r.stderr}`);
+  assert.deepEqual(ours(JSON.parse(readFileSync(cfgFile, "utf8"))), ["@aron98/load-lock"]);
+
+  // -- uninstall: back to the original config
+  r = await runCli(home, ["uninstall", "--harness", "opencode"]);
+  assert.equal(r.code, 0, `uninstall failed: ${r.stderr}`);
+  assert.deepEqual(JSON.parse(readFileSync(cfgFile, "utf8")), original);
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("opencode: install migrates the legacy stub and old shapes; uninstall removes each pin shape, a stale path too", async () => {
+  const home = tempHome();
+  const ocDir = join(home, ".config", "opencode");
+  const stub = join(ocDir, "plugins", "load-lock");
+  mkdirSync(stub, { recursive: true });
+  const cfgFile = join(ocDir, "opencode.json");
+  const gone = join(home, "old-prefix", "lib", "node_modules", "@aron98", "load-lock");
+  writeFileSync(cfgFile, JSON.stringify({ plugins: [stub, "@aron98/load-lock", "@aron98/load-lock@1.6.0", gone, "@aron98/load-lock@^1"] }) + "\n");
+
+  // doctor flags the stale path entry and the older pin
+  let d = await doctorOpenCode(home);
+  assert.ok(d.warnings.some((w) => w.includes(`missing copy ${gone}`)), d.warnings.join("\n"));
+  assert.ok(d.warnings.some((w) => /loads load-lock v1\.6\.0/.test(w)), d.warnings.join("\n"));
+
+  let r = await runCli(home, ["install", "--harness", "opencode"]);
+  assert.equal(r.code, 0, `install failed: ${r.stderr}`);
+  assert.ok(!existsSync(stub), "legacy stub dir removed");
+  let c = JSON.parse(readFileSync(cfgFile, "utf8"));
+  // a range is a user's own choice: kept (setup reports the duplicate)
+  assert.deepEqual(c.plugins, ["@aron98/load-lock@^1", REPO_ROOT]);
+
+  r = await runCli(home, ["uninstall", "--harness", "opencode"]);
+  assert.equal(r.code, 0);
+  assert.deepEqual(JSON.parse(readFileSync(cfgFile, "utf8")).plugins, ["@aron98/load-lock@^1"]);
+
+  // each shape install writes is removed by uninstall
+  for (const entry of [REPO_ROOT, `@aron98/load-lock@${PKG_VERSION}`, "@aron98/load-lock", gone]) {
+    writeFileSync(cfgFile, JSON.stringify({ plugins: ["keep-me", entry] }) + "\n");
+    r = await runCli(home, ["uninstall", "--harness", "opencode"]);
+    assert.equal(r.code, 0);
+    assert.deepEqual(JSON.parse(readFileSync(cfgFile, "utf8")).plugins, ["keep-me"], `uninstall removes ${entry}`);
+  }
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("opencode: a bad --pin is refused without writing anything", async () => {
+  const home = tempHome();
+  const r = await runCli(home, ["install", "--harness", "opencode", "--pin", "latest"]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.stderr, /--pin must be path, version or none/);
+  assert.ok(!existsSync(join(home, ".config", "opencode", "opencode.json")));
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("opencode: a copy in the npx or opencode cache defaults to its version, not its path", () => {
+  const env = { HOME: "/h", npm_config_cache: "/h/.npm", XDG_CACHE_HOME: "/h/xdg" };
+  assert.equal(inPrunableCache("/h/.npm/_npx/abc/node_modules/@aron98/load-lock", "linux", env), true);
+  assert.equal(inPrunableCache("/h/xdg/opencode/npm/@aron98/load-lock@latest/1/node_modules/@aron98/load-lock", "linux", env), true);
+  assert.equal(inPrunableCache("/h/.cache/opencode/npm/@aron98/load-lock@latest/1/node_modules/@aron98/load-lock", "darwin", env), true);
+  assert.equal(inPrunableCache("/usr/local/lib/node_modules/@aron98/load-lock", "linux", env), false);
+  assert.equal(inPrunableCache("/h/.npm-global/lib/node_modules/@aron98/load-lock", "linux", env), false);
+  assert.equal(openCodeEntry("path", REPO_ROOT), REPO_ROOT);
+  assert.equal(openCodeEntry("version", REPO_ROOT), `@aron98/load-lock@${PKG_VERSION}`);
+  assert.equal(openCodeEntry("none", REPO_ROOT), "@aron98/load-lock");
 });

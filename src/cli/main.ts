@@ -143,7 +143,7 @@ const HELP_GROUPS: { title: string; items: HelpItem[] }[] = [
   {
     title: "setup & docs",
     items: [
-      { names: ["install"], desc: "install the load-lock adapter for a harness: --harness <name> (claude-code: with the plugin enabled, moves the loose wiring out; --legacy keeps it)" },
+      { names: ["install"], desc: "install the load-lock adapter for a harness: --harness <name> (claude-code: with the plugin enabled, moves the loose wiring out; --legacy keeps it; opencode: --pin path|version|none, default path = this copy's directory)" },
       { names: ["uninstall"], desc: "remove what install added: --harness <name>" },
       { names: ["setup"], desc: "inventory every load-lock integration across all harnesses and plan the recommended layout (dry run); --yes applies it: [--project <dir>] [--json]" },
       { names: ["hook"], desc: "harness hook handlers (called by integrations, not humans)" },
@@ -582,6 +582,20 @@ async function main(): Promise<void> {
             "`load-lock install --harness claude-code` or `load-lock setup --yes` moves the loose entries out",
         );
       }
+      // OpenCode plugin entries (#110): which copy / version each one loads.
+      const ocPlugins = inventoryHarness("opencode", { project: process.cwd() }).integrations.filter((i) => i.kind === "plugin");
+      report.opencodePlugins = ocPlugins.map((i) => ({ entry: i.detail, file: i.file, owner: i.owner, version: i.version ?? null, stale: i.stale ?? false }));
+      const cliVersion = packageVersion();
+      for (const i of ocPlugins) {
+        if (i.stale && i.copy) {
+          warnings.push(`OpenCode: plugins entry points at a missing copy ${i.copy}; re-run \`load-lock install --harness opencode\``);
+        } else if (i.version && i.version !== cliVersion) {
+          warnings.push(
+            `OpenCode: ${i.detail} loads load-lock v${i.version}, this CLI is v${cliVersion}; ` +
+              "re-run `load-lock install --harness opencode` from the copy OpenCode should use",
+          );
+        }
+      }
       report.warnings = warnings;
       out(report, () => JSON.stringify(report, null, 2));
       return;
@@ -622,6 +636,7 @@ async function main(): Promise<void> {
         global: true,
         binDir: import.meta.dirname ? join(import.meta.dirname, "..") : undefined,
         legacy: B("legacy"),
+        pin: S("pin") || undefined,
       });
       return;
     case "uninstall":

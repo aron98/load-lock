@@ -404,3 +404,37 @@ test("setup converge: never overwrites a foreign entry in the installer's slot, 
   assert.match(cp[0].detail, /cache copy/);
   rmSync(sb.root, { recursive: true, force: true });
 });
+
+test("setup: OpenCode path / exact-pin entries are the installer's; a stale path entry is converged to this copy (#110)", async () => {
+  const sb = sandbox();
+  const cfgFile = join(sb.home, ".config", "opencode", "opencode.json");
+  const version = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version;
+
+  await install(sb, "opencode");
+  let oc = harness(await setupJson(sb), "opencode");
+  assert.equal(oc.rung, "plugin");
+  assert.deepEqual(
+    oc.integrations.map((i: any) => [i.detail, i.owner, i.copy, i.version, i.stale]),
+    [[`plugins: local copy ${repoRoot}`, "installer", repoRoot, version, false]],
+  );
+  assert.deepEqual(oc.findings, []);
+
+  await install(sb, "opencode", "--pin", "version");
+  oc = harness(await setupJson(sb), "opencode");
+  assert.deepEqual(oc.integrations.map((i: any) => [i.detail, i.owner, i.version]), [[`plugins: "@aron98/load-lock@${version}"`, "installer", version]]);
+
+  // a removed global install's path: stale, flagged, and converged by setup --yes
+  const gone = join(sb.root, "gone", "lib", "node_modules", "@aron98", "load-lock");
+  writeJsonFile(cfgFile, { plugins: ["other", gone] });
+  const out = await setupOut(sb);
+  oc = harness(out.inventory, "opencode");
+  assert.equal(oc.integrations[0].stale, true);
+  assert.ok(oc.findings.some((f: string) => f.startsWith("stale plugin entry")), oc.findings.join("\n"));
+  assert.deepEqual(steps(out, "opencode"), ["install"]);
+  await setupYes(sb);
+  assert.deepEqual(JSON.parse(readFileSync(cfgFile, "utf8")).plugins, ["other", repoRoot]);
+
+  await uninstall(sb, "opencode");
+  assert.deepEqual(JSON.parse(readFileSync(cfgFile, "utf8")).plugins, ["other"]);
+  rmSync(sb.root, { recursive: true, force: true });
+});
