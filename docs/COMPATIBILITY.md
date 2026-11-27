@@ -170,6 +170,29 @@ drift. Detection is best-effort (never crashes on missing paths) and was
 contract-tested with planted copies; the drift scenario itself was
 observed live on this machine before the feature existed.
 
+#### Locked dependency tree (npm-shrinkwrap.json)
+
+Since #103 the published tarball ships an `npm-shrinkwrap.json`, derived from
+`package-lock.json` with dev-only entries removed. Whether an installer
+uses it was checked with a registry package that ships one
+(`netlify-cli@17.38.1`, registry flag `_hasShrinkwrap: true`) and two
+transitive marker packages that float to newer versions without it
+(picocolors locked 1.1.0, @babel/helper-validator-identifier locked 7.25.9),
+on 2026-11-27, macOS:
+
+| Install path | Honours the shrinkwrap? |
+|---|---|
+| `npm i -g` / `npx`, npm 10 and 11 (bundled with Node 20–26) | **Yes** for global installs (markers stayed at the locked versions). `npx` uses the same installer code (Arborist reify) but was not run separately |
+| npm 12 (standalone; Node 27 pre-releases bundle it) | **No.** npm 12 neither reads it nor packs it ("no longer read or written by npm" in its `package-lock-json` docs); markers floated |
+| OpenCode 2.3.2 npm plugin install (`opencode plugin add`, and the `plugins` entry) | **Yes.** This version installs plugins with an embedded `@npmcli/arborist` 9.4.0 (npm 11's installer, not bun) and writes a `package-lock.json` in the cache entry; markers stayed locked |
+| `bun add` (bun 1.3.14) | **No**, markers floated. If an OpenCode version installs plugins through bun, its plugin path still floats. Which OpenCode release moved from bun to arborist was not established |
+| Installing a local tarball (`npm i -g ./load-lock-x.y.z.tgz`) | **No**, on any npm version: npm uses a dependency's shrinkwrap only when the registry metadata marks it (`_hasShrinkwrap`) |
+
+The npm 10/11 result for load-lock's own tarball has not been checked
+end-to-end against a registry. CI checks that the tarball ships the
+shrinkwrap and that it matches the committed lockfile, and that a global
+install of the tarball contains no devDependencies.
+
 ### Tier 2 — Claude Code / Codex CLI (hooks + MCP, live-verified)
 
 `load-lock install --harness claude-code|codex` configures the MCP server

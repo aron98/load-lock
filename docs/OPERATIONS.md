@@ -1319,7 +1319,24 @@ before changing the flow). The release commit itself is manual:
    `npm run check-pins -- --write` (alias for
    `node scripts/check-pins.mjs --write`), then `npm run check-pins` must
    print `pins ok`. Commit the bump and the pin updates together.
-3. Merge, then publish a GitHub Release tagged `v<version>`.
+3. `package-lock.json` must be in sync with `package.json` (step 1 does
+   that; after any dependency change run `npm install`). It is the only
+   lockfile in git: the tarball's `npm-shrinkwrap.json` is regenerated
+   from it by the `prepack` script (`node scripts/shrinkwrap.mjs`), so there
+   is nothing extra to commit. `npm pack` fails if the lock is stale, and CI
+   (`install-from-tarball` job) fails if the tarball's shrinkwrap is missing
+   or differs from one derived from the committed lock. Pack with npm 10/11
+   (Node 20–26); npm 12 leaves the shrinkwrap out of the tarball.
+4. Merge, then publish a GitHub Release tagged `v<version>`.
+
+**Dependency security fixes need a release.** Since #103 the published
+tarball ships an `npm-shrinkwrap.json`, so `npm i -g`, `npx` and OpenCode's
+plugin install of a given load-lock version get exactly the tree it was
+tested with (with npm 10/11; see
+[COMPATIBILITY.md](COMPATIBILITY.md#locked-dependency-tree-npm-shrinkwrapjson)
+for where it is not honoured). A fix in a transitive dependency no longer
+reaches users by itself: update `package-lock.json` (`npm update <dep>` /
+`npm audit fix`) and cut a load-lock release.
 
 Pinned files (the skill's npx fallback, ACE `ace/mcp/mcp.json` and
 `ace/opencode/package.json`, the Claude Code plugin's `plugin.json` and
