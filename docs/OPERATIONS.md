@@ -75,6 +75,13 @@ round-trips in `src/test/install.test.ts` for all three (an earlier matcher
 never matched its own entries — duplicate installs and hooks that survived
 uninstall — see issue #19); not live-verified inside the real CLIs.
 
+Hooks and MCP entries run the CLI with an absolute node path. The
+installer writes a `node` symlink from `PATH` (or `/opt/homebrew/bin`,
+`/usr/local/bin`) when it resolves to the running binary, so the entries
+survive `brew upgrade node`; only without one (nvm's versioned dirs,
+Windows) does it write the running binary's own path. After switching
+to a node that path no longer exists for, re-run `load-lock install`.
+
 - **opencode** — registers the published package `@aron98/load-lock` in
   the `plugins` array of `~/.config/opencode/opencode.json` (OpenCode
   installs and updates it itself) and removes the legacy plugin stub
