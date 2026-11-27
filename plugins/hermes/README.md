@@ -58,7 +58,7 @@ automatically when the job exited.
 1. Install the load-lock CLI (Node >= 20):
 
    ```sh
-   npm install -g @aron98/load-lock@1.7.2
+   npm install -g @aron98/load-lock@1.7.3
    ```
 
 2. Install/enable the plugin (from this repo: `plugins/hermes/`):
